@@ -1,8 +1,8 @@
 import unittest
 
-from usv_uav_2_0.agent_model import AgentState, AgentTaskState
-from usv_uav_2_0.environment import build_default_sea_map, build_obstacle_layout
-from usv_uav_2_0.grid import (
+from usv_uav_marine_coverage.agent_model import AgentState, AgentTaskState
+from usv_uav_marine_coverage.environment import build_default_sea_map, build_obstacle_layout
+from usv_uav_marine_coverage.grid import (
     DEFAULT_CELL_SIZE,
     CoverageState,
     apply_agent_coverage,

@@ -1,6 +1,9 @@
-# USV_UAV_2.0
+# usv-uav-marine-coverage
 
 Python project scaffold for follow-up development with Codex.
+
+Current Python package name: `usv_uav_marine_coverage`. Use this package name for imports,
+module execution, and future tests.
 
 ## Python Version
 
@@ -17,21 +20,33 @@ Python project scaffold for follow-up development with Codex.
 |   |-- current_system_flow.md
 |   |-- discussion_notes.md
 |   `-- generated/
-|       `-- sea_map.html
+|       |-- sea_map.html
+|       |-- simulation_replay_events.jsonl
+|       |-- simulation_replay_summary.json
+|       `-- simulation_replay.html
 |-- pyproject.toml
 |-- src/
-|   `-- usv_uav_2_0/
+|   `-- usv_uav_marine_coverage/
 |       |-- __init__.py
 |       |-- __main__.py
 |       |-- agent_model.py
 |       |-- agent_overlay.py
 |       |-- environment.py
 |       |-- grid.py
+|       |-- information_map.py
+|       |-- simulation/
+|       |   |-- __init__.py
+|       |   |-- simulation_core.py
+|       |   |-- simulation_logging.py
+|       |   |-- simulation_policy.py
+|       |   `-- simulation_replay_view.py
 |       `-- viewer.py
 `-- tests/
     |-- test_agent_model.py
     |-- test_environment.py
     |-- test_grid.py
+    |-- test_information_map.py
+    |-- test_simulation.py
     |-- test_smoke.py
     `-- test_viewer.py
 ```
@@ -43,17 +58,28 @@ Python project scaffold for follow-up development with Codex.
 - `docx/current_system_flow.md`: 基于当前已有代码整理的系统实际流程说明文档。
 - `docx/discussion_notes.md`: 讨论阶段确认的建模方案、状态标记和后续实现依据。
 - `docx/generated/sea_map.html`: 当前默认生成的 HTML 海图产物，可直接用于查看 `clean` 模式结果。
+- `docx/generated/simulation_replay.html`: 当前生成的 HTML 回放式仿真预览产物，可直接查看多智能体运动、信息刷新与热点状态变化。
+- `docx/generated/simulation_replay_events.jsonl`: 当前回放式仿真同步生成的逐事件日志文件，适合 AI 按时间步复盘整体行为，并分析任务指派、路径摘要、执行偏差与热点处理链。
+- `docx/generated/simulation_replay_summary.json`: 当前回放式仿真同步生成的最终汇总日志文件，适合快速评估覆盖率、热点处理和路径长度等结果。
 - `pyproject.toml`: Python 项目配置、依赖声明、`pytest` 和 `ruff` 的工具配置入口。
-- `src/usv_uav_2_0/__init__.py`: 项目包入口与基础版本信息。
-- `src/usv_uav_2_0/__main__.py`: 命令行运行入口，用于生成或打开当前海图 HTML，并设置页面初始显示模式。
-- `src/usv_uav_2_0/agent_model.py`: `USV/UAV` 的最小可用数学模型，包含基础任务状态、简化运动学更新和探测/覆盖半径判定。
-- `src/usv_uav_2_0/agent_overlay.py`: 海图上的静态智能体外观示意数据与几何辅助函数。
-- `src/usv_uav_2_0/environment.py`: 海域环境、三区带结构、障碍布局、基础监测点、任务热点与伪随机环境生成逻辑。
-- `src/usv_uav_2_0/grid.py`: 将连续海域环境映射为 `25m` 规则矩形栅格网络，并提供基于智能体 `footprint` 的动态覆盖状态更新。
-- `src/usv_uav_2_0/viewer.py`: 海图 HTML/SVG 渲染逻辑，负责同一 HTML 内 `clean/debug` 切换视图、标签开关、预留轨迹层下的底图、障碍、监测点、热点、静态覆盖预览与静态智能体外观输出。
-- `tests/test_agent_model.py`: 验证智能体基础任务状态、简化运动更新以及探测/覆盖半径判定逻辑。
+- `src/usv_uav_marine_coverage/__init__.py`: 项目包入口与基础版本信息。
+- `src/usv_uav_marine_coverage/__main__.py`: 命令行运行入口，用于生成静态海图或回放式仿真预览 HTML，并设置页面初始显示模式。
+- `src/usv_uav_marine_coverage/agent_model.py`: `USV/UAV` 的第一阶段闭环数学模型，包含平台参数、任务到参考目标转换、轻量控制指令、受约束航向/速度更新和探测/覆盖半径判定，也是当前覆盖方法研究默认采用的动力学基线。
+- `src/usv_uav_marine_coverage/agent_overlay.py`: 海图上的静态智能体外观示意数据与几何辅助函数。
+- `src/usv_uav_marine_coverage/environment.py`: 海域环境、三区带结构、障碍布局、基础监测点、任务热点与伪随机环境生成逻辑。
+- `src/usv_uav_marine_coverage/grid.py`: 将连续海域环境映射为 `25m` 规则矩形栅格网络，并提供基于智能体 `footprint` 的动态覆盖状态更新。
+- `src/usv_uav_marine_coverage/information_map.py`: 基于栅格的动态信息地图层，负责信息时效、真实热点与认知热点分离、UAV 疑似标记与 USV 确认流程。
+- `src/usv_uav_marine_coverage/simulation/__init__.py`: 仿真回放子包的公开门面，保持现有对外接口稳定，并协调核心仿真、日志输出和回放页面生成。
+- `src/usv_uav_marine_coverage/simulation/simulation_core.py`: 回放式仿真的核心推进流程，负责逐步推进智能体、覆盖映射、信息地图联动和回放帧构建。
+- `src/usv_uav_marine_coverage/simulation/simulation_logging.py`: 回放式仿真的结构化日志层，负责 `events.jsonl`、`summary.json`、任务决策摘要、路径摘要、执行偏差和热点处理链记录。
+- `src/usv_uav_marine_coverage/simulation/simulation_policy.py`: 当前回放预览使用的启发式策略层，负责固定巡航航点、疑似热点响应和任务决策摘要生成。
+- `src/usv_uav_marine_coverage/simulation/simulation_replay_view.py`: 回放 HTML/SVG 视图层，负责页面结构、图层渲染、时间步控件和前端交互脚本。
+- `src/usv_uav_marine_coverage/viewer.py`: 海图 HTML/SVG 渲染逻辑，负责同一 HTML 内 `clean/debug` 切换视图、标签开关、预留轨迹层下的底图、障碍、监测点、热点、静态覆盖预览与静态智能体外观输出。
+- `tests/test_agent_model.py`: 验证第一阶段闭环更新下的 `UAV/USV` 机动差异、到达减速逻辑以及探测/覆盖半径判定逻辑。
 - `tests/test_environment.py`: 验证默认海域尺寸、三区带范围、障碍环境生成约束以及监测点/热点生成结果。
 - `tests/test_grid.py`: 验证离散栅格网络的分辨率、坐标映射、环境属性落格结果以及 `footprint` 覆盖映射逻辑。
+- `tests/test_information_map.py`: 验证信息地图的时效刷新、热点生成、UAV 疑似标记、USV 确认与假警报流程。
+- `tests/test_simulation.py`: 验证回放式仿真预览的帧生成、智能体运动和 HTML 控件/图层输出。
 - `tests/test_smoke.py`: 验证项目包是否能被基础导入。
 - `tests/test_viewer.py`: 验证 `clean/debug` 模式下海图 HTML 的关键图层、静态覆盖预览开关与智能体标识是否正确。
 
@@ -69,7 +95,7 @@ pip install -e ".[dev]"
 ## Run Sea Map
 
 ```bash
-python -m usv_uav_2_0
+python -m usv_uav_marine_coverage
 ```
 
 This phase only generates and displays the left-to-right three-zone sea area map.
@@ -95,20 +121,44 @@ The `debug` view in the same HTML additionally exposes the static coverage previ
 If you only want to generate the map page without opening a browser:
 
 ```bash
-python -m usv_uav_2_0 --no-open --output /tmp/usv_uav_sea_map.html
+python -m usv_uav_marine_coverage --no-open --output /tmp/usv_uav_sea_map.html
 ```
 
 If you want reproducible obstacle generation:
 
 ```bash
-python -m usv_uav_2_0 --seed 20260314
+python -m usv_uav_marine_coverage --seed 20260314
 ```
 
 If you want the page to open with the debug view selected:
 
 ```bash
-python -m usv_uav_2_0 --mode debug
+python -m usv_uav_marine_coverage --mode debug
 ```
+
+If you want the replay-style simulation preview:
+
+```bash
+python -m usv_uav_marine_coverage --simulate
+```
+
+If you want a longer replay:
+
+```bash
+python -m usv_uav_marine_coverage --simulate --steps 80
+```
+
+Every replay run now also writes two machine-readable log files next to the HTML output:
+
+- `<stem>_events.jsonl`: step-by-step simulation events and state snapshots
+- `<stem>_summary.json`: final replay summary for fast review
+
+The current replay logs already include a first schema for:
+
+- task decisions and selection reasons
+- path-plan summaries and replan reasons
+- execution deviation snapshots
+- hotspot detection / confirmation chain records
 
 If you want to generate a leaner HTML without the static validation layers at all, call `build_map_html(..., show_coverage_preview=False, show_footprints=False)` from code.
 

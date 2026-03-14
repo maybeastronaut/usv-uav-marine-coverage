@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from usv_uav_2_0.agent_model import AgentState, can_cover_point
+from usv_uav_marine_coverage.agent_model import AgentState, can_cover_point
 
-from usv_uav_2_0.environment import CircularFeature, ObstacleLayout, PolygonObstacle, SeaMap
+from usv_uav_marine_coverage.environment import CircularFeature, ObstacleLayout, PolygonObstacle, SeaMap
 
 DEFAULT_CELL_SIZE = 25.0
 

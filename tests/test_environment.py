@@ -1,6 +1,6 @@
 import unittest
 
-from usv_uav_2_0.environment import build_default_sea_map, build_obstacle_layout
+from usv_uav_marine_coverage.environment import build_default_sea_map, build_obstacle_layout
 
 
 class EnvironmentTestCase(unittest.TestCase):

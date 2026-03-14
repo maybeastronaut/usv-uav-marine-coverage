@@ -1,6 +1,6 @@
 import unittest
 
-from usv_uav_2_0 import __doc__
+from usv_uav_marine_coverage import __doc__
 
 
 class SmokeTestCase(unittest.TestCase):

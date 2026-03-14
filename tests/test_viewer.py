@@ -1,7 +1,7 @@
 import unittest
 
-from usv_uav_2_0.environment import build_default_sea_map, build_obstacle_layout
-from usv_uav_2_0.viewer import build_map_html
+from usv_uav_marine_coverage.environment import build_default_sea_map, build_obstacle_layout
+from usv_uav_marine_coverage.viewer import build_map_html
 
 
 class ViewerTestCase(unittest.TestCase):

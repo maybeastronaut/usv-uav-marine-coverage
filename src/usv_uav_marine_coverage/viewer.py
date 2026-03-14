@@ -7,13 +7,13 @@ import webbrowser
 from pathlib import Path
 from typing import Literal
 
-from usv_uav_2_0.agent_model import (
+from usv_uav_marine_coverage.agent_model import (
     AgentState,
     AgentTaskState,
     default_coverage_radius,
 )
-from usv_uav_2_0.agent_overlay import VisualAgent, build_demo_agents, rotate_points
-from usv_uav_2_0.environment import (
+from usv_uav_marine_coverage.agent_overlay import VisualAgent, build_demo_agents, rotate_points
+from usv_uav_marine_coverage.environment import (
     CircularFeature,
     MonitoringTarget,
     ObstacleLayout,
@@ -22,7 +22,7 @@ from usv_uav_2_0.environment import (
     build_default_sea_map,
     build_obstacle_layout,
 )
-from usv_uav_2_0.grid import apply_agent_coverage, build_grid_coverage_map, build_grid_map
+from usv_uav_marine_coverage.grid import apply_agent_coverage, build_grid_coverage_map, build_grid_map
 
 SVG_WIDTH = 940
 SVG_HEIGHT = 860
