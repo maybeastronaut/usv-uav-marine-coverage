@@ -7,9 +7,7 @@
     <style>
       body {
         margin: 0;
-        background:
-          radial-gradient(circle at top left, rgba(110, 168, 214, 0.12), transparent 28%),
-          linear-gradient(180deg, #eef5fb 0%, #f8fbfd 100%);
+        background: #ffffff;
         font-family: "Avenir Next", "Segoe UI", Helvetica, Arial, sans-serif;
         color: #0f172a;
       }
@@ -19,12 +17,66 @@
         padding: 20px 18px 28px;
       }
       .card {
-        background: rgba(255, 255, 255, 0.72);
-        border: 1px solid rgba(148, 163, 184, 0.18);
-        border-radius: 28px;
-        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.06);
+        background: #ffffff;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        border-radius: 16px;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
         overflow: hidden;
-        backdrop-filter: blur(12px);
+      }
+      .toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 14px 16px 0;
+      }
+      .toolbar-section {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .toolbar-label {
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: #64748b;
+        text-transform: uppercase;
+      }
+      .toolbar-pill {
+        display: inline-flex;
+        gap: 8px;
+        padding: 4px;
+        border: 1px solid rgba(148, 163, 184, 0.26);
+        border-radius: 999px;
+        background: rgba(248, 250, 252, 0.92);
+      }
+      .toolbar-pill button {
+        border: 0;
+        border-radius: 999px;
+        padding: 7px 12px;
+        background: transparent;
+        color: #475569;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: background 0.2s ease, color 0.2s ease;
+      }
+      body[data-view-mode="clean"] .toolbar-pill.view-toggle button[data-mode="clean"],
+      body[data-view-mode="debug"] .toolbar-pill.view-toggle button[data-mode="debug"] {
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      body[data-show-labels="true"] .toolbar-pill.label-toggle button[data-toggle="labels-on"],
+      body[data-show-labels="false"] .toolbar-pill.label-toggle button[data-toggle="labels-off"] {
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      body[data-view-mode="clean"] .debug-layer {
+        display: none;
+      }
+      body[data-show-labels="false"] .agent-label {
+        display: none;
       }
       svg {
         display: block;
@@ -33,65 +85,66 @@
       }
     </style>
   </head>
-  <body>
+  <body data-view-mode="clean" data-show-labels="true">
     <div class="page">
       <div class="card">
+        <div class="toolbar">
+          <div class="toolbar-section">
+            <div class="toolbar-label">Sea Map View</div>
+            <div class="toolbar-pill view-toggle" role="group" aria-label="Sea map mode switch">
+              <button type="button" data-mode="clean" aria-pressed="true" onclick="setViewMode('clean')">
+                Clean
+              </button>
+              <button type="button" data-mode="debug" aria-pressed="false" onclick="setViewMode('debug')">
+                Debug
+              </button>
+            </div>
+          </div>
+          <div class="toolbar-section">
+            <div class="toolbar-label">Agent Labels</div>
+            <div class="toolbar-pill label-toggle" role="group" aria-label="Agent label switch">
+              <button type="button" data-toggle="labels-on" aria-pressed="true" onclick="setLabelVisibility(true)">
+                On
+              </button>
+              <button type="button" data-toggle="labels-off" aria-pressed="false" onclick="setLabelVisibility(false)">
+                Off
+              </button>
+            </div>
+          </div>
+        </div>
         <svg viewBox="0 0 940 860" role="img" aria-label="Three-zone marine environment map">
           <defs>
-            <pattern id="nearshorePattern" width="24" height="24" patternUnits="userSpaceOnUse">
-              <path d="M0 18 Q6 10 12 18 T24 18" fill="none" stroke="#2F6B99" stroke-width="0.9" />
-            </pattern>
-            <pattern id="riskPattern" width="22" height="22" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-              <line x1="0" y1="0" x2="0" y2="22" stroke="#C56A1A" stroke-width="2.2" />
-            </pattern>
-            <pattern id="offshorePattern" width="28" height="28" patternUnits="userSpaceOnUse">
-              <circle cx="7" cy="7" r="1.8" fill="#2F8450" />
-              <circle cx="20" cy="16" r="1.8" fill="#2F8450" />
-            </pattern>
             <pattern id="gridPattern" width="50" height="50" patternUnits="userSpaceOnUse">
-              <path d="M50 0 L0 0 0 50" fill="none" stroke="rgba(71, 85, 105, 0.08)" stroke-width="1" />
+              <path d="M50 0 L0 0 0 50" fill="none" stroke="rgba(148, 163, 184, 0.10)" stroke-width="1" />
             </pattern>
             <pattern id="rockPattern" width="18" height="18" patternUnits="userSpaceOnUse">
               <circle cx="5" cy="5" r="1.6" fill="rgba(255,255,255,0.28)" />
               <circle cx="13" cy="10" r="1.4" fill="rgba(255,255,255,0.18)" />
             </pattern>
-            <linearGradient id="oceanGlow" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#F8FBFD" />
-              <stop offset="100%" stop-color="#E0EEF8" />
-            </linearGradient>
             <clipPath id="mapClip">
               <rect x="120" y="70" width="700" height="700" rx="26" ry="26" />
             </clipPath>
           </defs>
-          <rect x="0" y="0" width="940" height="860" fill="url(#oceanGlow)" />
-          <circle cx="140" cy="120" r="110" fill="rgba(255,255,255,0.38)" />
-          <circle cx="810" cy="120" r="120" fill="rgba(255,255,255,0.24)" />
-          <circle cx="820" cy="760" r="130" fill="rgba(160, 196, 224, 0.10)" />
+          <rect x="0" y="0" width="940" height="860" fill="#FFFFFF" />
           <rect x="120" y="70" width="700" height="700"
-                rx="26" ry="26" fill="#ECF5FB" stroke="#4B647D" stroke-width="1.6" />
+                rx="26" ry="26" fill="#FFFFFF" stroke="rgba(100, 116, 139, 0.42)" stroke-width="1.2" />
           <rect x="120" y="70" width="700" height="700"
                 rx="26" ry="26" fill="url(#gridPattern)" />
           <g clip-path="url(#mapClip)">
             
             <g>
               <rect x="120.0" y="70" width="175.0" height="700"
-                    fill="#BFD7EA" stroke="#2F6B99" stroke-width="1.25" />
-              <rect x="120.0" y="70" width="175.0" height="700"
-                    fill="url(#nearshorePattern)" opacity="0.22" />
+                    fill="transparent" stroke="rgba(148, 163, 184, 0.26)" stroke-width="1.0" />
             </g>
             
             <g>
               <rect x="295.0" y="70" width="140.0" height="700"
-                    fill="#F6D6AE" stroke="#C56A1A" stroke-width="1.25" />
-              <rect x="295.0" y="70" width="140.0" height="700"
-                    fill="url(#riskPattern)" opacity="0.22" />
+                    fill="transparent" stroke="rgba(148, 163, 184, 0.26)" stroke-width="1.0" />
             </g>
             
             <g>
               <rect x="435.0" y="70" width="385.00000000000006" height="700"
-                    fill="#C9E7CF" stroke="#2F8450" stroke-width="1.25" />
-              <rect x="435.0" y="70" width="385.00000000000006" height="700"
-                    fill="url(#offshorePattern)" opacity="0.22" />
+                    fill="transparent" stroke="rgba(148, 163, 184, 0.26)" stroke-width="1.0" />
             </g>
             
             
@@ -147,17 +200,17 @@
     
             
         <g aria-label="Nearshore Baseline Point 1">
-          <circle cx="155.65" cy="218.47" r="10.0" fill="rgba(37, 99, 235, 0.14)" />
-          <circle cx="155.65" cy="218.47" r="5.2" fill="#2563EB" stroke="#EFF6FF" stroke-width="1.8" />
+          <circle cx="155.65" cy="218.47" r="10.0" fill="rgba(71, 85, 105, 0.10)" />
+          <circle cx="155.65" cy="218.47" r="5.2" fill="#475569" stroke="#F8FAFC" stroke-width="1.8" />
           <path d="M 147.65 218.47 L 163.65 218.47 M 155.65 210.47 L 155.65 226.47"
-                stroke="#DBEAFE" stroke-width="1.8" stroke-linecap="round" />
+                stroke="#CBD5E1" stroke-width="1.8" stroke-linecap="round" />
         </g>
         
         <g aria-label="Nearshore Baseline Point 2">
-          <circle cx="174.13" cy="403.92" r="10.0" fill="rgba(37, 99, 235, 0.14)" />
-          <circle cx="174.13" cy="403.92" r="5.2" fill="#2563EB" stroke="#EFF6FF" stroke-width="1.8" />
+          <circle cx="174.13" cy="403.92" r="10.0" fill="rgba(71, 85, 105, 0.10)" />
+          <circle cx="174.13" cy="403.92" r="5.2" fill="#475569" stroke="#F8FAFC" stroke-width="1.8" />
           <path d="M 166.13 403.92 L 182.13 403.92 M 174.13 395.92 L 174.13 411.92"
-                stroke="#DBEAFE" stroke-width="1.8" stroke-linecap="round" />
+                stroke="#CBD5E1" stroke-width="1.8" stroke-linecap="round" />
         </g>
         
     <g aria-label="Offshore Hotspot 1">
@@ -195,64 +248,642 @@
       <circle cx="643.73" cy="140.94" r="2.2" fill="#FFF7ED" />
     </g>
     
+            <g class="debug-layer" aria-label="Static Coverage Preview">
+                <rect x="190.00" y="665.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 5-4" />
+                
+                <rect x="207.50" y="665.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 5-5" />
+                
+                <rect x="172.50" y="647.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 6-3" />
+                
+                <rect x="190.00" y="647.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 6-4" />
+                
+                <rect x="207.50" y="647.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 6-5" />
+                
+                <rect x="225.00" y="647.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 6-6" />
+                
+                <rect x="505.00" y="647.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 6-22" />
+                
+                <rect x="522.50" y="647.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 6-23" />
+                
+                <rect x="540.00" y="647.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 6-24" />
+                
+                <rect x="557.50" y="647.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 6-25" />
+                
+                <rect x="172.50" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-3" />
+                
+                <rect x="190.00" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-4" />
+                
+                <rect x="207.50" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-5" />
+                
+                <rect x="225.00" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-6" />
+                
+                <rect x="487.50" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-21" />
+                
+                <rect x="505.00" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-22" />
+                
+                <rect x="522.50" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-23" />
+                
+                <rect x="540.00" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-24" />
+                
+                <rect x="557.50" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-25" />
+                
+                <rect x="575.00" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-26" />
+                
+                <rect x="592.50" y="630.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 7-27" />
+                
+                <rect x="172.50" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-3" />
+                
+                <rect x="190.00" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-4" />
+                
+                <rect x="207.50" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-5" />
+                
+                <rect x="487.50" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-21" />
+                
+                <rect x="505.00" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-22" />
+                
+                <rect x="522.50" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-23" />
+                
+                <rect x="540.00" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-24" />
+                
+                <rect x="557.50" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-25" />
+                
+                <rect x="575.00" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-26" />
+                
+                <rect x="592.50" y="612.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 8-27" />
+                
+                <rect x="470.00" y="595.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 9-20" />
+                
+                <rect x="487.50" y="595.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 9-21" />
+                
+                <rect x="505.00" y="595.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 9-22" />
+                
+                <rect x="522.50" y="595.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 9-23" />
+                
+                <rect x="540.00" y="595.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 9-24" />
+                
+                <rect x="557.50" y="595.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 9-25" />
+                
+                <rect x="575.00" y="595.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 9-26" />
+                
+                <rect x="592.50" y="595.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 9-27" />
+                
+                <rect x="470.00" y="577.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 10-20" />
+                
+                <rect x="487.50" y="577.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 10-21" />
+                
+                <rect x="505.00" y="577.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 10-22" />
+                
+                <rect x="522.50" y="577.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 10-23" />
+                
+                <rect x="540.00" y="577.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 10-24" />
+                
+                <rect x="557.50" y="577.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 10-25" />
+                
+                <rect x="575.00" y="577.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 10-26" />
+                
+                <rect x="592.50" y="577.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 10-27" />
+                
+                <rect x="487.50" y="560.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 11-21" />
+                
+                <rect x="505.00" y="560.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 11-22" />
+                
+                <rect x="522.50" y="560.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 11-23" />
+                
+                <rect x="540.00" y="560.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 11-24" />
+                
+                <rect x="557.50" y="560.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 11-25" />
+                
+                <rect x="575.00" y="560.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 11-26" />
+                
+                <rect x="592.50" y="560.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 11-27" />
+                
+                <rect x="487.50" y="542.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 12-21" />
+                
+                <rect x="505.00" y="542.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 12-22" />
+                
+                <rect x="522.50" y="542.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 12-23" />
+                
+                <rect x="575.00" y="542.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 12-26" />
+                
+                <rect x="592.50" y="542.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 12-27" />
+                
+                <rect x="505.00" y="525.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 13-22" />
+                
+                <rect x="522.50" y="525.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 13-23" />
+                
+                <rect x="540.00" y="525.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 13-24" />
+                
+                <rect x="557.50" y="525.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 13-25" />
+                
+                <rect x="207.50" y="420.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 19-5" />
+                
+                <rect x="225.00" y="420.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 19-6" />
+                
+                <rect x="242.50" y="420.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 19-7" />
+                
+                <rect x="207.50" y="402.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 20-5" />
+                
+                <rect x="225.00" y="402.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 20-6" />
+                
+                <rect x="242.50" y="402.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 20-7" />
+                
+                <rect x="260.00" y="402.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 20-8" />
+                
+                <rect x="207.50" y="385.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 21-5" />
+                
+                <rect x="225.00" y="385.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 21-6" />
+                
+                <rect x="242.50" y="385.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 21-7" />
+                
+                <rect x="225.00" y="367.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 22-6" />
+                
+                <rect x="242.50" y="367.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 22-7" />
+                
+                <rect x="610.00" y="350.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 23-28" />
+                
+                <rect x="627.50" y="350.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 23-29" />
+                
+                <rect x="645.00" y="350.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 23-30" />
+                
+                <rect x="662.50" y="350.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 23-31" />
+                
+                <rect x="680.00" y="350.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 23-32" />
+                
+                <rect x="592.50" y="332.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 24-27" />
+                
+                <rect x="610.00" y="332.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 24-28" />
+                
+                <rect x="627.50" y="332.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 24-29" />
+                
+                <rect x="645.00" y="332.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 24-30" />
+                
+                <rect x="662.50" y="332.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 24-31" />
+                
+                <rect x="680.00" y="332.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 24-32" />
+                
+                <rect x="697.50" y="332.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 24-33" />
+                
+                <rect x="592.50" y="315.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 25-27" />
+                
+                <rect x="627.50" y="315.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 25-29" />
+                
+                <rect x="645.00" y="315.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 25-30" />
+                
+                <rect x="662.50" y="315.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 25-31" />
+                
+                <rect x="680.00" y="315.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 25-32" />
+                
+                <rect x="697.50" y="315.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 25-33" />
+                
+                <rect x="575.00" y="297.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 26-26" />
+                
+                <rect x="645.00" y="297.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 26-30" />
+                
+                <rect x="662.50" y="297.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 26-31" />
+                
+                <rect x="680.00" y="297.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 26-32" />
+                
+                <rect x="697.50" y="297.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 26-33" />
+                
+                <rect x="575.00" y="280.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 27-26" />
+                
+                <rect x="592.50" y="280.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 27-27" />
+                
+                <rect x="627.50" y="280.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 27-29" />
+                
+                <rect x="645.00" y="280.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 27-30" />
+                
+                <rect x="662.50" y="280.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 27-31" />
+                
+                <rect x="680.00" y="280.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 27-32" />
+                
+                <rect x="697.50" y="280.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 27-33" />
+                
+                <rect x="592.50" y="262.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 28-27" />
+                
+                <rect x="610.00" y="262.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 28-28" />
+                
+                <rect x="627.50" y="262.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 28-29" />
+                
+                <rect x="645.00" y="262.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 28-30" />
+                
+                <rect x="662.50" y="262.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 28-31" />
+                
+                <rect x="680.00" y="262.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 28-32" />
+                
+                <rect x="697.50" y="262.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 28-33" />
+                
+                <rect x="592.50" y="245.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 29-27" />
+                
+                <rect x="610.00" y="245.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 29-28" />
+                
+                <rect x="627.50" y="245.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 29-29" />
+                
+                <rect x="645.00" y="245.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 29-30" />
+                
+                <rect x="662.50" y="245.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 29-31" />
+                
+                <rect x="680.00" y="245.00" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 29-32" />
+                
+                <rect x="260.00" y="227.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 30-8" />
+                
+                <rect x="627.50" y="227.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 30-29" />
+                
+                <rect x="645.00" y="227.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 30-30" />
+                
+                <rect x="662.50" y="227.50" width="17.50" height="17.50"
+                      fill="rgba(13, 148, 136, 0.24)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 30-31" />
+                
+                <rect x="242.50" y="210.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 31-7" />
+                
+                <rect x="260.00" y="210.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 31-8" />
+                
+                <rect x="277.50" y="210.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 31-9" />
+                
+                <rect x="242.50" y="192.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 32-7" />
+                
+                <rect x="260.00" y="192.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 32-8" />
+                
+                <rect x="277.50" y="192.50" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 32-9" />
+                
+                <rect x="242.50" y="175.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 33-7" />
+                
+                <rect x="260.00" y="175.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 33-8" />
+                
+                <rect x="277.50" y="175.00" width="17.50" height="17.50"
+                      fill="rgba(37, 99, 235, 0.22)" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell 33-9" />
+                </g>
+            <g class="debug-layer" aria-label="Static Footprint Preview">
+    <g aria-label="USV-1 Footprint">
+      <circle cx="204.00" cy="644.00" r="35.00" fill="rgba(37, 99, 235, 0.08)" stroke="rgba(37, 99, 235, 0.72)"
+              stroke-width="1.2" stroke-dasharray="6 6" />
+    </g>
+    
+    <g aria-label="USV-2 Footprint">
+      <circle cx="235.50" cy="406.00" r="35.00" fill="rgba(37, 99, 235, 0.08)" stroke="rgba(37, 99, 235, 0.72)"
+              stroke-width="1.2" stroke-dasharray="6 6" />
+    </g>
+    
+    <g aria-label="USV-3 Footprint">
+      <circle cx="270.50" cy="203.00" r="35.00" fill="rgba(37, 99, 235, 0.08)" stroke="rgba(37, 99, 235, 0.72)"
+              stroke-width="1.2" stroke-dasharray="6 6" />
+    </g>
+    
+    <g aria-label="UAV-1 Footprint">
+      <circle cx="547.00" cy="595.00" r="70.00" fill="rgba(13, 148, 136, 0.08)" stroke="rgba(13, 148, 136, 0.72)"
+              stroke-width="1.2" stroke-dasharray="6 6" />
+    </g>
+    
+    <g aria-label="UAV-2 Footprint">
+      <circle cx="652.00" cy="301.00" r="70.00" fill="rgba(13, 148, 136, 0.08)" stroke="rgba(13, 148, 136, 0.72)"
+              stroke-width="1.2" stroke-dasharray="6 6" />
+    </g>
+    </g>
+            <g aria-label="Reserved Trajectory Layer"></g>
             
     <g aria-label="USV-1">
       <polygon points="190.63,642.12 183.73,637.31 186.18,641.49 182.68,644.84" fill="rgba(125, 211, 252, 0.45)" />
       <polygon points="195.71,638.29 210.57,640.38 214.40,645.46 209.32,649.29 194.46,647.20" fill="#0F172A" stroke="#E2E8F0" stroke-width="1.8" />
       <circle cx="204.00" cy="644.00" r="2.2" fill="#7DD3FC" />
-      <rect x="182.00" y="619.00" width="44" height="15" rx="7.5" ry="7.5"
-            fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
-      <text x="204.00" y="630.00" text-anchor="middle"
-            font-size="8.8" font-weight="700" fill="#0F172A">USV-1</text>
+      <g class="agent-label">
+        <rect x="182.00" y="619.00" width="44" height="15" rx="7.5" ry="7.5"
+              fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
+        <text x="204.00" y="630.00" text-anchor="middle"
+              font-size="8.8" font-weight="700" fill="#0F172A">USV-1</text>
+      </g>
     </g>
     
     <g aria-label="USV-2">
       <polygon points="222.30,408.81 214.17,406.65 217.89,409.74 215.75,414.08" fill="rgba(125, 211, 252, 0.45)" />
       <polygon points="225.76,403.47 240.43,400.35 245.77,403.82 242.30,409.15 227.63,412.27" fill="#0F172A" stroke="#E2E8F0" stroke-width="1.8" />
       <circle cx="235.50" cy="406.00" r="2.2" fill="#7DD3FC" />
-      <rect x="213.50" y="381.00" width="44" height="15" rx="7.5" ry="7.5"
-            fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
-      <text x="235.50" y="392.00" text-anchor="middle"
-            font-size="8.8" font-weight="700" fill="#0F172A">USV-2</text>
+      <g class="agent-label">
+        <rect x="213.50" y="381.00" width="44" height="15" rx="7.5" ry="7.5"
+              fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
+        <text x="235.50" y="392.00" text-anchor="middle"
+              font-size="8.8" font-weight="700" fill="#0F172A">USV-2</text>
+      </g>
     </g>
     
     <g aria-label="USV-3">
       <polygon points="257.05,201.82 249.91,197.38 252.57,201.43 249.25,204.96" fill="rgba(125, 211, 252, 0.45)" />
       <polygon points="261.93,197.73 276.87,199.04 280.96,203.92 276.08,208.01 261.14,206.70" fill="#0F172A" stroke="#E2E8F0" stroke-width="1.8" />
       <circle cx="270.50" cy="203.00" r="2.2" fill="#7DD3FC" />
-      <rect x="248.50" y="178.00" width="44" height="15" rx="7.5" ry="7.5"
-            fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
-      <text x="270.50" y="189.00" text-anchor="middle"
-            font-size="8.8" font-weight="700" fill="#0F172A">USV-3</text>
+      <g class="agent-label">
+        <rect x="248.50" y="178.00" width="44" height="15" rx="7.5" ry="7.5"
+              fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
+        <text x="270.50" y="189.00" text-anchor="middle"
+              font-size="8.8" font-weight="700" fill="#0F172A">USV-3</text>
+      </g>
     </g>
     
     <g aria-label="UAV-1">
-      <circle cx="536.18" cy="591.69" r="3.4" fill="#FFF1F2" stroke="#9F1239" stroke-width="1.2" /><circle cx="550.31" cy="584.18" r="3.4" fill="#FFF1F2" stroke="#9F1239" stroke-width="1.2" /><circle cx="557.82" cy="598.31" r="3.4" fill="#FFF1F2" stroke="#9F1239" stroke-width="1.2" /><circle cx="543.69" cy="605.82" r="3.4" fill="#FFF1F2" stroke="#9F1239" stroke-width="1.2" />
-      <polygon points="543.71,588.82 553.18,591.71 550.29,601.18 540.82,598.29" fill="#9F1239" stroke="#FFF1F2" stroke-width="1.4" />
-      <polygon points="542.54,586.61 547.07,588.74 541.77,591.55" fill="#FCA5A5" />
-      <circle cx="547.00" cy="595.00" r="2.2" fill="#FFF7ED" />
-      <rect x="525.00" y="569.00" width="44" height="15" rx="7.5" ry="7.5"
-            fill="rgba(255,255,255,0.88)" stroke="rgba(15,23,42,0.10)" />
-      <text x="547.00" y="580.00" text-anchor="middle"
-            font-size="8.8" font-weight="700" fill="#7F1D1D">UAV-1</text>
+      <circle cx="536.18" cy="591.69" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" /><circle cx="550.31" cy="584.18" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" /><circle cx="557.82" cy="598.31" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" /><circle cx="543.69" cy="605.82" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" />
+      <polygon points="543.71,588.82 553.18,591.71 550.29,601.18 540.82,598.29" fill="#0F766E" stroke="#F0FDFA" stroke-width="1.4" />
+      <polygon points="542.54,586.61 547.07,588.74 541.77,591.55" fill="#99F6E4" />
+      <circle cx="547.00" cy="595.00" r="2.2" fill="#F0FDFA" />
+      <g class="agent-label">
+        <rect x="525.00" y="569.00" width="44" height="15" rx="7.5" ry="7.5"
+              fill="rgba(255,255,255,0.88)" stroke="rgba(15,23,42,0.10)" />
+        <text x="547.00" y="580.00" text-anchor="middle"
+              font-size="8.8" font-weight="700" fill="#134E4A">UAV-1</text>
+      </g>
     </g>
     
     <g aria-label="UAV-2">
-      <circle cx="650.04" cy="289.86" r="3.4" fill="#FFF1F2" stroke="#9F1239" stroke-width="1.2" /><circle cx="663.14" cy="299.04" r="3.4" fill="#FFF1F2" stroke="#9F1239" stroke-width="1.2" /><circle cx="653.96" cy="312.14" r="3.4" fill="#FFF1F2" stroke="#9F1239" stroke-width="1.2" /><circle cx="640.86" cy="302.96" r="3.4" fill="#FFF1F2" stroke="#9F1239" stroke-width="1.2" />
-      <polygon points="656.02,295.27 657.73,305.02 647.98,306.73 646.27,296.98" fill="#9F1239" stroke="#FFF1F2" stroke-width="1.4" />
-      <polygon points="657.45,293.22 657.61,298.22 652.70,294.77" fill="#FCA5A5" />
-      <circle cx="652.00" cy="301.00" r="2.2" fill="#FFF7ED" />
-      <rect x="630.00" y="275.00" width="44" height="15" rx="7.5" ry="7.5"
-            fill="rgba(255,255,255,0.88)" stroke="rgba(15,23,42,0.10)" />
-      <text x="652.00" y="286.00" text-anchor="middle"
-            font-size="8.8" font-weight="700" fill="#7F1D1D">UAV-2</text>
+      <circle cx="650.04" cy="289.86" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" /><circle cx="663.14" cy="299.04" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" /><circle cx="653.96" cy="312.14" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" /><circle cx="640.86" cy="302.96" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" />
+      <polygon points="656.02,295.27 657.73,305.02 647.98,306.73 646.27,296.98" fill="#0F766E" stroke="#F0FDFA" stroke-width="1.4" />
+      <polygon points="657.45,293.22 657.61,298.22 652.70,294.77" fill="#99F6E4" />
+      <circle cx="652.00" cy="301.00" r="2.2" fill="#F0FDFA" />
+      <g class="agent-label">
+        <rect x="630.00" y="275.00" width="44" height="15" rx="7.5" ry="7.5"
+              fill="rgba(255,255,255,0.88)" stroke="rgba(15,23,42,0.10)" />
+        <text x="652.00" y="286.00" text-anchor="middle"
+              font-size="8.8" font-weight="700" fill="#134E4A">UAV-2</text>
+      </g>
     </g>
     
           </g>
+          
+            <text x="207.50" y="92.00" text-anchor="middle"
+                  font-size="12" font-weight="600" fill="rgba(100, 116, 139, 0.88)">
+              Nearshore Zone
+            </text>
+            
+            <text x="365.00" y="92.00" text-anchor="middle"
+                  font-size="12" font-weight="600" fill="rgba(100, 116, 139, 0.88)">
+              Middle Risk Zone
+            </text>
+            
+            <text x="627.50" y="92.00" text-anchor="middle"
+                  font-size="12" font-weight="600" fill="rgba(100, 116, 139, 0.88)">
+              Offshore Zone
+            </text>
+            
           <line x1="295.0" y1="70" x2="295.0" y2="770"
-                stroke="#8A5A2B" stroke-width="1.4" stroke-dasharray="8 10" opacity="0.52" />
+                stroke="rgba(148, 163, 184, 0.72)" stroke-width="1.1" stroke-dasharray="6 8" />
           <line x1="435.0" y1="70" x2="435.0" y2="770"
-                stroke="#6B7280" stroke-width="1.4" stroke-dasharray="8 10" opacity="0.52" />
+                stroke="rgba(148, 163, 184, 0.72)" stroke-width="1.1" stroke-dasharray="6 8" />
           
             <g>
               <line x1="120.0" y1="770" x2="120.0" y2="778"
@@ -318,5 +949,20 @@
         </svg>
       </div>
     </div>
+    <script>
+      function setViewMode(mode) {
+        document.body.setAttribute("data-view-mode", mode);
+        document.querySelectorAll(".view-toggle button").forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
+        });
+      }
+      function setLabelVisibility(isVisible) {
+        document.body.setAttribute("data-show-labels", String(isVisible));
+        document.querySelectorAll(".label-toggle button").forEach((button) => {
+          const isOnButton = button.dataset.toggle === "labels-on";
+          button.setAttribute("aria-pressed", String(isVisible === isOnButton));
+        });
+      }
+    </script>
   </body>
 </html>

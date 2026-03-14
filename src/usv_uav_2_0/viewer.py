@@ -5,7 +5,13 @@ from __future__ import annotations
 import tempfile
 import webbrowser
 from pathlib import Path
+from typing import Literal
 
+from usv_uav_2_0.agent_model import (
+    AgentState,
+    AgentTaskState,
+    default_coverage_radius,
+)
 from usv_uav_2_0.agent_overlay import VisualAgent, build_demo_agents, rotate_points
 from usv_uav_2_0.environment import (
     CircularFeature,
@@ -16,6 +22,7 @@ from usv_uav_2_0.environment import (
     build_default_sea_map,
     build_obstacle_layout,
 )
+from usv_uav_2_0.grid import apply_agent_coverage, build_grid_coverage_map, build_grid_map
 
 SVG_WIDTH = 940
 SVG_HEIGHT = 860
@@ -23,53 +30,49 @@ MAP_LEFT = 120
 MAP_TOP = 70
 MAP_WIDTH = 700
 MAP_HEIGHT = 700
+ViewMode = Literal["clean", "debug"]
 
 
 def build_map_html(
     sea_map: SeaMap,
     obstacle_layout: ObstacleLayout | None = None,
+    mode: ViewMode = "clean",
+    show_coverage_preview: bool | None = None,
+    show_footprints: bool | None = None,
 ) -> str:
     """Build a standalone HTML page that only shows the sea map."""
 
     layout = obstacle_layout or build_obstacle_layout(sea_map)
-    zone_styles = {
-        "Nearshore Zone": {
-            "fill": "#BFD7EA",
-            "accent": "#2F6B99",
-            "pattern": "nearshorePattern",
-            "note": "deployment and staging band",
-        },
-        "Middle Risk Zone": {
-            "fill": "#F6D6AE",
-            "accent": "#C56A1A",
-            "pattern": "riskPattern",
-            "note": "risk-transition band",
-        },
-        "Offshore Zone": {
-            "fill": "#C9E7CF",
-            "accent": "#2F8450",
-            "pattern": "offshorePattern",
-            "note": "main monitoring band",
-        },
-    }
     zone_rectangles: list[str] = []
+    zone_labels: list[str] = []
     tick_marks: list[str] = []
-    agent_markup = _build_agent_markup(sea_map, build_demo_agents())
+    demo_agents = build_demo_agents()
+    resolved_show_coverage = show_coverage_preview is not False
+    resolved_show_footprints = show_footprints is not False
+    coverage_markup = _build_coverage_markup(sea_map, layout, demo_agents) if resolved_show_coverage else ""
+    footprint_markup = _build_footprint_markup(sea_map, demo_agents) if resolved_show_footprints else ""
+    trajectory_markup = _build_trajectory_markup()
+    agent_markup = _build_agent_markup(sea_map, demo_agents)
     obstacle_markup = _build_obstacle_markup(sea_map, layout)
     monitoring_markup = _build_monitoring_markup(sea_map, layout)
 
     for zone in sea_map.zones:
-        style = zone_styles[zone.name]
         zone_left = MAP_LEFT + (zone.x_start / sea_map.width) * MAP_WIDTH
         zone_width = (zone.width / sea_map.width) * MAP_WIDTH
         zone_rectangles.append(
             f"""
             <g>
               <rect x="{zone_left}" y="{MAP_TOP}" width="{zone_width}" height="{MAP_HEIGHT}"
-                    fill="{style['fill']}" stroke="{style['accent']}" stroke-width="1.25" />
-              <rect x="{zone_left}" y="{MAP_TOP}" width="{zone_width}" height="{MAP_HEIGHT}"
-                    fill="url(#{style['pattern']})" opacity="0.22" />
+                    fill="transparent" stroke="rgba(148, 163, 184, 0.26)" stroke-width="1.0" />
             </g>
+            """
+        )
+        zone_labels.append(
+            f"""
+            <text x="{zone_left + zone_width / 2:.2f}" y="{MAP_TOP + 22:.2f}" text-anchor="middle"
+                  font-size="12" font-weight="600" fill="rgba(100, 116, 139, 0.88)">
+              {zone.name}
+            </text>
             """
         )
 
@@ -97,9 +100,7 @@ def build_map_html(
     <style>
       body {{
         margin: 0;
-        background:
-          radial-gradient(circle at top left, rgba(110, 168, 214, 0.12), transparent 28%),
-          linear-gradient(180deg, #eef5fb 0%, #f8fbfd 100%);
+        background: #ffffff;
         font-family: "Avenir Next", "Segoe UI", Helvetica, Arial, sans-serif;
         color: #0f172a;
       }}
@@ -109,12 +110,66 @@ def build_map_html(
         padding: 20px 18px 28px;
       }}
       .card {{
-        background: rgba(255, 255, 255, 0.72);
-        border: 1px solid rgba(148, 163, 184, 0.18);
-        border-radius: 28px;
-        box-shadow: 0 18px 48px rgba(15, 23, 42, 0.06);
+        background: #ffffff;
+        border: 1px solid rgba(148, 163, 184, 0.16);
+        border-radius: 16px;
+        box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
         overflow: hidden;
-        backdrop-filter: blur(12px);
+      }}
+      .toolbar {{
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 14px 16px 0;
+      }}
+      .toolbar-section {{
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+      }}
+      .toolbar-label {{
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        color: #64748b;
+        text-transform: uppercase;
+      }}
+      .toolbar-pill {{
+        display: inline-flex;
+        gap: 8px;
+        padding: 4px;
+        border: 1px solid rgba(148, 163, 184, 0.26);
+        border-radius: 999px;
+        background: rgba(248, 250, 252, 0.92);
+      }}
+      .toolbar-pill button {{
+        border: 0;
+        border-radius: 999px;
+        padding: 7px 12px;
+        background: transparent;
+        color: #475569;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        transition: background 0.2s ease, color 0.2s ease;
+      }}
+      body[data-view-mode="clean"] .toolbar-pill.view-toggle button[data-mode="clean"],
+      body[data-view-mode="debug"] .toolbar-pill.view-toggle button[data-mode="debug"] {{
+        background: #0f172a;
+        color: #f8fafc;
+      }}
+      body[data-show-labels="true"] .toolbar-pill.label-toggle button[data-toggle="labels-on"],
+      body[data-show-labels="false"] .toolbar-pill.label-toggle button[data-toggle="labels-off"] {{
+        background: #0f172a;
+        color: #f8fafc;
+      }}
+      body[data-view-mode="clean"] .debug-layer {{
+        display: none;
+      }}
+      body[data-show-labels="false"] .agent-label {{
+        display: none;
       }}
       svg {{
         display: block;
@@ -123,54 +178,65 @@ def build_map_html(
       }}
     </style>
   </head>
-  <body>
+  <body data-view-mode="{mode}" data-show-labels="true">
     <div class="page">
       <div class="card">
+        <div class="toolbar">
+          <div class="toolbar-section">
+            <div class="toolbar-label">Sea Map View</div>
+            <div class="toolbar-pill view-toggle" role="group" aria-label="Sea map mode switch">
+              <button type="button" data-mode="clean" aria-pressed="{str(mode == 'clean').lower()}" onclick="setViewMode('clean')">
+                Clean
+              </button>
+              <button type="button" data-mode="debug" aria-pressed="{str(mode == 'debug').lower()}" onclick="setViewMode('debug')">
+                Debug
+              </button>
+            </div>
+          </div>
+          <div class="toolbar-section">
+            <div class="toolbar-label">Agent Labels</div>
+            <div class="toolbar-pill label-toggle" role="group" aria-label="Agent label switch">
+              <button type="button" data-toggle="labels-on" aria-pressed="true" onclick="setLabelVisibility(true)">
+                On
+              </button>
+              <button type="button" data-toggle="labels-off" aria-pressed="false" onclick="setLabelVisibility(false)">
+                Off
+              </button>
+            </div>
+          </div>
+        </div>
         <svg viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" role="img" aria-label="Three-zone marine environment map">
           <defs>
-            <pattern id="nearshorePattern" width="24" height="24" patternUnits="userSpaceOnUse">
-              <path d="M0 18 Q6 10 12 18 T24 18" fill="none" stroke="#2F6B99" stroke-width="0.9" />
-            </pattern>
-            <pattern id="riskPattern" width="22" height="22" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-              <line x1="0" y1="0" x2="0" y2="22" stroke="#C56A1A" stroke-width="2.2" />
-            </pattern>
-            <pattern id="offshorePattern" width="28" height="28" patternUnits="userSpaceOnUse">
-              <circle cx="7" cy="7" r="1.8" fill="#2F8450" />
-              <circle cx="20" cy="16" r="1.8" fill="#2F8450" />
-            </pattern>
             <pattern id="gridPattern" width="50" height="50" patternUnits="userSpaceOnUse">
-              <path d="M50 0 L0 0 0 50" fill="none" stroke="rgba(71, 85, 105, 0.08)" stroke-width="1" />
+              <path d="M50 0 L0 0 0 50" fill="none" stroke="rgba(148, 163, 184, 0.10)" stroke-width="1" />
             </pattern>
             <pattern id="rockPattern" width="18" height="18" patternUnits="userSpaceOnUse">
               <circle cx="5" cy="5" r="1.6" fill="rgba(255,255,255,0.28)" />
               <circle cx="13" cy="10" r="1.4" fill="rgba(255,255,255,0.18)" />
             </pattern>
-            <linearGradient id="oceanGlow" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#F8FBFD" />
-              <stop offset="100%" stop-color="#E0EEF8" />
-            </linearGradient>
             <clipPath id="mapClip">
               <rect x="{MAP_LEFT}" y="{MAP_TOP}" width="{MAP_WIDTH}" height="{MAP_HEIGHT}" rx="26" ry="26" />
             </clipPath>
           </defs>
-          <rect x="0" y="0" width="{SVG_WIDTH}" height="{SVG_HEIGHT}" fill="url(#oceanGlow)" />
-          <circle cx="140" cy="120" r="110" fill="rgba(255,255,255,0.38)" />
-          <circle cx="810" cy="120" r="120" fill="rgba(255,255,255,0.24)" />
-          <circle cx="820" cy="760" r="130" fill="rgba(160, 196, 224, 0.10)" />
+          <rect x="0" y="0" width="{SVG_WIDTH}" height="{SVG_HEIGHT}" fill="#FFFFFF" />
           <rect x="{MAP_LEFT}" y="{MAP_TOP}" width="{MAP_WIDTH}" height="{MAP_HEIGHT}"
-                rx="26" ry="26" fill="#ECF5FB" stroke="#4B647D" stroke-width="1.6" />
+                rx="26" ry="26" fill="#FFFFFF" stroke="rgba(100, 116, 139, 0.42)" stroke-width="1.2" />
           <rect x="{MAP_LEFT}" y="{MAP_TOP}" width="{MAP_WIDTH}" height="{MAP_HEIGHT}"
                 rx="26" ry="26" fill="url(#gridPattern)" />
           <g clip-path="url(#mapClip)">
             {''.join(zone_rectangles)}
             {obstacle_markup}
             {monitoring_markup}
+            {coverage_markup}
+            {footprint_markup}
+            {trajectory_markup}
             {agent_markup}
           </g>
+          {''.join(zone_labels)}
           <line x1="{MAP_LEFT + (250 / sea_map.width) * MAP_WIDTH}" y1="{MAP_TOP}" x2="{MAP_LEFT + (250 / sea_map.width) * MAP_WIDTH}" y2="{MAP_TOP + MAP_HEIGHT}"
-                stroke="#8A5A2B" stroke-width="1.4" stroke-dasharray="8 10" opacity="0.52" />
+                stroke="rgba(148, 163, 184, 0.72)" stroke-width="1.1" stroke-dasharray="6 8" />
           <line x1="{MAP_LEFT + (450 / sea_map.width) * MAP_WIDTH}" y1="{MAP_TOP}" x2="{MAP_LEFT + (450 / sea_map.width) * MAP_WIDTH}" y2="{MAP_TOP + MAP_HEIGHT}"
-                stroke="#6B7280" stroke-width="1.4" stroke-dasharray="8 10" opacity="0.52" />
+                stroke="rgba(148, 163, 184, 0.72)" stroke-width="1.1" stroke-dasharray="6 8" />
           {''.join(tick_marks)}
           <line x1="{MAP_LEFT}" y1="{MAP_TOP}" x2="{MAP_LEFT - 8}" y2="{MAP_TOP}"
                 stroke="#64748B" stroke-width="1.2" />
@@ -200,6 +266,21 @@ def build_map_html(
         </svg>
       </div>
     </div>
+    <script>
+      function setViewMode(mode) {{
+        document.body.setAttribute("data-view-mode", mode);
+        document.querySelectorAll(".view-toggle button").forEach((button) => {{
+          button.setAttribute("aria-pressed", String(button.dataset.mode === mode));
+        }});
+      }}
+      function setLabelVisibility(isVisible) {{
+        document.body.setAttribute("data-show-labels", String(isVisible));
+        document.querySelectorAll(".label-toggle button").forEach((button) => {{
+          const isOnButton = button.dataset.toggle === "labels-on";
+          button.setAttribute("aria-pressed", String(isVisible === isOnButton));
+        }});
+      }}
+    </script>
   </body>
 </html>
 """
@@ -209,12 +290,21 @@ def write_map_html(
     output_path: Path,
     sea_map: SeaMap | None = None,
     seed: int | None = None,
+    mode: ViewMode = "clean",
+    show_coverage_preview: bool | None = None,
+    show_footprints: bool | None = None,
 ) -> Path:
     """Write the sea map HTML page to disk."""
 
     target_map = sea_map or build_default_sea_map()
     output_path.write_text(
-        build_map_html(target_map, build_obstacle_layout(target_map, seed=seed)),
+        build_map_html(
+            target_map,
+            build_obstacle_layout(target_map, seed=seed),
+            mode=mode,
+            show_coverage_preview=show_coverage_preview,
+            show_footprints=show_footprints,
+        ),
         encoding="utf-8",
     )
     return output_path
@@ -224,13 +314,23 @@ def run_map_viewer(
     output_path: Path | None = None,
     open_browser: bool = True,
     seed: int | None = None,
+    mode: ViewMode = "clean",
+    show_coverage_preview: bool | None = None,
+    show_footprints: bool | None = None,
 ) -> Path:
     """Create the sea map page and optionally open it in the browser."""
 
     if output_path is None:
         output_path = Path(tempfile.gettempdir()) / "usv_uav_sea_map.html"
 
-    html_path = write_map_html(output_path, build_default_sea_map(), seed=seed)
+    html_path = write_map_html(
+        output_path,
+        build_default_sea_map(),
+        seed=seed,
+        mode=mode,
+        show_coverage_preview=show_coverage_preview,
+        show_footprints=show_footprints,
+    )
     if open_browser:
         webbrowser.open(html_path.resolve().as_uri())
     return html_path
@@ -250,10 +350,55 @@ def _build_agent_markup(
     return "".join(agent_svgs)
 
 
+def _build_footprint_markup(
+    sea_map: SeaMap,
+    agents: tuple[VisualAgent, ...],
+) -> str:
+    footprint_svgs = "".join(_build_footprint_svg(sea_map, agent) for agent in agents)
+    return f'<g class="debug-layer" aria-label="Static Footprint Preview">{footprint_svgs}</g>'
+
+
+def _build_trajectory_markup() -> str:
+    return '<g aria-label="Reserved Trajectory Layer"></g>'
+
+
 def _build_obstacle_markup(sea_map: SeaMap, layout: ObstacleLayout) -> str:
     polygon_svgs = "".join(_build_polygon_obstacle_svg(sea_map, obstacle) for obstacle in layout.risk_zone_obstacles)
     feature_svgs = "".join(_build_offshore_feature_svg(sea_map, feature) for feature in layout.offshore_features)
     return polygon_svgs + feature_svgs
+
+
+def _build_coverage_markup(
+    sea_map: SeaMap,
+    layout: ObstacleLayout,
+    agents: tuple[VisualAgent, ...],
+) -> str:
+    grid_map = build_grid_map(sea_map, layout)
+    coverage_map = build_grid_coverage_map(grid_map)
+
+    for step, agent in enumerate(_build_demo_agent_states(agents), start=1):
+        apply_agent_coverage(coverage_map, agent, step=step)
+
+    cell_width = (grid_map.cell_size / sea_map.width) * MAP_WIDTH
+    cell_height = (grid_map.cell_size / sea_map.height) * MAP_HEIGHT
+    covered_cells: list[str] = []
+
+    for row_index, row in enumerate(coverage_map.states):
+        for col_index, state in enumerate(row):
+            if state.coverage_count == 0:
+                continue
+            cell = grid_map.cell_at(row_index, col_index)
+            svg_x, svg_y = _map_point_to_svg(sea_map, cell.x_min, cell.y_max)
+            fill = _coverage_fill_for_state(state.covered_by_usv, state.covered_by_uav)
+            covered_cells.append(
+                f"""
+                <rect x="{svg_x:.2f}" y="{svg_y:.2f}" width="{cell_width:.2f}" height="{cell_height:.2f}"
+                      fill="{fill}" stroke="rgba(255,255,255,0.28)" stroke-width="0.5"
+                      aria-label="Coverage Cell {row_index}-{col_index}" />
+                """
+            )
+
+    return f'<g class="debug-layer" aria-label="Static Coverage Preview">{"".join(covered_cells)}</g>'
 
 
 def _build_monitoring_markup(sea_map: SeaMap, layout: ObstacleLayout) -> str:
@@ -309,10 +454,10 @@ def _build_monitoring_target_svg(sea_map: SeaMap, target: MonitoringTarget) -> s
     if target.target_type == "baseline_point":
         return f"""
         <g aria-label="{target.name}">
-          <circle cx="{svg_x:.2f}" cy="{svg_y:.2f}" r="10.0" fill="rgba(37, 99, 235, 0.14)" />
-          <circle cx="{svg_x:.2f}" cy="{svg_y:.2f}" r="5.2" fill="#2563EB" stroke="#EFF6FF" stroke-width="1.8" />
+          <circle cx="{svg_x:.2f}" cy="{svg_y:.2f}" r="10.0" fill="rgba(71, 85, 105, 0.10)" />
+          <circle cx="{svg_x:.2f}" cy="{svg_y:.2f}" r="5.2" fill="#475569" stroke="#F8FAFC" stroke-width="1.8" />
           <path d="M {svg_x - 8:.2f} {svg_y:.2f} L {svg_x + 8:.2f} {svg_y:.2f} M {svg_x:.2f} {svg_y - 8:.2f} L {svg_x:.2f} {svg_y + 8:.2f}"
-                stroke="#DBEAFE" stroke-width="1.8" stroke-linecap="round" />
+                stroke="#CBD5E1" stroke-width="1.8" stroke-linecap="round" />
         </g>
         """
 
@@ -336,6 +481,53 @@ def _map_point_to_svg(sea_map: SeaMap, x: float, y: float) -> tuple[float, float
     svg_x = MAP_LEFT + (x / sea_map.width) * MAP_WIDTH
     svg_y = MAP_TOP + MAP_HEIGHT - (y / sea_map.height) * MAP_HEIGHT
     return svg_x, svg_y
+
+
+def _build_footprint_svg(sea_map: SeaMap, agent: VisualAgent) -> str:
+    svg_x, svg_y = _map_point_to_svg(sea_map, agent.x, agent.y)
+    radius_m = default_coverage_radius(agent.kind)
+    svg_radius = (radius_m / sea_map.width) * MAP_WIDTH
+    if agent.kind == "USV":
+        stroke = "rgba(37, 99, 235, 0.72)"
+        fill = "rgba(37, 99, 235, 0.08)"
+    else:
+        stroke = "rgba(13, 148, 136, 0.72)"
+        fill = "rgba(13, 148, 136, 0.08)"
+    return f"""
+    <g aria-label="{agent.agent_id} Footprint">
+      <circle cx="{svg_x:.2f}" cy="{svg_y:.2f}" r="{svg_radius:.2f}" fill="{fill}" stroke="{stroke}"
+              stroke-width="1.2" stroke-dasharray="6 6" />
+    </g>
+    """
+
+
+def _build_demo_agent_states(agents: tuple[VisualAgent, ...]) -> tuple[AgentState, ...]:
+    preview_agents: list[AgentState] = []
+    for agent in agents:
+        coverage_radius = default_coverage_radius(agent.kind)
+        preview_agents.append(
+            AgentState(
+                agent_id=agent.agent_id,
+                kind=agent.kind,
+                x=agent.x,
+                y=agent.y,
+                heading_deg=agent.heading_deg,
+                speed_mps=0.0,
+                max_speed_mps=0.0,
+                detection_radius=coverage_radius,
+                coverage_radius=coverage_radius,
+                task=AgentTaskState(),
+            )
+        )
+    return tuple(preview_agents)
+
+
+def _coverage_fill_for_state(covered_by_usv: int, covered_by_uav: int) -> str:
+    if covered_by_usv > 0 and covered_by_uav > 0:
+        return "rgba(234, 179, 8, 0.30)"
+    if covered_by_uav > 0:
+        return "rgba(13, 148, 136, 0.24)"
+    return "rgba(37, 99, 235, 0.22)"
 
 
 def _build_usv_svg(agent: VisualAgent, center_x: float, center_y: float) -> str:
@@ -371,10 +563,12 @@ def _build_usv_svg(agent: VisualAgent, center_x: float, center_y: float) -> str:
       <polygon points="{wake}" fill="rgba(125, 211, 252, 0.45)" />
       <polygon points="{hull}" fill="#0F172A" stroke="#E2E8F0" stroke-width="1.8" />
       <circle cx="{center_x:.2f}" cy="{center_y:.2f}" r="2.2" fill="#7DD3FC" />
-      <rect x="{label_x - 22:.2f}" y="{label_y - 8:.2f}" width="44" height="15" rx="7.5" ry="7.5"
-            fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
-      <text x="{label_x:.2f}" y="{label_y + 3:.2f}" text-anchor="middle"
-            font-size="8.8" font-weight="700" fill="#0F172A">{agent.agent_id}</text>
+      <g class="agent-label">
+        <rect x="{label_x - 22:.2f}" y="{label_y - 8:.2f}" width="44" height="15" rx="7.5" ry="7.5"
+              fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
+        <text x="{label_x:.2f}" y="{label_y + 3:.2f}" text-anchor="middle"
+              font-size="8.8" font-weight="700" fill="#0F172A">{agent.agent_id}</text>
+      </g>
     </g>
     """
 
@@ -415,7 +609,7 @@ def _build_uav_svg(agent: VisualAgent, center_x: float, center_y: float) -> str:
     frame = " ".join(f"{x:.2f},{y:.2f}" for x, y in frame_points)
     nose = " ".join(f"{x:.2f},{y:.2f}" for x, y in nose_points)
     rotor_circles = "".join(
-        f'<circle cx="{x:.2f}" cy="{y:.2f}" r="3.4" fill="#FFF1F2" stroke="#9F1239" stroke-width="1.2" />'
+        f'<circle cx="{x:.2f}" cy="{y:.2f}" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" />'
         for x, y in rotor_offsets
     )
     label_x = center_x
@@ -423,12 +617,14 @@ def _build_uav_svg(agent: VisualAgent, center_x: float, center_y: float) -> str:
     return f"""
     <g aria-label="{agent.agent_id}">
       {rotor_circles}
-      <polygon points="{frame}" fill="#9F1239" stroke="#FFF1F2" stroke-width="1.4" />
-      <polygon points="{nose}" fill="#FCA5A5" />
-      <circle cx="{center_x:.2f}" cy="{center_y:.2f}" r="2.2" fill="#FFF7ED" />
-      <rect x="{label_x - 22:.2f}" y="{label_y - 8:.2f}" width="44" height="15" rx="7.5" ry="7.5"
-            fill="rgba(255,255,255,0.88)" stroke="rgba(15,23,42,0.10)" />
-      <text x="{label_x:.2f}" y="{label_y + 3:.2f}" text-anchor="middle"
-            font-size="8.8" font-weight="700" fill="#7F1D1D">{agent.agent_id}</text>
+      <polygon points="{frame}" fill="#0F766E" stroke="#F0FDFA" stroke-width="1.4" />
+      <polygon points="{nose}" fill="#99F6E4" />
+      <circle cx="{center_x:.2f}" cy="{center_y:.2f}" r="2.2" fill="#F0FDFA" />
+      <g class="agent-label">
+        <rect x="{label_x - 22:.2f}" y="{label_y - 8:.2f}" width="44" height="15" rx="7.5" ry="7.5"
+              fill="rgba(255,255,255,0.88)" stroke="rgba(15,23,42,0.10)" />
+        <text x="{label_x:.2f}" y="{label_y + 3:.2f}" text-anchor="middle"
+              font-size="8.8" font-weight="700" fill="#134E4A">{agent.agent_id}</text>
+      </g>
     </g>
     """

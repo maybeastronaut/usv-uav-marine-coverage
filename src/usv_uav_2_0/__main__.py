@@ -25,8 +25,19 @@ def main() -> None:
         type=int,
         help="Optional random seed for reproducible obstacle generation.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=("clean", "debug"),
+        default="clean",
+        help="Initial sea map view mode inside the generated HTML. Defaults to clean.",
+    )
     args = parser.parse_args()
-    run_map_viewer(output_path=args.output, open_browser=not args.no_open, seed=args.seed)
+    run_map_viewer(
+        output_path=args.output,
+        open_browser=not args.no_open,
+        seed=args.seed,
+        mode=args.mode,
+    )
 
 
 if __name__ == "__main__":
