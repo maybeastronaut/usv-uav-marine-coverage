@@ -1,1 +1,60 @@
-"""Placeholder module for shared task data structures."""
+"""Shared task data structures for the tasking layer."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+
+class TaskType(StrEnum):
+    """Supported task categories for the current simulation stage."""
+
+    BASELINE_SERVICE = "baseline_service"
+    HOTSPOT_CONFIRMATION = "hotspot_confirmation"
+
+
+class TaskSource(StrEnum):
+    """Origin of one task record."""
+
+    UAV_SUSPECTED = "uav_suspected"
+    USV_ANOMALY = "usv_anomaly"
+    SYSTEM_BASELINE_TIMEOUT = "system_baseline_timeout"
+
+
+class TaskStatus(StrEnum):
+    """Lifecycle state of one task record."""
+
+    PENDING = "pending"
+    ASSIGNED = "assigned"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    REQUEUED = "requeued"
+
+
+@dataclass(frozen=True)
+class TaskRecord:
+    """A normalized task object shared across tasking, planning, and execution."""
+
+    task_id: str
+    task_type: TaskType
+    source: TaskSource
+    status: TaskStatus
+    priority: int
+    target_x: float
+    target_y: float
+    target_row: int | None
+    target_col: int | None
+    created_step: int
+    assigned_agent_id: str | None = None
+    completed_step: int | None = None
+
+
+@dataclass(frozen=True)
+class TaskAssignment:
+    """One agent-task assignment decision."""
+
+    task_id: str
+    agent_id: str
+    selection_reason: str
+    selection_score: float

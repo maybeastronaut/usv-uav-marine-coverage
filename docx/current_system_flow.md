@@ -30,6 +30,8 @@
 - `25m` 规则矩形栅格网络
 - 基于 `footprint` 的栅格覆盖映射
 - 基于栅格的信息地图层
+- 第一版任务层、路径层与执行层接口
+- hotspot-only 最小任务确认闭环
 - 覆盖映射静态可视化测试
 - 正式圆形 `footprint` 展示
 - HTML 海图输出
@@ -42,9 +44,9 @@
 
 截至目前，项目还没有完整实现的是：
 
-- 接入主仿真循环的智能体真实运动
-- 路径规划
-- 协同决策与任务分配
+- `baseline_service` 接入主仿真循环
+- 基于障碍与风险区的正式路径规划
+- 更复杂的协同决策与任务分配
 
 ## 2. 当前项目结构是什么意思
 
@@ -226,7 +228,7 @@
 - 假警报当前仅来自 UAV 误报
 - 热点一旦生成默认持续存在，当前尚未实现自动消失或任务完成后的清除机制
 
-### 2.8 回放式仿真预览
+### 2.8 回放式仿真预览与最小闭环
 
 当前系统已经能输出一份 HTML 回放式仿真预览。
 
@@ -249,15 +251,24 @@
 - 同步输出的 `events.jsonl` 逐事件日志
 - 同步输出的 `summary.json` 最终汇总日志
 - 日志中已包含当前启发式任务指派依据、路径摘要、执行偏差与热点处理链骨架
+- 基于 `tasking / planning / execution` 三层接口的第一版热点确认闭环
+- `PATROL -> GO_TO_TASK -> ON_TASK -> RETURN_TO_PATROL` 的基础执行状态机
+- hotspot-only 任务生成、分配、直线路径执行与任务关闭
 
 当前模块组织方式：
 
 - `simulation/` 子包统一承载当前回放仿真相关模块
-- `simulation/simulation_core.py` 负责回放仿真的核心推进
-- `simulation/simulation_policy.py` 负责当前启发式巡航与疑似热点响应
+- `simulation/simulation_core.py` 负责回放仿真的核心推进，并编排任务层、路径层与执行层
+- `simulation/simulation_policy.py` 负责当前 demo 智能体与固定巡航路线辅助数据
 - `simulation/simulation_logging.py` 负责结构化日志输出
 - `simulation/simulation_replay_view.py` 负责 HTML 回放页面生成
 - `simulation/__init__.py` 仅作为对外稳定门面，统一暴露公开接口
+
+补充说明：
+
+- 当前正式接入主循环的是 `hotspot_confirmation`
+- `baseline_service` 仍只保留类型与接口，尚未进入当前闭环
+- 当前 `USV` 任务路径仍使用最小直线路径，不代表后续正式避障规划
 
 补充说明：
 

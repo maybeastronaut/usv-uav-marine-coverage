@@ -10,8 +10,10 @@ from typing import TYPE_CHECKING
 
 from usv_uav_marine_coverage.agent_model import AgentState, TaskMode, shortest_heading_delta_deg
 from usv_uav_marine_coverage.environment import ObstacleLayout, SeaMap
+from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
 from usv_uav_marine_coverage.grid import GridCoverageMap
 from usv_uav_marine_coverage.information_map import HotspotKnowledgeState, InformationMap
+from usv_uav_marine_coverage.tasking.task_types import TaskRecord
 
 if TYPE_CHECKING:
     from .simulation_core import SimulationFrame, SimulationReplay
@@ -34,7 +36,7 @@ def derive_log_paths(output_path: Path) -> tuple[Path, Path]:
     return (events_path, summary_path)
 
 
-def write_events_jsonl(replay: "SimulationReplay", output_path: Path) -> None:
+def write_events_jsonl(replay: SimulationReplay, output_path: Path) -> None:
     """Write machine-readable event records for one replay run."""
 
     records: list[dict[str, object]] = [
@@ -69,7 +71,7 @@ def write_events_jsonl(replay: "SimulationReplay", output_path: Path) -> None:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def write_summary_json(replay: "SimulationReplay", output_path: Path) -> None:
+def write_summary_json(replay: SimulationReplay, output_path: Path) -> None:
     """Write the final summary payload for one replay run."""
 
     output_path.write_text(
@@ -78,7 +80,7 @@ def write_summary_json(replay: "SimulationReplay", output_path: Path) -> None:
     )
 
 
-def build_summary_payload(replay: "SimulationReplay") -> dict[str, object]:
+def build_summary_payload(replay: SimulationReplay) -> dict[str, object]:
     """Build the final summary payload for one replay run."""
 
     final_frame = replay.frames[-1]
@@ -206,7 +208,7 @@ def serialize_agent_step(agent: AgentState) -> dict[str, object]:
 
 
 def serialize_index_mapping(
-    mapping: dict[str, tuple[tuple[int, int], ...]]
+    mapping: dict[str, tuple[tuple[int, int], ...]],
 ) -> dict[str, list[list[int]]]:
     """Serialize an agent -> grid indices mapping for logs."""
 
@@ -233,6 +235,8 @@ def build_step_log(
     task_decisions: tuple[dict[str, object], ...],
     prior_agents: tuple[AgentState, ...],
     planned_agents: tuple[AgentState, ...],
+    task_records: tuple[TaskRecord, ...],
+    execution_states: dict[str, AgentExecutionState],
 ) -> dict[str, object]:
     """Build one structured per-step simulation log record."""
 
@@ -257,25 +261,21 @@ def build_step_log(
         elif state.known_hotspot_state == HotspotKnowledgeState.FALSE_ALARM:
             false_alarm_cells += 1
 
-    task_assignments = []
-    for agent in agents:
-        task_assignments.append(
-            {
-                "agent_id": agent.agent_id,
-                "mode": agent.task.mode.value,
-                "target_x": None if agent.task.target_x is None else round(agent.task.target_x, 3),
-                "target_y": None if agent.task.target_y is None else round(agent.task.target_y, 3),
-            }
-        )
+    task_assignments = build_task_assignment_logs(
+        agents,
+        task_records=task_records,
+        execution_states=execution_states,
+    )
 
     observed_union = sorted({index for indices in observed_by_agent.values() for index in indices})
     path_plans = build_path_plan_logs(
         info_map.grid_map,
         prior_agents=prior_agents,
         planned_agents=planned_agents,
+        execution_states=execution_states,
         step=step,
     )
-    execution_updates = build_execution_updates(agents)
+    execution_updates = build_execution_updates(agents, execution_states=execution_states)
     hotspot_chain = build_hotspot_chain_updates(
         info_map,
         detected_by_agent=detected_by_agent,
@@ -303,6 +303,7 @@ def build_step_log(
         "task_layer": {
             "task_assignments": task_assignments,
             "task_decisions": list(task_decisions),
+            "tasks": [serialize_task_record(task) for task in task_records],
             "task_rejections": [],
             "newly_suspected_by_agent": serialize_index_mapping(detected_by_agent),
             "confirmed_by_agent": serialize_index_mapping(confirmations_by_agent),
@@ -366,6 +367,7 @@ def build_path_plan_logs(
     *,
     prior_agents: tuple[AgentState, ...],
     planned_agents: tuple[AgentState, ...],
+    execution_states: dict[str, AgentExecutionState],
     step: int,
 ) -> list[dict[str, object]]:
     """Build path-plan summary records for the current step."""
@@ -374,8 +376,12 @@ def build_path_plan_logs(
     plan_logs: list[dict[str, object]] = []
     for agent in planned_agents:
         prior_agent = prior_by_id.get(agent.agent_id, agent)
+        execution_state = execution_states.get(agent.agent_id)
         replan_reason = "continue_current_target"
-        if prior_agent.task.target_x != agent.task.target_x or prior_agent.task.target_y != agent.task.target_y:
+        if (
+            prior_agent.task.target_x != agent.task.target_x
+            or prior_agent.task.target_y != agent.task.target_y
+        ):
             if agent.task.mode == TaskMode.CONFIRM:
                 replan_reason = "suspected_hotspot_response"
             elif agent.task.has_target:
@@ -385,36 +391,62 @@ def build_path_plan_logs(
         start_cell = grid_map.locate_cell(agent.x, agent.y)
         goal_cell = None
         estimated_cost = None
-        if agent.task.has_target and agent.task.target_x is not None and agent.task.target_y is not None:
-            goal = grid_map.locate_cell(agent.task.target_x, agent.task.target_y)
+        planner_name = None
+        plan_status = None
+        task_id = None
+        if execution_state is not None and execution_state.active_plan is not None:
+            goal = grid_map.locate_cell(
+                execution_state.active_plan.goal_x,
+                execution_state.active_plan.goal_y,
+            )
             goal_cell = [goal.row, goal.col]
-            estimated_cost = round(hypot(agent.task.target_x - agent.x, agent.task.target_y - agent.y), 3)
+            estimated_cost = execution_state.active_plan.estimated_cost
+            planner_name = execution_state.active_plan.planner_name
+            plan_status = execution_state.active_plan.status.value
+            task_id = execution_state.active_plan.task_id
         plan_logs.append(
             {
                 "plan_id": f"step-{step}-{agent.agent_id}",
                 "agent_id": agent.agent_id,
+                "task_id": task_id,
+                "planner_name": planner_name,
                 "start_cell": [start_cell.row, start_cell.col],
                 "goal_cell": goal_cell,
                 "path_mode": agent.task.mode.value,
-                "planning_success": agent.task.has_target,
+                "planning_success": execution_state is not None
+                and execution_state.active_plan is not None,
                 "estimated_cost": estimated_cost,
                 "path_length_estimate": estimated_cost,
                 "replan_reason": replan_reason,
+                "plan_status": plan_status,
             }
         )
     return plan_logs
 
 
-def build_execution_updates(agents: tuple[AgentState, ...]) -> dict[str, object]:
+def build_execution_updates(
+    agents: tuple[AgentState, ...],
+    *,
+    execution_states: dict[str, AgentExecutionState],
+) -> dict[str, object]:
     """Build execution-deviation snapshots for the current step."""
 
     execution_updates = []
     for agent in agents:
+        execution_state = execution_states.get(agent.agent_id)
         tracking_error = None
         heading_error = None
-        if agent.task.has_target and agent.task.target_x is not None and agent.task.target_y is not None:
-            tracking_error = round(hypot(agent.task.target_x - agent.x, agent.task.target_y - agent.y), 3)
-            target_heading_deg = degrees(atan2(agent.task.target_y - agent.y, agent.task.target_x - agent.x))
+        if (
+            agent.task.has_target
+            and agent.task.target_x is not None
+            and agent.task.target_y is not None
+        ):
+            tracking_error = round(
+                hypot(agent.task.target_x - agent.x, agent.task.target_y - agent.y), 3
+            )
+            target_heading_deg = degrees(
+                atan2(agent.task.target_y - agent.y, agent.task.target_x - agent.x)
+            )
             heading_error = round(
                 abs(shortest_heading_delta_deg(agent.heading_deg, target_heading_deg)),
                 3,
@@ -422,7 +454,13 @@ def build_execution_updates(agents: tuple[AgentState, ...]) -> dict[str, object]
         execution_updates.append(
             {
                 "agent_id": agent.agent_id,
-                "reference_target": None if not agent.task.has_target else {
+                "execution_stage": None if execution_state is None else execution_state.stage.value,
+                "active_task_id": None
+                if execution_state is None
+                else execution_state.active_task_id,
+                "reference_target": None
+                if not agent.task.has_target
+                else {
                     "x": round(agent.task.target_x, 3),
                     "y": round(agent.task.target_y, 3),
                 },
@@ -431,11 +469,61 @@ def build_execution_updates(agents: tuple[AgentState, ...]) -> dict[str, object]
                     "y": round(agent.y, 3),
                 },
                 "tracking_error": tracking_error,
-                "speed_error": None if not agent.task.has_target else round(abs(agent.cruise_speed_mps - agent.speed_mps), 3),
+                "speed_error": None
+                if not agent.task.has_target
+                else round(abs(agent.cruise_speed_mps - agent.speed_mps), 3),
                 "heading_error": heading_error,
             }
         )
     return {"tracking_updates": execution_updates}
+
+
+def build_task_assignment_logs(
+    agents: tuple[AgentState, ...],
+    *,
+    task_records: tuple[TaskRecord, ...],
+    execution_states: dict[str, AgentExecutionState],
+) -> list[dict[str, object]]:
+    """Build agent-centric task assignment snapshots for logs."""
+
+    task_by_agent = {
+        task.assigned_agent_id: task for task in task_records if task.assigned_agent_id is not None
+    }
+    assignment_logs = []
+    for agent in agents:
+        execution_state = execution_states.get(agent.agent_id)
+        assigned_task = task_by_agent.get(agent.agent_id)
+        assignment_logs.append(
+            {
+                "agent_id": agent.agent_id,
+                "mode": agent.task.mode.value,
+                "execution_stage": None if execution_state is None else execution_state.stage.value,
+                "active_task_id": None if assigned_task is None else assigned_task.task_id,
+                "task_status": None if assigned_task is None else assigned_task.status.value,
+                "target_x": None if agent.task.target_x is None else round(agent.task.target_x, 3),
+                "target_y": None if agent.task.target_y is None else round(agent.task.target_y, 3),
+            }
+        )
+    return assignment_logs
+
+
+def serialize_task_record(task: TaskRecord) -> dict[str, object]:
+    """Serialize one task record for logs."""
+
+    return {
+        "task_id": task.task_id,
+        "task_type": task.task_type.value,
+        "source": task.source.value,
+        "status": task.status.value,
+        "priority": task.priority,
+        "target_x": round(task.target_x, 3),
+        "target_y": round(task.target_y, 3),
+        "target_row": task.target_row,
+        "target_col": task.target_col,
+        "created_step": task.created_step,
+        "assigned_agent_id": task.assigned_agent_id,
+        "completed_step": task.completed_step,
+    }
 
 
 def build_hotspot_chain_updates(
@@ -493,13 +581,13 @@ def build_hotspot_chain_updates(
     return updates
 
 
-def build_path_lengths(frame: "SimulationFrame") -> dict[str, float]:
+def build_path_lengths(frame: SimulationFrame) -> dict[str, float]:
     """Compute the cumulative path length for each agent trajectory."""
 
     path_lengths: dict[str, float] = {}
     for agent_id, points in frame.trajectories:
         length = 0.0
-        for start, end in zip(points, points[1:]):
+        for start, end in zip(points, points[1:], strict=False):
             length += ((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2) ** 0.5
         path_lengths[agent_id] = round(length, 3)
     return path_lengths

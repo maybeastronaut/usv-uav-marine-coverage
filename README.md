@@ -84,27 +84,27 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/agent_model.py`: `USV/UAV` 的第一阶段闭环数学模型，包含平台参数、任务到参考目标转换、轻量控制指令、受约束航向/速度更新和探测/覆盖半径判定，也是当前覆盖方法研究默认采用的动力学基线。
 - `src/usv_uav_marine_coverage/agent_overlay.py`: 海图上的静态智能体外观示意数据与几何辅助函数。
 - `src/usv_uav_marine_coverage/execution/__init__.py`: 执行层子包入口，用于承载状态机与路径执行相关模块。
-- `src/usv_uav_marine_coverage/execution/basic_state_machine.py`: 基础执行状态机占位模块，后续用于承载巡航、前往任务、执行任务与返回巡航等状态切换逻辑。
-- `src/usv_uav_marine_coverage/execution/execution_types.py`: 执行层共享数据结构占位模块，后续用于统一执行状态、执行阶段与执行结果表达。
-- `src/usv_uav_marine_coverage/execution/path_follower.py`: 路径执行层占位模块，后续用于承载航点跟踪与路径点切换逻辑。
+- `src/usv_uav_marine_coverage/execution/basic_state_machine.py`: 基础执行状态机模块，负责 `PATROL / GO_TO_TASK / ON_TASK / RETURN_TO_PATROL` 的第一版状态切换。
+- `src/usv_uav_marine_coverage/execution/execution_types.py`: 执行层共享数据结构模块，统一执行状态、执行阶段与执行结果表达。
+- `src/usv_uav_marine_coverage/execution/path_follower.py`: 路径执行层模块，负责将路径航点映射到当前运动目标并逐步推进航点跟踪。
 - `src/usv_uav_marine_coverage/environment.py`: 海域环境、三区带结构、障碍布局、基础监测点、任务热点与伪随机环境生成逻辑。
 - `src/usv_uav_marine_coverage/grid.py`: 将连续海域环境映射为 `25m` 规则矩形栅格网络，并提供基于智能体 `footprint` 的动态覆盖状态更新。
 - `src/usv_uav_marine_coverage/information_map.py`: 基于栅格的动态信息地图层，负责信息时效、真实热点与认知热点分离、UAV 疑似标记与 USV 确认流程。
 - `src/usv_uav_marine_coverage/planning/__init__.py`: 路径规划层子包入口，用于承载巡航规划与任务路径规划相关模块。
-- `src/usv_uav_marine_coverage/planning/astar_path_planner.py`: `A*` 路径规划占位模块，后续用于承载 `USV` 面向障碍与风险区的离散路径规划算法。
-- `src/usv_uav_marine_coverage/planning/direct_line_planner.py`: 直达式路径规划占位模块，后续用于承载 `UAV` 或简化场景下的直接目标连接策略。
-- `src/usv_uav_marine_coverage/planning/fixed_patrol_planner.py`: 固定巡航规划占位模块，后续用于承载巡航航线或巡航航点生成逻辑。
-- `src/usv_uav_marine_coverage/planning/path_types.py`: 路径规划层共享数据结构占位模块，后续用于统一路径、航点与规划结果表达。
+- `src/usv_uav_marine_coverage/planning/astar_path_planner.py`: `A*` 路径规划预留模块，后续用于承载 `USV` 面向障碍与风险区的正式离散路径规划算法。
+- `src/usv_uav_marine_coverage/planning/direct_line_planner.py`: 直达式路径规划模块，负责当前最小闭环中的任务前往与回巡航直线路径生成。
+- `src/usv_uav_marine_coverage/planning/fixed_patrol_planner.py`: 固定巡航规划模块，负责将当前 demo 巡航航点生成最小 patrol path。
+- `src/usv_uav_marine_coverage/planning/path_types.py`: 路径规划层共享数据结构模块，统一路径、航点与规划结果表达。
 - `src/usv_uav_marine_coverage/simulation/__init__.py`: 仿真回放子包的公开门面，保持现有对外接口稳定，并协调核心仿真、日志输出和回放页面生成。
 - `src/usv_uav_marine_coverage/simulation/simulation_core.py`: 回放式仿真的核心推进流程，负责调用任务层、规划层与执行层并推进覆盖映射、信息地图联动和回放帧构建。
 - `src/usv_uav_marine_coverage/simulation/simulation_logging.py`: 回放式仿真的结构化日志层，负责 `events.jsonl`、`summary.json`、任务决策摘要、路径摘要、执行偏差和热点处理链记录。
-- `src/usv_uav_marine_coverage/simulation/simulation_policy.py`: 当前回放预览使用的临时启发式策略层，负责固定巡航航点、疑似热点响应和任务决策摘要生成；后续应逐步被独立任务层与规划层替代。
+- `src/usv_uav_marine_coverage/simulation/simulation_policy.py`: 当前回放预览的兼容辅助层，负责 demo 智能体与固定巡航路线数据构建。
 - `src/usv_uav_marine_coverage/simulation/simulation_replay_view.py`: 回放 HTML/SVG 视图层，负责页面结构、图层渲染、时间步控件和前端交互脚本。
 - `src/usv_uav_marine_coverage/tasking/__init__.py`: 任务层子包入口，用于承载任务类型、任务生成与任务分配相关模块。
-- `src/usv_uav_marine_coverage/tasking/baseline_task_generator.py`: 基础监测任务生成占位模块，后续用于承载近海区周期性任务生成逻辑。
-- `src/usv_uav_marine_coverage/tasking/hotspot_task_generator.py`: 热点任务生成占位模块，后续用于承载动态热点触发任务生成逻辑。
-- `src/usv_uav_marine_coverage/tasking/nearest_agent_allocator.py`: 最近体分配占位模块，后续用于承载基于距离或代价的任务指派逻辑。
-- `src/usv_uav_marine_coverage/tasking/task_types.py`: 任务数据结构占位模块，后续用于承载统一任务类型与任务状态表达。
+- `src/usv_uav_marine_coverage/tasking/baseline_task_generator.py`: 基础监测任务生成预留模块，当前仅保留接口，尚未接入主循环。
+- `src/usv_uav_marine_coverage/tasking/hotspot_task_generator.py`: 热点任务生成模块，负责从当前 `suspected` 热点状态同步生成 `hotspot_confirmation` 任务。
+- `src/usv_uav_marine_coverage/tasking/nearest_agent_allocator.py`: 最近体分配模块，负责为 `hotspot_confirmation` 任务选择最近可用 `USV`。
+- `src/usv_uav_marine_coverage/tasking/task_types.py`: 任务数据结构模块，统一任务类型、来源、生命周期与分配结果表达。
 - `src/usv_uav_marine_coverage/viewer.py`: 海图 HTML/SVG 渲染逻辑，负责同一 HTML 内 `clean/debug` 切换视图、标签开关、预留轨迹层下的底图、障碍、监测点、热点、静态覆盖预览与静态智能体外观输出。
 - `tests/test_agent_model.py`: 验证第一阶段闭环更新下的 `UAV/USV` 机动差异、到达减速逻辑以及探测/覆盖半径判定逻辑。
 - `tests/test_environment.py`: 验证默认海域尺寸、三区带范围、障碍环境生成约束以及监测点/热点生成结果。

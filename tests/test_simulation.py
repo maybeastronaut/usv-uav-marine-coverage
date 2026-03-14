@@ -23,7 +23,10 @@ class SimulationTestCase(unittest.TestCase):
         first_positions = {agent.agent_id: (agent.x, agent.y) for agent in first_frame.agents}
         last_positions = {agent.agent_id: (agent.x, agent.y) for agent in last_frame.agents}
         self.assertTrue(
-            any(first_positions[agent_id] != last_positions[agent_id] for agent_id in first_positions)
+            any(
+                first_positions[agent_id] != last_positions[agent_id]
+                for agent_id in first_positions
+            )
         )
 
     def test_simulation_html_contains_replay_controls_and_layers(self) -> None:
@@ -58,7 +61,9 @@ class SimulationTestCase(unittest.TestCase):
             first_record = json.loads(event_lines[0])
             self.assertEqual(first_record["record_type"], "simulation_metadata")
 
-            step_records = [json.loads(line) for line in event_lines if '"record_type": "step_snapshot"' in line]
+            step_records = [
+                json.loads(line) for line in event_lines if '"record_type": "step_snapshot"' in line
+            ]
             self.assertTrue(step_records)
             self.assertIn("agent_states", step_records[-1])
             self.assertIn("coverage", step_records[-1])
@@ -68,7 +73,12 @@ class SimulationTestCase(unittest.TestCase):
             self.assertIn("hotspot_chain", step_records[-1])
             self.assertIn("failure_recovery", step_records[-1])
             self.assertIn("task_decisions", step_records[-1]["task_layer"])
+            self.assertIn("tasks", step_records[-1]["task_layer"])
             self.assertIn("path_plans", step_records[-1]["path_layer"])
+            self.assertIn("planner_name", step_records[-1]["path_layer"]["path_plans"][0])
+            self.assertIn(
+                "execution_stage", step_records[-1]["execution_layer"]["tracking_updates"][0]
+            )
 
             summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
             self.assertIn("simulation", summary)
