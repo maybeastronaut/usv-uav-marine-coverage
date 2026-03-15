@@ -14,6 +14,7 @@ from usv_uav_marine_coverage.information_map import (
     apply_usv_confirmation,
     build_information_map,
     observe_cells,
+    spawn_baseline_tasks,
     spawn_hotspots,
 )
 
@@ -24,18 +25,34 @@ class InformationMapTestCase(unittest.TestCase):
         layout = build_obstacle_layout(sea_map, seed=20260314)
         self.grid_map = build_grid_map(sea_map, layout)
 
-    def test_initial_information_map_inherits_baseline_tasks(self) -> None:
+    def test_initial_information_map_starts_without_baseline_tasks(self) -> None:
         info_map = build_information_map(self.grid_map)
 
         baseline_cells = [
             info_map.state_at(cell.row, cell.col)
             for cell in self.grid_map.flat_cells
-            if cell.has_baseline_point
+            if info_map.state_at(cell.row, cell.col).has_baseline_task
         ]
 
-        self.assertEqual(len(baseline_cells), 2)
-        self.assertTrue(all(cell.has_baseline_task for cell in baseline_cells))
-        self.assertTrue(all(cell.baseline_task_priority == 1 for cell in baseline_cells))
+        self.assertEqual(len(baseline_cells), 0)
+
+    def test_spawn_baseline_tasks_creates_nearshore_tasks_dynamically(self) -> None:
+        config = InformationMapConfig(
+            max_active_baseline_tasks=2,
+            nearshore_baseline_spawn_probability=1.0,
+        )
+        info_map = build_information_map(self.grid_map, config)
+
+        spawned = spawn_baseline_tasks(info_map, step=1, rng=Random(5))
+
+        self.assertEqual(len(spawned), 2)
+        self.assertEqual(info_map.active_baseline_task_count, 2)
+        self.assertTrue(
+            all(
+                self.grid_map.cell_at(row, col).zone_name == "Nearshore Zone"
+                for row, col in spawned
+            )
+        )
 
     def test_observe_cells_refreshes_last_observed_age_and_validity(self) -> None:
         info_map = build_information_map(self.grid_map)
@@ -52,7 +69,10 @@ class InformationMapTestCase(unittest.TestCase):
     def test_information_expires_to_stale_known_after_timeout(self) -> None:
         info_map = build_information_map(
             self.grid_map,
-            InformationMapConfig(information_timeout_steps=2),
+            InformationMapConfig(
+                information_timeout_steps=2,
+                nearshore_information_timeout_steps=2,
+            ),
         )
         observe_cells(info_map, ((4, 4),), observer_id="UAV-1", step=0)
 
@@ -65,7 +85,10 @@ class InformationMapTestCase(unittest.TestCase):
     def test_reobserve_cell_restores_validity_from_stale_known(self) -> None:
         info_map = build_information_map(
             self.grid_map,
-            InformationMapConfig(information_timeout_steps=1),
+            InformationMapConfig(
+                information_timeout_steps=1,
+                nearshore_information_timeout_steps=1,
+            ),
         )
         observe_cells(info_map, ((3, 3),), observer_id="UAV-1", step=0)
         advance_information_age(info_map, step=2)
@@ -77,43 +100,150 @@ class InformationMapTestCase(unittest.TestCase):
         self.assertEqual(state.information_age, 0)
         self.assertEqual(state.validity, InformationValidity.VALID)
 
-    def test_spawn_hotspots_can_fill_nearshore_and_offshore_with_offshore_bias(self) -> None:
+    def test_nearshore_uses_longer_information_timeout_than_offshore(self) -> None:
+        info_map = build_information_map(
+            self.grid_map,
+            InformationMapConfig(
+                information_timeout_steps=400,
+                nearshore_information_timeout_steps=800,
+            ),
+        )
+        nearshore_cell = next(
+            cell
+            for cell in self.grid_map.flat_cells
+            if cell.zone_name == "Nearshore Zone" and not cell.has_obstacle
+        )
+        offshore_cell = next(
+            cell
+            for cell in self.grid_map.flat_cells
+            if cell.zone_name == "Offshore Zone" and not cell.has_obstacle
+        )
+
+        observe_cells(
+            info_map,
+            ((nearshore_cell.row, nearshore_cell.col), (offshore_cell.row, offshore_cell.col)),
+            observer_id="UAV-1",
+            step=0,
+        )
+        advance_information_age(info_map, step=500)
+
+        self.assertEqual(
+            info_map.state_at(nearshore_cell.row, nearshore_cell.col).validity,
+            InformationValidity.VALID,
+        )
+        self.assertEqual(
+            info_map.state_at(offshore_cell.row, offshore_cell.col).validity,
+            InformationValidity.STALE_KNOWN,
+        )
+
+    def test_spawn_hotspots_seeds_exact_cap_on_eligible_cells(self) -> None:
         config = InformationMapConfig(
-            max_active_hotspots=2000,
-            nearshore_hotspot_spawn_probability=0.1,
-            offshore_hotspot_spawn_probability=0.9,
+            max_active_hotspots=12,
         )
         info_map = build_information_map(self.grid_map, config)
 
-        spawn_hotspots(info_map, step=1, rng=Random(7))
+        spawned = spawn_hotspots(info_map, step=0, rng=Random(7))
 
-        nearshore_count = 0
-        offshore_count = 0
-        for cell in self.grid_map.flat_cells:
-            state = info_map.state_at(cell.row, cell.col)
-            if not state.ground_truth_hotspot:
-                continue
-            if cell.zone_name == "Nearshore Zone":
-                nearshore_count += 1
-            if cell.zone_name == "Offshore Zone":
-                offshore_count += 1
-
-        self.assertGreater(nearshore_count, 0)
-        self.assertGreater(offshore_count, 0)
-        self.assertGreater(offshore_count, nearshore_count)
+        self.assertEqual(len(spawned), 12)
+        self.assertEqual(info_map.active_hotspot_count, 12)
+        self.assertTrue(
+            all(
+                not self.grid_map.cell_at(row, col).has_obstacle
+                and not self.grid_map.cell_at(row, col).has_risk_area
+                for row, col in spawned
+            )
+        )
+        self.assertTrue(
+            all(
+                all(
+                    self.grid_map.cell_at(candidate_row, candidate_col).zone_name == "Offshore Zone"
+                    and not self.grid_map.cell_at(candidate_row, candidate_col).has_obstacle
+                    and not self.grid_map.cell_at(candidate_row, candidate_col).has_risk_area
+                    for candidate_row in range(
+                        max(0, row - 1),
+                        min(self.grid_map.rows - 1, row + 1) + 1,
+                    )
+                    for candidate_col in range(
+                        max(0, col - 1),
+                        min(self.grid_map.cols - 1, col + 1) + 1,
+                    )
+                )
+                for row, col in spawned
+            )
+        )
 
     def test_spawn_hotspots_respects_active_hotspot_cap(self) -> None:
         config = InformationMapConfig(
-            max_active_hotspots=3,
-            nearshore_hotspot_spawn_probability=1.0,
-            offshore_hotspot_spawn_probability=1.0,
+            max_active_hotspots=12,
         )
         info_map = build_information_map(self.grid_map, config)
 
-        spawned = spawn_hotspots(info_map, step=1, rng=Random(1))
+        spawned = spawn_hotspots(info_map, step=0, rng=Random(1))
+        spawned_again = spawn_hotspots(info_map, step=1, rng=Random(2))
 
-        self.assertEqual(len(spawned), 3)
-        self.assertEqual(info_map.active_hotspot_count, 3)
+        self.assertEqual(len(spawned), 12)
+        self.assertEqual(info_map.active_hotspot_count, 12)
+        self.assertEqual(spawned_again, ())
+
+    def test_uav_detection_respects_suspected_hotspot_cap(self) -> None:
+        config = InformationMapConfig(
+            max_suspected_hotspots=2,
+        )
+        info_map = build_information_map(self.grid_map, config)
+        candidate_cells = [
+            cell
+            for cell in self.grid_map.flat_cells
+            if not cell.has_obstacle and not cell.has_risk_area
+        ][:4]
+        for index, cell in enumerate(candidate_cells, start=1):
+            state = info_map.state_at(cell.row, cell.col)
+            state.ground_truth_hotspot = True
+            state.ground_truth_hotspot_id = index
+        uav = AgentState(
+            agent_id="UAV-3",
+            kind="UAV",
+            x=candidate_cells[0].center_x,
+            y=candidate_cells[0].center_y,
+            heading_deg=0.0,
+            speed_mps=0.0,
+            max_speed_mps=0.0,
+            detection_radius=120.0,
+            coverage_radius=80.0,
+            task=AgentTaskState(),
+        )
+
+        detected = apply_uav_detection(
+            info_map,
+            uav,
+            tuple((cell.row, cell.col) for cell in candidate_cells),
+            step=2,
+            rng=Random(11),
+        )
+
+        self.assertEqual(len(detected), 2)
+        self.assertEqual(info_map.active_suspected_hotspot_count, 2)
+
+    def test_spawn_baseline_tasks_respects_recent_service_cooldown(self) -> None:
+        config = InformationMapConfig(
+            max_active_baseline_tasks=2,
+            nearshore_baseline_spawn_probability=1.0,
+            baseline_respawn_cooldown_steps=120,
+        )
+        info_map = build_information_map(self.grid_map, config)
+        candidate = next(
+            cell
+            for cell in self.grid_map.flat_cells
+            if cell.zone_name == "Nearshore Zone"
+            and not cell.has_obstacle
+            and not cell.has_risk_area
+        )
+        state = info_map.state_at(candidate.row, candidate.col)
+        state.baseline_last_served_step = 50
+
+        spawned = spawn_baseline_tasks(info_map, step=100, rng=Random(7))
+
+        self.assertNotIn((candidate.row, candidate.col), spawned)
+        self.assertFalse(state.has_baseline_task)
 
     def test_uav_marks_true_hotspot_as_suspected(self) -> None:
         info_map = build_information_map(self.grid_map)
@@ -156,8 +286,8 @@ class InformationMapTestCase(unittest.TestCase):
         self.assertEqual(state.known_hotspot_id, 9)
         self.assertEqual(state.suspected_by, "UAV-1")
 
-    def test_uav_can_raise_false_alarm_on_non_hotspot_cell(self) -> None:
-        config = InformationMapConfig(uav_false_alarm_probability=1.0)
+    def test_uav_does_not_mark_non_hotspot_cell_as_suspected(self) -> None:
+        config = InformationMapConfig()
         info_map = build_information_map(self.grid_map, config)
         plain_cell = next(
             cell
@@ -180,7 +310,7 @@ class InformationMapTestCase(unittest.TestCase):
             task=AgentTaskState(),
         )
 
-        apply_uav_detection(
+        detected = apply_uav_detection(
             info_map,
             uav,
             ((plain_cell.row, plain_cell.col),),
@@ -189,13 +319,14 @@ class InformationMapTestCase(unittest.TestCase):
         )
 
         state = info_map.state_at(plain_cell.row, plain_cell.col)
+        self.assertEqual(detected, ())
         self.assertFalse(state.ground_truth_hotspot)
-        self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.SUSPECTED)
+        self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.NONE)
 
     def test_usv_confirmation_requires_multiple_observations(self) -> None:
         info_map = build_information_map(
             self.grid_map,
-            InformationMapConfig(usv_confirmation_steps=3),
+            InformationMapConfig(usv_confirmation_steps=5),
         )
         cell = next(
             candidate for candidate in self.grid_map.flat_cells if not candidate.has_obstacle
@@ -220,16 +351,20 @@ class InformationMapTestCase(unittest.TestCase):
 
         resolved_1 = apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=4)
         resolved_2 = apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=5)
+        resolved_3 = apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=6)
+        resolved_4 = apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=7)
 
         self.assertEqual(resolved_1, ())
         self.assertEqual(resolved_2, ())
+        self.assertEqual(resolved_3, ())
+        self.assertEqual(resolved_4, ())
         self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.SUSPECTED)
-        self.assertEqual(state.confirmation_progress, 2)
+        self.assertEqual(state.confirmation_progress, 4)
 
     def test_usv_confirms_real_hotspot_after_threshold(self) -> None:
         info_map = build_information_map(
             self.grid_map,
-            InformationMapConfig(usv_confirmation_steps=2),
+            InformationMapConfig(usv_confirmation_steps=5),
         )
         cell = next(
             candidate for candidate in self.grid_map.flat_cells if not candidate.has_obstacle
@@ -252,8 +387,15 @@ class InformationMapTestCase(unittest.TestCase):
             task=AgentTaskState(),
         )
 
-        apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=1)
-        resolved = apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=2)
+        for current_step in range(1, 5):
+            apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=current_step)
+        resolved = apply_usv_confirmation(
+            info_map,
+            usv,
+            ((cell.row, cell.col),),
+            step=5,
+            rng=Random(1),
+        )
 
         self.assertEqual(resolved, ((cell.row, cell.col),))
         self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.CONFIRMED)
@@ -264,7 +406,7 @@ class InformationMapTestCase(unittest.TestCase):
     def test_usv_marks_false_alarm_after_threshold(self) -> None:
         info_map = build_information_map(
             self.grid_map,
-            InformationMapConfig(usv_confirmation_steps=2),
+            InformationMapConfig(usv_confirmation_steps=5),
         )
         cell = next(
             candidate for candidate in self.grid_map.flat_cells if not candidate.has_obstacle
@@ -285,11 +427,19 @@ class InformationMapTestCase(unittest.TestCase):
             task=AgentTaskState(),
         )
 
-        apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=2)
-        resolved = apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=3)
+        for current_step in range(1, 5):
+            apply_usv_confirmation(info_map, usv, ((cell.row, cell.col),), step=current_step)
+        resolved = apply_usv_confirmation(
+            info_map,
+            usv,
+            ((cell.row, cell.col),),
+            step=5,
+            rng=Random(2),
+        )
 
         self.assertEqual(resolved, ((cell.row, cell.col),))
         self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.FALSE_ALARM)
         self.assertEqual(state.confirmed_by, "USV-3")
         self.assertEqual(state.task_status, TaskStatus.IDLE)
         self.assertIsNone(state.assigned_agent_id)
+        self.assertFalse(state.ground_truth_hotspot)

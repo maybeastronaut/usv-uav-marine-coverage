@@ -10,9 +10,13 @@ from typing import TYPE_CHECKING
 
 from usv_uav_marine_coverage.agent_model import AgentState, TaskMode, shortest_heading_delta_deg
 from usv_uav_marine_coverage.environment import ObstacleLayout, SeaMap
-from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
+from usv_uav_marine_coverage.execution.execution_types import (
+    AgentExecutionState,
+    AgentProgressState,
+)
 from usv_uav_marine_coverage.grid import GridCoverageMap
 from usv_uav_marine_coverage.information_map import HotspotKnowledgeState, InformationMap
+from usv_uav_marine_coverage.planning.astar_path_planner import PlannerMetricsSnapshot
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord
 
 if TYPE_CHECKING:
@@ -23,7 +27,7 @@ if TYPE_CHECKING:
 class SimulationArtifacts:
     """Written simulation outputs for one replay run."""
 
-    html_path: Path
+    html_path: Path | None
     events_path: Path
     summary_path: Path
 
@@ -103,6 +107,7 @@ def build_summary_payload(replay: SimulationReplay) -> dict[str, object]:
             "covered_cells": len(final_frame.covered_cells),
             "total_coverable_cells": int(final_coverage["total_coverable_cells"]),
             "valid_cells": len(final_frame.valid_cells),
+            "stale_cells": len(final_frame.stale_cells),
             "suspected_cells": len(final_frame.suspected_cells),
             "confirmed_cells": len(final_frame.confirmed_cells),
             "false_alarm_cells": len(final_frame.false_alarm_cells),
@@ -184,6 +189,11 @@ def serialize_initial_agent(agent: AgentState) -> dict[str, object]:
         "cruise_speed_mps": agent.cruise_speed_mps,
         "max_speed_mps": agent.max_speed_mps,
         "max_turn_rate_degps": agent.max_turn_rate_degps,
+        "energy_capacity": round(agent.energy_capacity, 3),
+        "energy_level": round(agent.energy_level, 3),
+        "energy_ratio": round(agent.energy_level / agent.energy_capacity, 6)
+        if agent.energy_capacity > 0.0
+        else None,
         "task_mode": agent.task.mode.value,
         "available": True,
     }
@@ -200,6 +210,10 @@ def serialize_agent_step(agent: AgentState) -> dict[str, object]:
         "heading_deg": round(agent.heading_deg, 3),
         "speed_mps": round(agent.speed_mps, 3),
         "turn_rate_degps": round(agent.turn_rate_degps, 3),
+        "energy_level": round(agent.energy_level, 3),
+        "energy_ratio": round(agent.energy_level / agent.energy_capacity, 6)
+        if agent.energy_capacity > 0.0
+        else None,
         "task_mode": agent.task.mode.value,
         "target_x": None if agent.task.target_x is None else round(agent.task.target_x, 3),
         "target_y": None if agent.task.target_y is None else round(agent.task.target_y, 3),
@@ -237,6 +251,8 @@ def build_step_log(
     planned_agents: tuple[AgentState, ...],
     task_records: tuple[TaskRecord, ...],
     execution_states: dict[str, AgentExecutionState],
+    progress_states: dict[str, AgentProgressState],
+    planner_metrics: PlannerMetricsSnapshot,
 ) -> dict[str, object]:
     """Build one structured per-step simulation log record."""
 
@@ -275,7 +291,11 @@ def build_step_log(
         execution_states=execution_states,
         step=step,
     )
-    execution_updates = build_execution_updates(agents, execution_states=execution_states)
+    execution_updates = build_execution_updates(
+        agents,
+        execution_states=execution_states,
+        progress_states=progress_states,
+    )
     hotspot_chain = build_hotspot_chain_updates(
         info_map,
         detected_by_agent=detected_by_agent,
@@ -311,6 +331,14 @@ def build_step_log(
         },
         "path_layer": {
             "path_plans": path_plans,
+            "planner_metrics": {
+                "total_calls": planner_metrics.total_calls,
+                "planned_calls": planner_metrics.planned_calls,
+                "blocked_calls": planner_metrics.blocked_calls,
+                "expanded_nodes": planner_metrics.expanded_nodes,
+                "max_expanded_nodes": planner_metrics.max_expanded_nodes,
+                "by_context": planner_metrics.by_context,
+            },
         },
         "execution_layer": execution_updates,
         "hotspot_chain": hotspot_chain,
@@ -345,10 +373,16 @@ def build_event_totals(step_logs: tuple[dict[str, object], ...]) -> dict[str, in
         "suspected_marks": 0,
         "confirmed_hotspots": 0,
         "false_alarms": 0,
+        "astar_total_calls": 0,
+        "astar_planned_calls": 0,
+        "astar_blocked_calls": 0,
+        "astar_expanded_nodes": 0,
+        "astar_max_expanded_nodes": 0,
     }
     for record in step_logs:
         observation_updates = record["observation_updates"]
         task_layer = record["task_layer"]
+        path_layer = record["path_layer"]
         totals["spawned_hotspots"] += len(observation_updates["spawned_hotspots"])
         totals["suspected_marks"] += sum(
             len(indices) for indices in task_layer["newly_suspected_by_agent"].values()
@@ -358,6 +392,15 @@ def build_event_totals(step_logs: tuple[dict[str, object], ...]) -> dict[str, in
         )
         totals["false_alarms"] += sum(
             len(indices) for indices in task_layer["false_alarms_by_agent"].values()
+        )
+        planner_metrics = path_layer.get("planner_metrics", {})
+        totals["astar_total_calls"] += int(planner_metrics.get("total_calls", 0))
+        totals["astar_planned_calls"] += int(planner_metrics.get("planned_calls", 0))
+        totals["astar_blocked_calls"] += int(planner_metrics.get("blocked_calls", 0))
+        totals["astar_expanded_nodes"] += int(planner_metrics.get("expanded_nodes", 0))
+        totals["astar_max_expanded_nodes"] = max(
+            totals["astar_max_expanded_nodes"],
+            int(planner_metrics.get("max_expanded_nodes", 0)),
         )
     return totals
 
@@ -378,12 +421,18 @@ def build_path_plan_logs(
         prior_agent = prior_by_id.get(agent.agent_id, agent)
         execution_state = execution_states.get(agent.agent_id)
         replan_reason = "continue_current_target"
+        active_task_id = None if execution_state is None else execution_state.active_task_id
         if (
             prior_agent.task.target_x != agent.task.target_x
             or prior_agent.task.target_y != agent.task.target_y
         ):
-            if agent.task.mode == TaskMode.CONFIRM:
-                replan_reason = "suspected_hotspot_response"
+            if active_task_id is not None and active_task_id.startswith("uav-resupply-"):
+                replan_reason = "uav_resupply_rendezvous"
+            elif agent.task.mode == TaskMode.CONFIRM and active_task_id is not None:
+                if active_task_id.startswith("baseline-service-"):
+                    replan_reason = "baseline_service_response"
+                else:
+                    replan_reason = "suspected_hotspot_response"
             elif agent.task.has_target:
                 replan_reason = "patrol_waypoint_update"
             else:
@@ -428,12 +477,14 @@ def build_execution_updates(
     agents: tuple[AgentState, ...],
     *,
     execution_states: dict[str, AgentExecutionState],
+    progress_states: dict[str, AgentProgressState],
 ) -> dict[str, object]:
     """Build execution-deviation snapshots for the current step."""
 
     execution_updates = []
     for agent in agents:
         execution_state = execution_states.get(agent.agent_id)
+        progress_state = progress_states.get(agent.agent_id)
         tracking_error = None
         heading_error = None
         if (
@@ -473,6 +524,22 @@ def build_execution_updates(
                 if not agent.task.has_target
                 else round(abs(agent.cruise_speed_mps - agent.speed_mps), 3),
                 "heading_error": heading_error,
+                "stalled_steps": None if progress_state is None else progress_state.stalled_steps,
+                "recovery_attempts": None
+                if progress_state is None
+                else progress_state.recovery_attempts,
+                "cooldown_until_step": None
+                if progress_state is None
+                else progress_state.cooldown_until_step,
+                "blocked_goal_signature": None
+                if progress_state is None
+                else progress_state.blocked_goal_signature,
+                "entered_recovery": False
+                if execution_state is None or progress_state is None
+                else (
+                    execution_state.stage.value == "recovery"
+                    and progress_state.recovery_step_index == 0
+                ),
             }
         )
     return {"tracking_updates": execution_updates}
@@ -499,9 +566,13 @@ def build_task_assignment_logs(
                 "mode": agent.task.mode.value,
                 "execution_stage": None if execution_state is None else execution_state.stage.value,
                 "active_task_id": None if assigned_task is None else assigned_task.task_id,
+                "support_agent_id": None
+                if assigned_task is None
+                else assigned_task.support_agent_id,
                 "task_status": None if assigned_task is None else assigned_task.status.value,
                 "target_x": None if agent.task.target_x is None else round(agent.task.target_x, 3),
                 "target_y": None if agent.task.target_y is None else round(agent.task.target_y, 3),
+                "energy_level": round(agent.energy_level, 3),
             }
         )
     return assignment_logs
@@ -522,6 +593,7 @@ def serialize_task_record(task: TaskRecord) -> dict[str, object]:
         "target_col": task.target_col,
         "created_step": task.created_step,
         "assigned_agent_id": task.assigned_agent_id,
+        "support_agent_id": task.support_agent_id,
         "completed_step": task.completed_step,
     }
 

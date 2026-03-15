@@ -11,7 +11,12 @@ from usv_uav_marine_coverage.agent_model import (
     default_coverage_radius,
 )
 from usv_uav_marine_coverage.agent_overlay import build_demo_agents
+from usv_uav_marine_coverage.environment import build_default_sea_map
 from usv_uav_marine_coverage.information_map import HotspotKnowledgeState, InformationMap
+from usv_uav_marine_coverage.planning.uav_lawnmower_planner import build_lawnmower_route
+from usv_uav_marine_coverage.planning.usv_patrol_planner import (
+    build_default_usv_patrol_routes,
+)
 
 
 def build_demo_agent_states() -> tuple[AgentState, ...]:
@@ -37,15 +42,33 @@ def build_demo_agent_states() -> tuple[AgentState, ...]:
 
 
 def build_patrol_routes() -> dict[str, tuple[tuple[float, float], ...]]:
-    """Return the fixed preview patrol routes."""
+    """Return the preview patrol routes assembled from planning-layer builders."""
 
-    return {
-        "USV-1": ((170.0, 150.0), (280.0, 280.0), (520.0, 240.0), (340.0, 170.0)),
-        "USV-2": ((170.0, 520.0), (300.0, 700.0), (560.0, 610.0), (300.0, 480.0)),
-        "USV-3": ((215.0, 810.0), (320.0, 740.0), (610.0, 780.0), (360.0, 830.0)),
-        "UAV-1": ((320.0, 240.0), (620.0, 220.0), (860.0, 360.0), (620.0, 540.0)),
-        "UAV-2": ((340.0, 700.0), (640.0, 820.0), (900.0, 690.0), (720.0, 430.0)),
-    }
+    sea_map = build_default_sea_map()
+    offshore_left = sea_map.offshore.x_start + 35.0
+    offshore_right = sea_map.offshore.x_end - 60.0
+    upper_route = build_lawnmower_route(
+        min_x=offshore_left,
+        max_x=offshore_right,
+        min_y=120.0,
+        max_y=460.0,
+        lane_spacing=170.0,
+    )
+    lower_route = build_lawnmower_route(
+        min_x=offshore_left,
+        max_x=offshore_right,
+        min_y=540.0,
+        max_y=880.0,
+        lane_spacing=170.0,
+    )
+    patrol_routes = dict(build_default_usv_patrol_routes(sea_map))
+    patrol_routes.update(
+        {
+            "UAV-1": upper_route,
+            "UAV-2": lower_route,
+        }
+    )
+    return patrol_routes
 
 
 def assign_demo_tasks(
@@ -67,7 +90,12 @@ def assign_demo_tasks(
         if agent.kind == "USV":
             suspected_target = _nearest_target_point(agent, suspected_targets)
             if suspected_target is not None:
-                updated_agent = ensure_task(agent, TaskMode.CONFIRM, suspected_target[0], suspected_target[1])
+                updated_agent = ensure_task(
+                    agent,
+                    TaskMode.CONFIRM,
+                    suspected_target[0],
+                    suspected_target[1],
+                )
                 assigned_agents.append(updated_agent)
                 decisions.append(
                     _build_usv_task_decision(
@@ -136,7 +164,10 @@ def _build_usv_task_decision(
         (
             {
                 "agent_id": candidate.agent_id,
-                "distance_to_target": round(hypot(candidate.x - target[0], candidate.y - target[1]), 3),
+                "distance_to_target": round(
+                    hypot(candidate.x - target[0], candidate.y - target[1]),
+                    3,
+                ),
             }
             for candidate in candidates
         ),
@@ -164,7 +195,9 @@ def _build_patrol_task_decision(
 ) -> dict[str, object]:
     return {
         "task_id": f"{selected_agent.agent_id}-patrol-{patrol_index}",
-        "task_type": "patrol_waypoint_tracking" if agent.kind == "USV" else "uav_investigation_patrol",
+        "task_type": (
+            "patrol_waypoint_tracking" if agent.kind == "USV" else "uav_investigation_patrol"
+        ),
         "selected_agent": selected_agent.agent_id,
         "candidate_agents": [{"agent_id": selected_agent.agent_id}],
         "selection_reason": "continue_assigned_patrol_route",
@@ -183,7 +216,10 @@ def _suspected_target_points(grid_map, info_map: InformationMap) -> tuple[tuple[
     return tuple(targets)
 
 
-def _nearest_target_point(agent: AgentState, targets: tuple[tuple[float, float], ...]) -> tuple[float, float] | None:
+def _nearest_target_point(
+    agent: AgentState,
+    targets: tuple[tuple[float, float], ...],
+) -> tuple[float, float] | None:
     if not targets:
         return None
     return min(targets, key=lambda point: (agent.x - point[0]) ** 2 + (agent.y - point[1]) ** 2)

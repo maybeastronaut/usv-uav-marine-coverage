@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 import webbrowser
 from pathlib import Path
 
@@ -26,28 +25,35 @@ def write_simulation_html(
 
     artifacts = write_simulation_artifacts(
         output_path,
+        generate_html=True,
         seed=seed,
         steps=steps,
         dt_seconds=dt_seconds,
     )
+    assert artifacts.html_path is not None
     return artifacts.html_path
 
 
 def write_simulation_artifacts(
     output_path: Path,
+    generate_html: bool = True,
     seed: int | None = None,
     steps: int = 40,
     dt_seconds: float = 1.0,
 ) -> SimulationArtifacts:
-    """Write the replay HTML together with machine-readable simulation logs."""
+    """Write replay logs and optionally the HTML page to disk."""
 
     replay = build_simulation_replay(seed=seed, steps=steps, dt_seconds=dt_seconds)
-    output_path.write_text(build_simulation_html(replay), encoding="utf-8")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     events_path, summary_path = derive_log_paths(output_path)
+    html_path: Path | None = None
+    if generate_html:
+        output_path.write_text(build_simulation_html(replay), encoding="utf-8")
+        html_path = output_path
     write_events_jsonl(replay, events_path)
     write_summary_json(replay, summary_path)
     return SimulationArtifacts(
-        html_path=output_path,
+        html_path=html_path,
         events_path=events_path,
         summary_path=summary_path,
     )
@@ -56,24 +62,26 @@ def write_simulation_artifacts(
 def run_simulation_viewer(
     output_path: Path | None = None,
     open_browser: bool = True,
+    generate_html: bool = True,
     seed: int | None = None,
     steps: int = 40,
     dt_seconds: float = 1.0,
-) -> Path:
-    """Create the simulation replay page and optionally open it in the browser."""
+) -> SimulationArtifacts:
+    """Create simulation artifacts and optionally open the replay page."""
 
     if output_path is None:
-        output_path = Path(tempfile.gettempdir()) / "usv_uav_simulation_replay.html"
+        output_path = Path.cwd() / "outputs" / "usv_uav_simulation_replay.html"
 
     artifacts = write_simulation_artifacts(
         output_path,
+        generate_html=generate_html,
         seed=seed,
         steps=steps,
         dt_seconds=dt_seconds,
     )
-    if open_browser:
+    if open_browser and artifacts.html_path is not None:
         webbrowser.open(artifacts.html_path.resolve().as_uri())
-    return artifacts.html_path
+    return artifacts
 
 
 __all__ = [

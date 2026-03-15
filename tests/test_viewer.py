@@ -1,5 +1,6 @@
 import unittest
 
+from usv_uav_marine_coverage.agent_overlay import rotate_points
 from usv_uav_marine_coverage.environment import build_default_sea_map, build_obstacle_layout
 from usv_uav_marine_coverage.viewer import build_map_html
 
@@ -22,8 +23,8 @@ class ViewerTestCase(unittest.TestCase):
         self.assertIn("setViewMode('debug')", html)
         self.assertIn("setLabelVisibility(true)", html)
         self.assertIn("setLabelVisibility(false)", html)
-        self.assertIn('.debug-layer', html)
-        self.assertIn('.agent-label', html)
+        self.assertIn(".debug-layer", html)
+        self.assertIn(".agent-label", html)
         self.assertIn('data-show-labels="true"', html)
         self.assertIn("Reserved Trajectory Layer", html)
         self.assertNotIn("Zone Legend", html)
@@ -34,8 +35,8 @@ class ViewerTestCase(unittest.TestCase):
         self.assertIn("USV-1 Footprint", html)
         self.assertIn("Risk Obstacle 1", html)
         self.assertIn("Offshore Risk Area 1", html)
-        self.assertIn("Nearshore Baseline Point 1", html)
-        self.assertIn("Offshore Hotspot 1", html)
+        self.assertNotIn("Nearshore Baseline Point 1", html)
+        self.assertNotIn("Offshore Hotspot 1", html)
         self.assertIn("USV-1", html)
         self.assertIn("USV-2", html)
         self.assertIn("USV-3", html)
@@ -72,3 +73,9 @@ class ViewerTestCase(unittest.TestCase):
         self.assertIn("Reserved Trajectory Layer", html)
         self.assertIn("USV-1", html)
         self.assertIn("UAV-1", html)
+
+    def test_rotate_points_uses_svg_heading_convention(self) -> None:
+        rotated = rotate_points(((10.0, 0.0),), 0.0, 0.0, 90.0)
+
+        self.assertAlmostEqual(rotated[0][0], 0.0, places=6)
+        self.assertAlmostEqual(rotated[0][1], -10.0, places=6)

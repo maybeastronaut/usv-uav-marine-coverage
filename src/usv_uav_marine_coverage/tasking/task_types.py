@@ -11,6 +11,7 @@ class TaskType(StrEnum):
 
     BASELINE_SERVICE = "baseline_service"
     HOTSPOT_CONFIRMATION = "hotspot_confirmation"
+    UAV_RESUPPLY = "uav_resupply"
 
 
 class TaskSource(StrEnum):
@@ -19,6 +20,7 @@ class TaskSource(StrEnum):
     UAV_SUSPECTED = "uav_suspected"
     USV_ANOMALY = "usv_anomaly"
     SYSTEM_BASELINE_TIMEOUT = "system_baseline_timeout"
+    SYSTEM_LOW_BATTERY = "system_low_battery"
 
 
 class TaskStatus(StrEnum):
@@ -47,6 +49,7 @@ class TaskRecord:
     target_col: int | None
     created_step: int
     assigned_agent_id: str | None = None
+    support_agent_id: str | None = None
     completed_step: int | None = None
 
 
@@ -55,6 +58,8 @@ class TaskAssignment:
     """One agent-task assignment decision."""
 
     task_id: str
+    task_type: TaskType
     agent_id: str
+    support_agent_id: str | None
     selection_reason: str
     selection_score: float

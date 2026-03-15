@@ -21,11 +21,11 @@ def build_demo_agents() -> tuple[VisualAgent, ...]:
     """Return a fixed agent layout for visual inspection."""
 
     return (
-        VisualAgent(agent_id="USV-1", kind="USV", x=120.0, y=180.0, heading_deg=8.0),
-        VisualAgent(agent_id="USV-2", kind="USV", x=165.0, y=520.0, heading_deg=-12.0),
-        VisualAgent(agent_id="USV-3", kind="USV", x=215.0, y=810.0, heading_deg=5.0),
-        VisualAgent(agent_id="UAV-1", kind="UAV", x=610.0, y=250.0, heading_deg=-28.0),
-        VisualAgent(agent_id="UAV-2", kind="UAV", x=760.0, y=670.0, heading_deg=35.0),
+        VisualAgent(agent_id="USV-1", kind="USV", x=110.0, y=180.0, heading_deg=8.0),
+        VisualAgent(agent_id="USV-2", kind="USV", x=120.0, y=500.0, heading_deg=-12.0),
+        VisualAgent(agent_id="USV-3", kind="USV", x=130.0, y=820.0, heading_deg=5.0),
+        VisualAgent(agent_id="UAV-1", kind="UAV", x=150.0, y=260.0, heading_deg=-14.0),
+        VisualAgent(agent_id="UAV-2", kind="UAV", x=165.0, y=700.0, heading_deg=18.0),
     )
 
 
@@ -35,9 +35,13 @@ def rotate_points(
     center_y: float,
     heading_deg: float,
 ) -> tuple[tuple[float, float], ...]:
-    """Rotate relative points around a center for SVG rendering."""
+    """Rotate relative points around a center for SVG rendering.
 
-    angle = radians(heading_deg)
+    The simulation heading uses a world frame with +Y upward, while SVG uses +Y
+    downward, so the render rotation must invert the heading sign.
+    """
+
+    angle = radians(-heading_deg)
     cos_angle = cos(angle)
     sin_angle = sin(angle)
     rotated: list[tuple[float, float]] = []

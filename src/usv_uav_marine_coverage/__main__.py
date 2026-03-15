@@ -14,12 +14,17 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        help="Optional HTML output path for the generated sea map.",
+        help="Optional base output path. Defaults to the outputs/ directory.",
     )
     parser.add_argument(
         "--no-open",
         action="store_true",
-        help="Generate the HTML sea map without opening a browser.",
+        help="Write outputs without opening a browser.",
+    )
+    parser.add_argument(
+        "--no-html",
+        action="store_true",
+        help="For simulation runs, write machine-readable logs only and skip HTML output.",
     )
     parser.add_argument(
         "--seed",
@@ -47,7 +52,8 @@ def main() -> None:
     if args.simulate:
         run_simulation_viewer(
             output_path=args.output,
-            open_browser=not args.no_open,
+            open_browser=not args.no_open and not args.no_html,
+            generate_html=not args.no_html,
             seed=args.seed,
             steps=args.steps,
         )

@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from enum import Enum
+from enum import StrEnum
 from math import atan2, cos, degrees, hypot, radians, sin
 
 USV_COVERAGE_RADIUS_M = 50.0
 UAV_COVERAGE_RADIUS_M = 100.0
+USV_COLLISION_CLEARANCE_M = 16.0
+UAV_RESUPPLY_TRIGGER_MARGIN = 45.0
+UAV_RECHARGE_RELEASE_RATIO = 0.9
 
 
-class TaskMode(str, Enum):
+class TaskMode(StrEnum):
     """Basic task modes for the first simulation stage."""
 
     IDLE = "idle"
@@ -43,6 +46,12 @@ class PlatformProfile:
     max_deceleration_mps2: float
     max_turn_rate_degps: float
     arrival_tolerance_m: float
+    energy_capacity: float = 0.0
+    energy_burn_per_second: float = 0.0
+    energy_burn_per_meter: float = 0.0
+    energy_burn_per_turn_deg: float = 0.0
+    recharge_rate_per_second: float = 0.0
+    minimum_reserve_ratio: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,13 @@ class AgentState:
     detection_radius: float
     coverage_radius: float
     task: AgentTaskState
+    energy_capacity: float = 0.0
+    energy_level: float = -1.0
+    energy_burn_per_second: float = 0.0
+    energy_burn_per_meter: float = 0.0
+    energy_burn_per_turn_deg: float = 0.0
+    recharge_rate_per_second: float = 0.0
+    minimum_reserve_ratio: float = 0.0
     turn_rate_degps: float = 0.0
     max_acceleration_mps2: float = 0.0
     max_deceleration_mps2: float = 0.0
@@ -100,6 +116,32 @@ class AgentState:
             object.__setattr__(self, "cruise_speed_mps", profile.cruise_speed_mps)
         if self.arrival_tolerance_m <= 0.0:
             object.__setattr__(self, "arrival_tolerance_m", profile.arrival_tolerance_m)
+        if self.energy_capacity <= 0.0:
+            object.__setattr__(self, "energy_capacity", profile.energy_capacity)
+        if self.energy_level < 0.0:
+            object.__setattr__(self, "energy_level", self.energy_capacity)
+        if self.energy_burn_per_second <= 0.0:
+            object.__setattr__(self, "energy_burn_per_second", profile.energy_burn_per_second)
+        if self.energy_burn_per_meter <= 0.0:
+            object.__setattr__(self, "energy_burn_per_meter", profile.energy_burn_per_meter)
+        if self.energy_burn_per_turn_deg <= 0.0:
+            object.__setattr__(
+                self,
+                "energy_burn_per_turn_deg",
+                profile.energy_burn_per_turn_deg,
+            )
+        if self.recharge_rate_per_second <= 0.0:
+            object.__setattr__(
+                self,
+                "recharge_rate_per_second",
+                profile.recharge_rate_per_second,
+            )
+        if self.minimum_reserve_ratio <= 0.0:
+            object.__setattr__(
+                self,
+                "minimum_reserve_ratio",
+                profile.minimum_reserve_ratio,
+            )
 
 
 def default_platform_profile(kind: str) -> PlatformProfile:
@@ -124,6 +166,12 @@ def default_platform_profile(kind: str) -> PlatformProfile:
             max_deceleration_mps2=10.0,
             max_turn_rate_degps=120.0,
             arrival_tolerance_m=8.0,
+            energy_capacity=180.0,
+            energy_burn_per_second=0.15,
+            energy_burn_per_meter=0.06,
+            energy_burn_per_turn_deg=0.003,
+            recharge_rate_per_second=12.0,
+            minimum_reserve_ratio=0.25,
         )
     raise ValueError(f"Unsupported agent kind: {kind}")
 
@@ -173,6 +221,12 @@ def compute_control_command(
     reference: TrackingReference | None,
 ) -> ControlCommand:
     """Compute a lightweight heading/speed command from one tracking reference."""
+
+    if agent.kind == "UAV" and agent.energy_level <= 0.0:
+        return ControlCommand(
+            target_speed_mps=0.0,
+            target_heading_deg=agent.heading_deg,
+        )
 
     if reference is None:
         return ControlCommand(
@@ -235,6 +289,12 @@ def advance_agent_with_control(
     travel_distance = next_speed_mps * dt_seconds
     next_x = agent.x + cos(radians(next_heading_deg)) * travel_distance
     next_y = agent.y + sin(radians(next_heading_deg)) * travel_distance
+    next_energy_level = _advance_energy_level(
+        agent,
+        travel_distance=travel_distance,
+        heading_delta_deg=abs(applied_heading_step),
+        dt_seconds=dt_seconds,
+    )
 
     return replace(
         agent,
@@ -243,6 +303,7 @@ def advance_agent_with_control(
         heading_deg=next_heading_deg,
         speed_mps=next_speed_mps,
         turn_rate_degps=next_turn_rate_degps,
+        energy_level=next_energy_level,
     )
 
 
@@ -299,6 +360,65 @@ def distance_to_point(agent: AgentState, x: float, y: float) -> float:
     return hypot(agent.x - x, agent.y - y)
 
 
+def recharge_agent_energy(agent: AgentState, dt_seconds: float) -> AgentState:
+    """Recharge one UAV while clamping the energy level to capacity."""
+
+    if dt_seconds <= 0.0:
+        raise ValueError("Time step must be positive.")
+    if agent.kind != "UAV" or agent.energy_capacity <= 0.0:
+        return agent
+    next_energy_level = clamp(
+        agent.energy_level + agent.recharge_rate_per_second * dt_seconds,
+        0.0,
+        agent.energy_capacity,
+    )
+    return replace(agent, energy_level=next_energy_level)
+
+
+def energy_ratio(agent: AgentState) -> float:
+    """Return the normalized remaining energy ratio for one agent."""
+
+    if agent.energy_capacity <= 0.0:
+        return 1.0
+    return clamp(agent.energy_level / agent.energy_capacity, 0.0, 1.0)
+
+
+def needs_uav_resupply(agent: AgentState) -> bool:
+    """Return whether one UAV has reached the low-energy rendezvous threshold."""
+
+    return (
+        agent.kind == "UAV"
+        and agent.energy_capacity > 0.0
+        and energy_ratio(agent) <= agent.minimum_reserve_ratio
+    )
+
+
+def estimate_uav_energy_to_point(agent: AgentState, x: float, y: float) -> float:
+    """Estimate the energy needed for one UAV to reach a rendezvous point."""
+
+    if agent.kind != "UAV" or agent.energy_capacity <= 0.0:
+        return 0.0
+    distance = distance_to_point(agent, x, y)
+    cruise_speed = max(agent.cruise_speed_mps, 1.0)
+    travel_seconds = distance / cruise_speed
+    return (
+        agent.energy_burn_per_second * travel_seconds
+        + agent.energy_burn_per_meter * distance
+        + agent.energy_capacity * agent.minimum_reserve_ratio
+        + UAV_RESUPPLY_TRIGGER_MARGIN
+    )
+
+
+def has_completed_uav_resupply(agent: AgentState) -> bool:
+    """Return whether one UAV has recharged enough to leave the support USV."""
+
+    return (
+        agent.kind == "UAV"
+        and agent.energy_capacity > 0.0
+        and energy_ratio(agent) >= UAV_RECHARGE_RELEASE_RATIO
+    )
+
+
 def normalize_heading_deg(heading_deg: float) -> float:
     """Normalize a heading angle into the [-180, 180) interval."""
 
@@ -320,10 +440,28 @@ def clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
+def _advance_energy_level(
+    agent: AgentState,
+    *,
+    travel_distance: float,
+    heading_delta_deg: float,
+    dt_seconds: float,
+) -> float:
+    if agent.kind != "UAV" or agent.energy_capacity <= 0.0:
+        return agent.energy_level
+
+    burned = (
+        agent.energy_burn_per_second * dt_seconds
+        + agent.energy_burn_per_meter * travel_distance
+        + agent.energy_burn_per_turn_deg * heading_delta_deg
+    )
+    return clamp(agent.energy_level - burned, 0.0, agent.energy_capacity)
+
+
 def _usv_heading_alignment_factor(heading_error_deg: float) -> float:
     """Reduce USV speed more aggressively when the heading error is large."""
 
-    return clamp(1.0 - heading_error_deg / 110.0, 0.2, 1.0)
+    return clamp(1.0 - heading_error_deg / 160.0, 0.45, 1.0)
 
 
 def _uav_heading_alignment_factor(heading_error_deg: float) -> float:

@@ -23,13 +23,16 @@ class EnvironmentTestCase(unittest.TestCase):
         self.assertEqual(len(layout.risk_zone_obstacles), 4)
         self.assertEqual(len(layout.traversable_corridors), 2)
         self.assertEqual(len(layout.offshore_features), 5)
-        self.assertEqual(len(layout.nearshore_monitor_points), 2)
-        self.assertEqual(len(layout.offshore_hotspots), 5)
+        self.assertEqual(len(layout.nearshore_monitor_points), 0)
+        self.assertEqual(len(layout.offshore_hotspots), 0)
         self.assertTrue(56.0 <= layout.traversable_corridors[0].width <= 72.0)
         self.assertTrue(60.0 <= layout.traversable_corridors[1].width <= 76.0)
         self.assertEqual(len(layout.traversable_corridors[0].control_points), 5)
         self.assertEqual(len(layout.traversable_corridors[1].control_points), 5)
-        self.assertLess(layout.traversable_corridors[0].y_max, layout.traversable_corridors[1].y_min)
+        self.assertLess(
+            layout.traversable_corridors[0].y_max,
+            layout.traversable_corridors[1].y_min,
+        )
         self.assertEqual(
             sum(feature.feature_type == "islet" for feature in layout.offshore_features),
             3,
@@ -38,9 +41,5 @@ class EnvironmentTestCase(unittest.TestCase):
             sum(feature.feature_type == "risk_area" for feature in layout.offshore_features),
             2,
         )
-        self.assertTrue(
-            all(point.zone_name == sea_map.nearshore.name for point in layout.nearshore_monitor_points)
-        )
-        self.assertTrue(
-            all(point.zone_name == sea_map.offshore.name for point in layout.offshore_hotspots)
-        )
+        self.assertEqual(layout.nearshore_monitor_points, ())
+        self.assertEqual(layout.offshore_hotspots, ())

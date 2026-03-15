@@ -197,16 +197,13 @@ def build_obstacle_layout(
     )
 
     offshore_features = _build_offshore_features(generator, sea_map)
-    nearshore_monitor_points = _build_nearshore_monitor_points(generator, sea_map)
-    offshore_hotspots = _build_offshore_hotspots(generator, sea_map, offshore_features)
-
     layout = ObstacleLayout(
         seed=actual_seed,
         traversable_corridors=traversable_corridors,
         risk_zone_obstacles=risk_zone_obstacles,
         offshore_features=offshore_features,
-        nearshore_monitor_points=nearshore_monitor_points,
-        offshore_hotspots=offshore_hotspots,
+        nearshore_monitor_points=(),
+        offshore_hotspots=(),
     )
     validate_obstacle_layout(sea_map, layout)
     return layout
@@ -247,10 +244,10 @@ def validate_obstacle_layout(sea_map: SeaMap, layout: ObstacleLayout) -> None:
         raise ValueError("The risk zone must contain exactly four irregular obstacles.")
     if len(layout.offshore_features) != 5:
         raise ValueError("The offshore zone must contain three islets and two risk areas.")
-    if len(layout.nearshore_monitor_points) != 2:
-        raise ValueError("The nearshore zone must contain exactly two baseline monitoring points.")
-    if len(layout.offshore_hotspots) != 5:
-        raise ValueError("The offshore zone must contain exactly five task hotspots.")
+    if layout.nearshore_monitor_points:
+        raise ValueError("Initial baseline monitoring points must be empty.")
+    if layout.offshore_hotspots:
+        raise ValueError("Initial offshore hotspots must be empty.")
 
     for corridor in layout.traversable_corridors:
         if corridor.height <= 0:
@@ -301,7 +298,9 @@ def validate_obstacle_layout(sea_map: SeaMap, layout: ObstacleLayout) -> None:
     for target in layout.nearshore_monitor_points:
         for existing_position in baseline_positions:
             if _point_distance((target.x, target.y), existing_position) < 120.0:
-                raise ValueError(f"{target.name} is too close to another baseline monitoring point.")
+                raise ValueError(
+                    f"{target.name} is too close to another baseline monitoring point."
+                )
         baseline_positions.append((target.x, target.y))
 
     hotspot_positions: list[tuple[float, float]] = []
@@ -330,9 +329,7 @@ def _build_top_risk_obstacle(
     lower_edge = tuple(
         (
             x,
-            _corridor_y(corridor, x)
-            - corridor.width / 2
-            - generator.uniform(4.0, 8.0),
+            _corridor_y(corridor, x) - corridor.width / 2 - generator.uniform(4.0, 8.0),
         )
         for x in x_values
     )
@@ -389,9 +386,7 @@ def _build_bottom_risk_obstacle(
     upper_edge = tuple(
         (
             x,
-            _corridor_y(corridor, x)
-            + corridor.width / 2
-            + generator.uniform(18.0, 24.0),
+            _corridor_y(corridor, x) + corridor.width / 2 + generator.uniform(18.0, 24.0),
         )
         for x in x_values
     )
@@ -501,8 +496,14 @@ def _sample_offshore_feature(
 ) -> CircularFeature:
     for _ in range(200):
         radius = generator.uniform(*radius_range)
-        x = generator.uniform(max(sea_map.offshore.x_start + radius + 10.0, x_range[0]), x_range[1])
-        y = generator.uniform(max(radius + 10.0, y_range[0]), min(sea_map.height - radius - 10.0, y_range[1]))
+        x = generator.uniform(
+            max(sea_map.offshore.x_start + radius + 10.0, x_range[0]),
+            x_range[1],
+        )
+        y = generator.uniform(
+            max(radius + 10.0, y_range[0]),
+            min(sea_map.height - radius - 10.0, y_range[1]),
+        )
         candidate = CircularFeature(
             name=name,
             feature_type=feature_type,
@@ -511,7 +512,10 @@ def _sample_offshore_feature(
             radius=radius,
         )
         if any(
-            _circles_overlap((candidate.x, candidate.y, candidate.radius), (feature.x, feature.y, feature.radius))
+            _circles_overlap(
+                (candidate.x, candidate.y, candidate.radius),
+                (feature.x, feature.y, feature.radius),
+            )
             for feature in existing_features
         ):
             continue
@@ -533,9 +537,14 @@ def _sample_monitoring_location(
     for _ in range(300):
         x = generator.uniform(zone.x_start + x_margin, zone.x_end - x_margin)
         y = generator.uniform(y_margin, sea_height - y_margin)
-        if any(_point_within_feature((x, y), feature, padding=24.0) for feature in forbidden_features):
+        if any(
+            _point_within_feature((x, y), feature, padding=24.0) for feature in forbidden_features
+        ):
             continue
-        if any(_point_distance((x, y), (target.x, target.y)) < min_spacing for target in existing_targets):
+        if any(
+            _point_distance((x, y), (target.x, target.y)) < min_spacing
+            for target in existing_targets
+        ):
             continue
         return (x, y)
     raise ValueError(f"Failed to sample a monitoring location inside {zone.name}.")
@@ -570,7 +579,7 @@ def _segment_x_values(x_start: float, x_end: float, point_count: int) -> tuple[f
 
 def _corridor_y(corridor: TraversableCorridor, x: float) -> float:
     points = corridor.control_points
-    for start, end in zip(points, points[1:]):
+    for start, end in zip(points, points[1:], strict=False):
         start_x, start_y = start
         end_x, end_y = end
         if start_x <= x <= end_x:
@@ -584,7 +593,11 @@ def _corridor_y(corridor: TraversableCorridor, x: float) -> float:
 def _point_in_polygon(point: tuple[float, float], polygon: tuple[tuple[float, float], ...]) -> bool:
     x, y = point
     is_inside = False
-    for (x1, y1), (x2, y2) in zip(polygon, polygon[1:] + polygon[:1]):
+    for (x1, y1), (x2, y2) in zip(
+        polygon,
+        polygon[1:] + polygon[:1],
+        strict=False,
+    ):
         intersects = (y1 > y) != (y2 > y)
         if not intersects:
             continue

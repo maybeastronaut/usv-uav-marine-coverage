@@ -1,0 +1,97 @@
+"""UAV low-energy rendezvous task generation helpers."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from math import hypot
+
+from usv_uav_marine_coverage.agent_model import (
+    AgentState,
+    estimate_uav_energy_to_point,
+    needs_uav_resupply,
+)
+
+from .task_types import TaskRecord, TaskSource, TaskStatus, TaskType
+
+
+def build_uav_resupply_tasks(
+    agents: tuple[AgentState, ...],
+    *,
+    step: int,
+    existing_tasks: tuple[TaskRecord, ...] = (),
+) -> tuple[TaskRecord, ...]:
+    """Sync one low-energy resupply task per UAV when needed."""
+
+    existing_by_id = {task.task_id: task for task in existing_tasks}
+    usv_agents = tuple(agent for agent in agents if agent.kind == "USV")
+    next_tasks: list[TaskRecord] = []
+    active_ids: set[str] = set()
+
+    for agent in agents:
+        if agent.kind != "UAV":
+            continue
+        task_id = f"uav-resupply-{agent.agent_id}"
+        existing = existing_by_id.get(task_id)
+        support_usv = _nearest_support_usv(agent, usv_agents)
+        should_trigger = needs_uav_resupply(agent)
+        if support_usv is not None:
+            should_trigger = should_trigger or agent.energy_level <= estimate_uav_energy_to_point(
+                agent, support_usv.x, support_usv.y
+            )
+        if not should_trigger:
+            if existing is not None:
+                next_tasks.append(existing)
+            continue
+
+        active_ids.add(task_id)
+        target_x = support_usv.x if support_usv is not None else agent.x
+        target_y = support_usv.y if support_usv is not None else agent.y
+        if existing is None or existing.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+            next_tasks.append(
+                TaskRecord(
+                    task_id=task_id,
+                    task_type=TaskType.UAV_RESUPPLY,
+                    source=TaskSource.SYSTEM_LOW_BATTERY,
+                    status=TaskStatus.PENDING,
+                    priority=20,
+                    target_x=target_x,
+                    target_y=target_y,
+                    target_row=None,
+                    target_col=None,
+                    created_step=step,
+                    assigned_agent_id=agent.agent_id,
+                )
+            )
+            continue
+
+        next_tasks.append(
+            replace(
+                existing,
+                target_x=target_x,
+                target_y=target_y,
+            )
+        )
+
+    for task_id, task in sorted(existing_by_id.items()):
+        if task.task_type != TaskType.UAV_RESUPPLY:
+            next_tasks.append(task)
+            continue
+        if task_id in active_ids:
+            continue
+        if any(existing.task_id == task_id for existing in next_tasks):
+            continue
+        next_tasks.append(task)
+
+    return tuple(sorted(next_tasks, key=lambda item: item.task_id))
+
+
+def _nearest_support_usv(
+    uav: AgentState,
+    usv_agents: tuple[AgentState, ...],
+) -> AgentState | None:
+    if not usv_agents:
+        return None
+    return min(
+        usv_agents,
+        key=lambda usv: hypot(usv.x - uav.x, usv.y - uav.y),
+    )

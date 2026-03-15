@@ -32,29 +32,21 @@ class GridTestCase(unittest.TestCase):
         layout = build_obstacle_layout(sea_map, seed=20260314)
         grid_map = build_grid_map(sea_map, layout)
 
-        nearshore_cells = [cell for cell in grid_map.flat_cells if cell.zone_name == sea_map.nearshore.name]
+        nearshore_cells = [
+            cell for cell in grid_map.flat_cells if cell.zone_name == sea_map.nearshore.name
+        ]
         risk_cells = [cell for cell in grid_map.flat_cells if cell.zone_name == sea_map.risk.name]
-        offshore_cells = [cell for cell in grid_map.flat_cells if cell.zone_name == sea_map.offshore.name]
+        offshore_cells = [
+            cell for cell in grid_map.flat_cells if cell.zone_name == sea_map.offshore.name
+        ]
 
         self.assertEqual(len(nearshore_cells), 400)
         self.assertEqual(len(risk_cells), 320)
         self.assertEqual(len(offshore_cells), 880)
         self.assertGreater(sum(cell.has_obstacle for cell in grid_map.flat_cells), 0)
         self.assertGreater(sum(cell.has_risk_area for cell in grid_map.flat_cells), 0)
-        self.assertEqual(sum(cell.has_baseline_point for cell in grid_map.flat_cells), 2)
-        self.assertEqual(sum(cell.has_task_hotspot for cell in grid_map.flat_cells), 5)
-
-        for target in layout.nearshore_monitor_points:
-            cell = grid_map.locate_cell(target.x, target.y)
-            self.assertTrue(cell.has_baseline_point)
-            self.assertFalse(cell.has_obstacle)
-            self.assertFalse(cell.has_risk_area)
-
-        for hotspot in layout.offshore_hotspots:
-            cell = grid_map.locate_cell(hotspot.x, hotspot.y)
-            self.assertTrue(cell.has_task_hotspot)
-            self.assertFalse(cell.has_obstacle)
-            self.assertFalse(cell.has_risk_area)
+        self.assertEqual(sum(cell.has_baseline_point for cell in grid_map.flat_cells), 0)
+        self.assertEqual(sum(cell.has_task_hotspot for cell in grid_map.flat_cells), 0)
 
     def test_locate_grid_index_maps_boundary_points(self) -> None:
         self.assertEqual(

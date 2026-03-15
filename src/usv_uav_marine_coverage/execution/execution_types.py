@@ -14,7 +14,10 @@ class ExecutionStage(StrEnum):
     PATROL = "patrol"
     GO_TO_TASK = "go_to_task"
     ON_TASK = "on_task"
+    GO_TO_RENDEZVOUS = "go_to_rendezvous"
+    ON_RECHARGE = "on_recharge"
     RETURN_TO_PATROL = "return_to_patrol"
+    RECOVERY = "recovery"
 
 
 class ExecutionOutcome(StrEnum):
@@ -41,3 +44,20 @@ class AgentExecutionState:
     patrol_waypoint_index: int
     return_target_x: float | None = None
     return_target_y: float | None = None
+    rejoin_to_segment: bool = False
+
+
+@dataclass(frozen=True)
+class AgentProgressState:
+    """Runtime feedback state used to detect stalls and drive recovery."""
+
+    agent_id: str
+    stalled_steps: int = 0
+    last_progress_distance: float = 0.0
+    last_target_distance: float | None = None
+    recovery_attempts: int = 0
+    recovery_step_index: int = 0
+    cooldown_until_step: int = 0
+    blocked_goal_signature: str | None = None
+    pre_recovery_stage: ExecutionStage | None = None
+    pre_recovery_task_id: str | None = None

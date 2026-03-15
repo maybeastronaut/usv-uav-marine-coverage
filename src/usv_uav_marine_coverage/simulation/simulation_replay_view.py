@@ -1,5 +1,7 @@
 """HTML/SVG replay view for the preview simulation stage."""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import json
@@ -12,13 +14,10 @@ from usv_uav_marine_coverage.viewer import (
     MAP_WIDTH,
     SVG_HEIGHT,
     SVG_WIDTH,
-    _build_footprint_svg,
     _build_monitoring_markup,
     _build_obstacle_markup,
-    _build_uav_svg,
-    _build_usv_svg,
-    _map_point_to_svg,
 )
+
 from .simulation_core import SimulationFrame, SimulationReplay
 
 
@@ -27,6 +26,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
 
     sea_map = replay.sea_map
     layout = replay.obstacle_layout
+    grid_map = build_grid_map(sea_map, layout)
     zone_rectangles: list[str] = []
     zone_labels: list[str] = []
     tick_marks: list[str] = []
@@ -66,11 +66,9 @@ def build_simulation_html(replay: SimulationReplay) -> str:
             """
         )
 
-    frame_groups = "".join(
-        _build_frame_group(replay, frame, is_visible=index == 0)
-        for index, frame in enumerate(replay.frames)
-    )
+    frame_payloads = _build_frame_payloads(replay, grid_map)
     frame_summaries = _build_frame_summaries(replay.frames)
+    planned_path_payloads = _build_planned_path_payloads(replay)
     max_step = replay.frames[-1].step
 
     return f"""<!DOCTYPE html>
@@ -276,17 +274,24 @@ def build_simulation_html(replay: SimulationReplay) -> str:
             <rect x="{MAP_LEFT}" y="{MAP_TOP}" width="{MAP_WIDTH}" height="{MAP_HEIGHT}"
                   rx="26" ry="26" fill="url(#gridPattern)" />
             <g clip-path="url(#mapClip)">
-              {''.join(zone_rectangles)}
+              {"".join(zone_rectangles)}
               {_build_obstacle_markup(sea_map, layout)}
               {_build_monitoring_markup(sea_map, layout)}
-              {frame_groups}
+              <g id="validInfoLayer"></g>
+              <g id="staleInfoLayer"></g>
+              <g id="coveredLayer"></g>
+              <g id="baselineLayer"></g>
+              <g id="hotspotLayer"></g>
+              <g id="footprintLayer" class="footprint-layer" aria-label="Replay Footprints"></g>
+              <g id="trajectoryLayer" aria-label="Planned Path Layer"></g>
+              <g id="agentLayer"></g>
             </g>
-            {''.join(zone_labels)}
+            {"".join(zone_labels)}
             <line x1="{MAP_LEFT + (250 / sea_map.width) * MAP_WIDTH}" y1="{MAP_TOP}" x2="{MAP_LEFT + (250 / sea_map.width) * MAP_WIDTH}" y2="{MAP_TOP + MAP_HEIGHT}"
                   stroke="rgba(148, 163, 184, 0.72)" stroke-width="1.1" stroke-dasharray="6 8" />
             <line x1="{MAP_LEFT + (450 / sea_map.width) * MAP_WIDTH}" y1="{MAP_TOP}" x2="{MAP_LEFT + (450 / sea_map.width) * MAP_WIDTH}" y2="{MAP_TOP + MAP_HEIGHT}"
                   stroke="rgba(148, 163, 184, 0.72)" stroke-width="1.1" stroke-dasharray="6 8" />
-            {''.join(tick_marks)}
+            {"".join(tick_marks)}
             <line x1="{MAP_LEFT}" y1="{MAP_TOP}" x2="{MAP_LEFT - 8}" y2="{MAP_TOP}"
                   stroke="#64748B" stroke-width="1.2" />
             <line x1="{MAP_LEFT}" y1="{MAP_TOP + MAP_HEIGHT / 2}" x2="{MAP_LEFT - 8}" y2="{MAP_TOP + MAP_HEIGHT / 2}"
@@ -308,6 +313,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
           <h2 class="side-title">Simulation Summary</h2>
           <div class="stat"><span>Coverage</span><strong id="coverageRatio">0.0%</strong></div>
           <div class="stat"><span>Valid Cells</span><strong id="validCells">0</strong></div>
+          <div class="stat"><span>Stale Cells</span><strong id="staleCells">0</strong></div>
           <div class="stat"><span>Suspected</span><strong id="suspectedCells">0</strong></div>
           <div class="stat"><span>Confirmed</span><strong id="confirmedCells">0</strong></div>
           <div class="stat"><span>False Alarms</span><strong id="falseAlarmCells">0</strong></div>
@@ -318,22 +324,416 @@ def build_simulation_html(replay: SimulationReplay) -> str:
       </div>
     </div>
     <script>
+      const frameRenderData = {frame_payloads};
       const frameSummaries = {frame_summaries};
+      const plannedPathData = {planned_path_payloads};
+      const gridRows = {grid_map.rows};
+      const gridCols = {grid_map.cols};
+      const gridCellSize = {grid_map.cell_size};
+      const maxFrameIndex = frameSummaries.length - 1;
+      const stepDurationMs = 180;
       let currentFrame = 0;
+      let currentFrameProgress = 0;
       let isPlaying = false;
-      let playTimer = null;
+      let animationHandle = null;
+      let playbackStartTime = null;
+      let playbackStartFrame = 0;
+      let lastStaticFrame = -1;
+      const validInfoLayer = document.getElementById("validInfoLayer");
+      const staleInfoLayer = document.getElementById("staleInfoLayer");
+      const coveredLayer = document.getElementById("coveredLayer");
+      const baselineLayer = document.getElementById("baselineLayer");
+      const hotspotLayer = document.getElementById("hotspotLayer");
+      const footprintLayer = document.getElementById("footprintLayer");
+      const trajectoryLayer = document.getElementById("trajectoryLayer");
+      const agentLayer = document.getElementById("agentLayer");
+
+      function mapPointToSvg(x, y) {{
+        const svgX = {MAP_LEFT} + (x / {replay.sea_map.width}) * {MAP_WIDTH};
+        const svgY = {MAP_TOP + MAP_HEIGHT} - (y / {replay.sea_map.height}) * {MAP_HEIGHT};
+        return [svgX, svgY];
+      }}
+
+      function cellIdToRowCol(cellId) {{
+        const row = Math.floor(cellId / gridCols);
+        const col = cellId % gridCols;
+        return [row, col];
+      }}
+
+      function cellBounds(cellId) {{
+        const [row, col] = cellIdToRowCol(cellId);
+        const xMin = col * gridCellSize;
+        const yMin = row * gridCellSize;
+        const xMax = xMin + gridCellSize;
+        const yMax = yMin + gridCellSize;
+        return {{ xMin, yMin, xMax, yMax }};
+      }}
+
+      function cellCenter(cellId) {{
+        const bounds = cellBounds(cellId);
+        return {{
+          x: bounds.xMin + gridCellSize / 2,
+          y: bounds.yMin + gridCellSize / 2,
+          row: Math.floor(cellId / gridCols),
+          col: cellId % gridCols,
+        }};
+      }}
+
+      function rotatePoints(points, centerX, centerY, headingDeg) {{
+        const angle = (-headingDeg * Math.PI) / 180;
+        const cosAngle = Math.cos(angle);
+        const sinAngle = Math.sin(angle);
+        return points.map(([relX, relY]) => {{
+          const rotX = relX * cosAngle - relY * sinAngle;
+          const rotY = relX * sinAngle + relY * cosAngle;
+          return [centerX + rotX, centerY + rotY];
+        }});
+      }}
+
+      function formatPoints(points) {{
+        return points.map(([x, y]) => `${{x.toFixed(2)}},${{y.toFixed(2)}}`).join(" ");
+      }}
+
+      function interpolateHeading(startDeg, endDeg, progress) {{
+        let delta = ((endDeg - startDeg + 540) % 360) - 180;
+        return startDeg + delta * progress;
+      }}
+
+      function headingUnitVector(headingDeg) {{
+        const angle = (headingDeg * Math.PI) / 180;
+        return [Math.cos(angle), Math.sin(angle)];
+      }}
+
+      function hermitePoint(startAgent, endAgent, progress, tangentScale) {{
+        const t = progress;
+        const t2 = t * t;
+        const t3 = t2 * t;
+        const h00 = 2 * t3 - 3 * t2 + 1;
+        const h10 = t3 - 2 * t2 + t;
+        const h01 = -2 * t3 + 3 * t2;
+        const h11 = t3 - t2;
+        const [startTx, startTy] = headingUnitVector(startAgent.heading_deg);
+        const [endTx, endTy] = headingUnitVector(endAgent.heading_deg);
+        return {{
+          x:
+            h00 * startAgent.x +
+            h10 * startTx * tangentScale +
+            h01 * endAgent.x +
+            h11 * endTx * tangentScale,
+          y:
+            h00 * startAgent.y +
+            h10 * startTy * tangentScale +
+            h01 * endAgent.y +
+            h11 * endTy * tangentScale,
+        }};
+      }}
+
+      function interpolateUsvPose(agent, nextAgent, progress) {{
+        const dx = nextAgent.x - agent.x;
+        const dy = nextAgent.y - agent.y;
+        const chordLength = Math.hypot(dx, dy);
+        if (chordLength <= 1e-6) {{
+          return {{
+            x: agent.x,
+            y: agent.y,
+            heading_deg: interpolateHeading(agent.heading_deg, nextAgent.heading_deg, progress),
+          }};
+        }}
+        const tangentScale = chordLength * 0.9;
+        const point = hermitePoint(agent, nextAgent, progress, tangentScale);
+        return {{
+          x: point.x,
+          y: point.y,
+          heading_deg: interpolateHeading(agent.heading_deg, nextAgent.heading_deg, progress),
+        }};
+      }}
+
+      function interpolateAgents(frameIndex, progress) {{
+        const currentAgents = frameRenderData[frameIndex].agents;
+        const nextAgents =
+          frameIndex >= maxFrameIndex ? currentAgents : frameRenderData[frameIndex + 1].agents;
+        return currentAgents.map((agent, index) => {{
+          const nextAgent = nextAgents[index] || agent;
+          if (agent.kind === "USV") {{
+            const pose = interpolateUsvPose(agent, nextAgent, progress);
+            return {{
+              ...agent,
+              x: pose.x,
+              y: pose.y,
+              heading_deg: pose.heading_deg,
+            }};
+          }}
+          return {{
+            ...agent,
+            x: agent.x + (nextAgent.x - agent.x) * progress,
+            y: agent.y + (nextAgent.y - agent.y) * progress,
+            heading_deg: interpolateHeading(agent.heading_deg, nextAgent.heading_deg, progress),
+          }};
+        }});
+      }}
+
+      function renderFootprints(agents) {{
+        return agents
+          .map((agent) => {{
+            const [svgX, svgY] = mapPointToSvg(agent.x, agent.y);
+            const radiusM = agent.kind === "USV" ? 50.0 : 100.0;
+            const svgRadius = (radiusM / {replay.sea_map.width}) * {MAP_WIDTH};
+            const stroke =
+              agent.kind === "USV" ? "rgba(37, 99, 235, 0.72)" : "rgba(13, 148, 136, 0.72)";
+            const fill =
+              agent.kind === "USV" ? "rgba(37, 99, 235, 0.08)" : "rgba(13, 148, 136, 0.08)";
+            return `
+              <g aria-label="${{agent.agent_id}} Footprint">
+                <circle cx="${{svgX.toFixed(2)}}" cy="${{svgY.toFixed(2)}}" r="${{svgRadius.toFixed(2)}}"
+                        fill="${{fill}}" stroke="${{stroke}}" stroke-width="1.2" stroke-dasharray="6 6" />
+              </g>
+            `;
+          }})
+          .join("");
+      }}
+
+      function renderUSV(agent) {{
+        const [centerX, centerY] = mapPointToSvg(agent.x, agent.y);
+        const hull = formatPoints(
+          rotatePoints(
+            [
+              [-9.0, -4.5],
+              [6.0, -4.5],
+              [10.5, 0.0],
+              [6.0, 4.5],
+              [-9.0, 4.5],
+            ],
+            centerX,
+            centerY,
+            agent.heading_deg,
+          ),
+        );
+        const wake = formatPoints(
+          rotatePoints(
+            [
+              [-13.5, 0.0],
+              [-21.0, -3.8],
+              [-18.0, 0.0],
+              [-21.0, 3.8],
+            ],
+            centerX,
+            centerY,
+            agent.heading_deg,
+          ),
+        );
+        const labelX = centerX;
+        const labelY = centerY - 17;
+        return `
+          <g aria-label="${{agent.agent_id}}">
+            <polygon points="${{wake}}" fill="rgba(125, 211, 252, 0.45)" />
+            <polygon points="${{hull}}" fill="#0F172A" stroke="#E2E8F0" stroke-width="1.8" />
+            <circle cx="${{centerX.toFixed(2)}}" cy="${{centerY.toFixed(2)}}" r="2.2" fill="#7DD3FC" />
+            <g class="agent-label">
+              <rect x="${{(labelX - 22).toFixed(2)}}" y="${{(labelY - 8).toFixed(2)}}" width="44" height="15" rx="7.5" ry="7.5"
+                    fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
+              <text x="${{labelX.toFixed(2)}}" y="${{(labelY + 3).toFixed(2)}}" text-anchor="middle"
+                    font-size="8.8" font-weight="700" fill="#0F172A">${{agent.agent_id}}</text>
+            </g>
+          </g>
+        `;
+      }}
+
+      function renderUAV(agent) {{
+        const [centerX, centerY] = mapPointToSvg(agent.x, agent.y);
+        const frame = formatPoints(
+          rotatePoints(
+            [
+              [0.0, -7.0],
+              [7.0, 0.0],
+              [0.0, 7.0],
+              [-7.0, 0.0],
+            ],
+            centerX,
+            centerY,
+            agent.heading_deg,
+          ),
+        );
+        const nose = formatPoints(
+          rotatePoints(
+            [
+              [0.0, -9.5],
+              [3.0, -5.5],
+              [-3.0, -5.5],
+            ],
+            centerX,
+            centerY,
+            agent.heading_deg,
+          ),
+        );
+        const rotorOffsets = rotatePoints(
+          [
+            [-8.0, -8.0],
+            [8.0, -8.0],
+            [8.0, 8.0],
+            [-8.0, 8.0],
+          ],
+          centerX,
+          centerY,
+          agent.heading_deg,
+        );
+        const rotorCircles = rotorOffsets
+          .map(
+            ([x, y]) =>
+              `<circle cx="${{x.toFixed(2)}}" cy="${{y.toFixed(2)}}" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" />`,
+          )
+          .join("");
+        const labelX = centerX;
+        const labelY = centerY - 18;
+        return `
+          <g aria-label="${{agent.agent_id}}">
+            ${{rotorCircles}}
+            <polygon points="${{frame}}" fill="#0F766E" stroke="#F0FDFA" stroke-width="1.4" />
+            <polygon points="${{nose}}" fill="#99F6E4" />
+            <circle cx="${{centerX.toFixed(2)}}" cy="${{centerY.toFixed(2)}}" r="2.2" fill="#F0FDFA" />
+            <g class="agent-label">
+              <rect x="${{(labelX - 22).toFixed(2)}}" y="${{(labelY - 8).toFixed(2)}}" width="44" height="15" rx="7.5" ry="7.5"
+                    fill="rgba(255,255,255,0.88)" stroke="rgba(15,23,42,0.10)" />
+              <text x="${{labelX.toFixed(2)}}" y="${{(labelY + 3).toFixed(2)}}" text-anchor="middle"
+                    font-size="8.8" font-weight="700" fill="#134E4A">${{agent.agent_id}}</text>
+            </g>
+          </g>
+        `;
+      }}
+
+      function renderAgents(agents) {{
+        return agents.map((agent) => (agent.kind === "USV" ? renderUSV(agent) : renderUAV(agent))).join("");
+      }}
+
+      function renderInterpolatedAgents(frameIndex, progress) {{
+        const agents = interpolateAgents(frameIndex, progress);
+        footprintLayer.innerHTML = renderFootprints(agents);
+        agentLayer.innerHTML = renderAgents(agents);
+      }}
+
+      function renderCellLayer(cellIds, fill, stroke = "none", strokeWidth = 0) {{
+        if (cellIds.length === 0) {{
+          return "";
+        }}
+        const cellWidth = (gridCellSize / {replay.sea_map.width}) * {MAP_WIDTH};
+        const cellHeight = (gridCellSize / {replay.sea_map.height}) * {MAP_HEIGHT};
+        return cellIds
+          .map((cellId) => {{
+            const bounds = cellBounds(cellId);
+            const [svgX, svgY] = mapPointToSvg(bounds.xMin, bounds.yMax);
+            return `<rect x="${{svgX.toFixed(2)}}" y="${{svgY.toFixed(2)}}" width="${{cellWidth.toFixed(2)}}" height="${{cellHeight.toFixed(2)}}" fill="${{fill}}" stroke="${{stroke}}" stroke-width="${{strokeWidth}}" />`;
+          }})
+          .join("");
+      }}
+
+      function renderValidInfo(cellIds) {{
+        return `<g aria-label="Valid Information Cells">${{renderCellLayer(cellIds, "rgba(56, 189, 248, 0.08)")}}</g>`;
+      }}
+
+      function renderStaleInfo(cellIds) {{
+        return `<g aria-label="Stale Information Cells">${{renderCellLayer(cellIds, "rgba(249, 115, 22, 0.16)", "rgba(249, 115, 22, 0.18)", 0.4)}}</g>`;
+      }}
+
+      function renderCoveredCells(cellIds) {{
+        return `<g aria-label="Covered Cells">${{renderCellLayer(cellIds, "rgba(234, 179, 8, 0.10)")}}</g>`;
+      }}
+
+      function renderBaselineTasks(cellIds) {{
+        return `<g aria-label="Baseline Task Layer">${{cellIds
+          .map((cellId) => {{
+            const cell = cellCenter(cellId);
+            const [svgX, svgY] = mapPointToSvg(cell.x, cell.y);
+            return `
+              <g aria-label="Baseline Task ${{cell.row}}-${{cell.col}}">
+                <circle cx="${{svgX.toFixed(2)}}" cy="${{svgY.toFixed(2)}}" r="10.0" fill="rgba(71, 85, 105, 0.10)" />
+                <circle cx="${{svgX.toFixed(2)}}" cy="${{svgY.toFixed(2)}}" r="5.2" fill="#475569" stroke="#F8FAFC" stroke-width="1.8" />
+                <path d="M ${{(svgX - 8).toFixed(2)}} ${{svgY.toFixed(2)}} L ${{(svgX + 8).toFixed(2)}} ${{svgY.toFixed(2)}} M ${{svgX.toFixed(2)}} ${{(svgY - 8).toFixed(2)}} L ${{svgX.toFixed(2)}} ${{(svgY + 8).toFixed(2)}}"
+                      stroke="#CBD5E1" stroke-width="1.8" stroke-linecap="round" />
+              </g>
+            `;
+          }})
+          .join("")}}</g>`;
+      }}
+
+      function renderHotspotMarker(cellId, stroke, fill, label) {{
+        const cell = cellCenter(cellId);
+        const [svgX, svgY] = mapPointToSvg(cell.x, cell.y);
+        return `
+          <g aria-label="${{label}} Hotspot ${{cell.row}}-${{cell.col}}">
+            <circle cx="${{svgX.toFixed(2)}}" cy="${{svgY.toFixed(2)}}" r="11.0" fill="${{fill}}" stroke="${{stroke}}" stroke-width="1.5" stroke-dasharray="4 3" />
+            <polygon points="${{svgX.toFixed(2)}},${{(svgY - 8).toFixed(2)}} ${{(svgX + 8).toFixed(2)}},${{svgY.toFixed(2)}} ${{svgX.toFixed(2)}},${{(svgY + 8).toFixed(2)}} ${{(svgX - 8).toFixed(2)}},${{svgY.toFixed(2)}}"
+                     fill="${{stroke}}" opacity="0.88" />
+          </g>
+        `;
+      }}
+
+      function renderFalseAlarm(cellId) {{
+        const cell = cellCenter(cellId);
+        const [svgX, svgY] = mapPointToSvg(cell.x, cell.y);
+        return `
+          <g aria-label="False Alarm ${{cell.row}}-${{cell.col}}">
+            <circle cx="${{svgX.toFixed(2)}}" cy="${{svgY.toFixed(2)}}" r="10.0" fill="rgba(148, 163, 184, 0.10)" stroke="#64748B" stroke-width="1.3" />
+            <path d="M ${{(svgX - 6).toFixed(2)}} ${{(svgY - 6).toFixed(2)}} L ${{(svgX + 6).toFixed(2)}} ${{(svgY + 6).toFixed(2)}} M ${{(svgX + 6).toFixed(2)}} ${{(svgY - 6).toFixed(2)}} L ${{(svgX - 6).toFixed(2)}} ${{(svgY + 6).toFixed(2)}}"
+                  stroke="#64748B" stroke-width="1.6" stroke-linecap="round" />
+          </g>
+        `;
+      }}
+
+      function renderHotspotLayer(frame) {{
+        const suspectedMarkup = frame.suspected_cells
+          .map((cellId) => renderHotspotMarker(cellId, "#F59E0B", "rgba(245, 158, 11, 0.18)", "Suspected"))
+          .join("");
+        const confirmedMarkup = frame.confirmed_cells
+          .map((cellId) => renderHotspotMarker(cellId, "#DC2626", "rgba(248, 113, 113, 0.18)", "Confirmed"))
+          .join("");
+        const falseAlarmMarkup = frame.false_alarm_cells.map((cellId) => renderFalseAlarm(cellId)).join("");
+        return `<g aria-label="Hotspot Knowledge Layer">${{suspectedMarkup}}${{confirmedMarkup}}${{falseAlarmMarkup}}</g>`;
+      }}
+
+      function renderPlannedPaths(step) {{
+        return plannedPathData[step]
+          .map((item) => {{
+            const points = item.points;
+            if (!points || points.length < 2) {{
+              return "";
+            }}
+            const svgPoints = points
+              .map(([x, y]) => {{
+                const [svgX, svgY] = mapPointToSvg(x, y);
+                return `${{svgX.toFixed(2)}},${{svgY.toFixed(2)}}`;
+              }})
+              .join(" ");
+            const stroke = item.agent_id.startsWith("UAV") ? "#0F766E" : "#1D4ED8";
+            return `<polyline points="${{svgPoints}}" fill="none" stroke="${{stroke}}" stroke-width="2.0" opacity="0.72" stroke-dasharray="8 6" stroke-linecap="round" stroke-linejoin="round" />`;
+          }})
+          .join("");
+      }}
+
+      function updateStaticFrame(step) {{
+        if (lastStaticFrame === step) {{
+          return;
+        }}
+        const renderData = frameRenderData[step];
+        validInfoLayer.innerHTML = renderValidInfo(renderData.valid_cells);
+        staleInfoLayer.innerHTML = renderStaleInfo(renderData.stale_cells);
+        coveredLayer.innerHTML = renderCoveredCells(renderData.covered_cells);
+        baselineLayer.innerHTML = renderBaselineTasks(renderData.baseline_cells);
+        hotspotLayer.innerHTML = renderHotspotLayer(renderData);
+        trajectoryLayer.innerHTML = renderPlannedPaths(step);
+        lastStaticFrame = step;
+      }}
 
       function setFrame(step) {{
         currentFrame = step;
-        document.querySelectorAll(".simulation-frame").forEach((frame) => {{
-          frame.style.display = Number(frame.dataset.step) === step ? "block" : "none";
-        }});
+        currentFrameProgress = 0;
+        updateStaticFrame(step);
+        renderInterpolatedAgents(step, 0);
         document.getElementById("timeline").value = String(step);
         document.getElementById("stepBadge").textContent = "Step " + String(step);
 
         const summary = frameSummaries[step];
         document.getElementById("coverageRatio").textContent = summary.coverage_ratio;
         document.getElementById("validCells").textContent = String(summary.valid_cells);
+        document.getElementById("staleCells").textContent = String(summary.stale_cells);
         document.getElementById("suspectedCells").textContent = String(summary.suspected_cells);
         document.getElementById("confirmedCells").textContent = String(summary.confirmed_cells);
         document.getElementById("falseAlarmCells").textContent = String(summary.false_alarm_cells);
@@ -358,20 +758,67 @@ def build_simulation_html(replay: SimulationReplay) -> str:
           return;
         }}
         isPlaying = true;
+        playbackStartTime = null;
+        playbackStartFrame = currentFrame + currentFrameProgress;
         document.getElementById("playButton").textContent = "Pause";
-        playTimer = window.setInterval(() => {{
-          const nextFrame = currentFrame >= frameSummaries.length - 1 ? 0 : currentFrame + 1;
-          setFrame(nextFrame);
-        }}, 500);
+        animationHandle = window.requestAnimationFrame(playbackTick);
       }}
 
       function stopPlayback() {{
         isPlaying = false;
         document.getElementById("playButton").textContent = "Play";
-        if (playTimer !== null) {{
-          window.clearInterval(playTimer);
-          playTimer = null;
+        if (animationHandle !== null) {{
+          window.cancelAnimationFrame(animationHandle);
+          animationHandle = null;
         }}
+      }}
+
+      function playbackTick(timestamp) {{
+        if (!isPlaying) {{
+          return;
+        }}
+        if (playbackStartTime === null) {{
+          playbackStartTime = timestamp;
+        }}
+        const elapsed = timestamp - playbackStartTime;
+        let playbackFrame = playbackStartFrame + elapsed / stepDurationMs;
+        if (playbackFrame >= frameSummaries.length - 1) {{
+          playbackFrame = 0;
+          playbackStartFrame = 0;
+          playbackStartTime = timestamp;
+        }}
+
+        const baseFrame = Math.floor(playbackFrame);
+        const progress = playbackFrame - baseFrame;
+        currentFrame = baseFrame;
+        currentFrameProgress = progress;
+        updateStaticFrame(baseFrame);
+        renderInterpolatedAgents(baseFrame, progress);
+        document.getElementById("timeline").value = String(baseFrame);
+        document.getElementById("stepBadge").textContent = "Step " + String(baseFrame);
+
+        const summary = frameSummaries[baseFrame];
+        document.getElementById("coverageRatio").textContent = summary.coverage_ratio;
+        document.getElementById("validCells").textContent = String(summary.valid_cells);
+        document.getElementById("staleCells").textContent = String(summary.stale_cells);
+        document.getElementById("suspectedCells").textContent = String(summary.suspected_cells);
+        document.getElementById("confirmedCells").textContent = String(summary.confirmed_cells);
+        document.getElementById("falseAlarmCells").textContent = String(summary.false_alarm_cells);
+
+        const eventList = document.getElementById("eventList");
+        eventList.innerHTML = "";
+        if (summary.events.length === 0) {{
+          document.getElementById("emptyEvents").style.display = "block";
+        }} else {{
+          document.getElementById("emptyEvents").style.display = "none";
+          summary.events.forEach((event) => {{
+            const item = document.createElement("li");
+            item.textContent = event;
+            eventList.appendChild(item);
+          }});
+        }}
+
+        animationHandle = window.requestAnimationFrame(playbackTick);
       }}
 
       function setLabelVisibility(isVisible) {{
@@ -397,120 +844,50 @@ def build_simulation_html(replay: SimulationReplay) -> str:
 """
 
 
-def _build_frame_group(replay: SimulationReplay, frame: SimulationFrame, *, is_visible: bool) -> str:
-    sea_map = replay.sea_map
-    grid_map = build_grid_map(sea_map, replay.obstacle_layout)
-    trajectory_markup = _build_trajectory_markup(sea_map, frame)
-    footprint_markup = _build_frame_footprints(sea_map, frame.agents)
-    agent_markup = _build_frame_agents(sea_map, frame.agents)
-    return f"""
-    <g class="simulation-frame" data-step="{frame.step}" style="display:{'block' if is_visible else 'none'};">
-      {_build_valid_info_markup(sea_map, grid_map, frame.valid_cells)}
-      {_build_covered_markup(sea_map, grid_map, frame.covered_cells)}
-      {_build_hotspot_markup(sea_map, grid_map, frame.suspected_cells, frame.confirmed_cells, frame.false_alarm_cells)}
-      {footprint_markup}
-      {trajectory_markup}
-      {agent_markup}
-    </g>
-    """
-
-
-def _build_valid_info_markup(sea_map: SeaMap, grid_map, indices: tuple[tuple[int, int], ...]) -> str:
-    cell_width = (grid_map.cell_size / sea_map.width) * MAP_WIDTH
-    cell_height = (grid_map.cell_size / sea_map.height) * MAP_HEIGHT
-    cells = []
-    for row, col in indices:
-        cell = grid_map.cell_at(row, col)
-        svg_x, svg_y = _map_point_to_svg(sea_map, cell.x_min, cell.y_max)
-        cells.append(
-            f'<rect x="{svg_x:.2f}" y="{svg_y:.2f}" width="{cell_width:.2f}" height="{cell_height:.2f}" '
-            'fill="rgba(56, 189, 248, 0.08)" stroke="none" />'
+def _build_frame_payloads(replay: SimulationReplay, grid_map) -> str:
+    payloads: list[dict[str, object]] = []
+    for frame in replay.frames:
+        payloads.append(
+            {
+                "valid_cells": _encode_cell_indices(frame.valid_cells, cols=grid_map.cols),
+                "stale_cells": _encode_cell_indices(frame.stale_cells, cols=grid_map.cols),
+                "covered_cells": _encode_cell_indices(frame.covered_cells, cols=grid_map.cols),
+                "baseline_cells": _encode_cell_indices(frame.baseline_cells, cols=grid_map.cols),
+                "suspected_cells": _encode_cell_indices(frame.suspected_cells, cols=grid_map.cols),
+                "confirmed_cells": _encode_cell_indices(frame.confirmed_cells, cols=grid_map.cols),
+                "false_alarm_cells": _encode_cell_indices(
+                    frame.false_alarm_cells, cols=grid_map.cols
+                ),
+                "agents": [
+                    {
+                        "agent_id": agent.agent_id,
+                        "kind": agent.kind,
+                        "x": agent.x,
+                        "y": agent.y,
+                        "heading_deg": agent.heading_deg,
+                    }
+                    for agent in frame.agents
+                ],
+            }
         )
-    return f'<g aria-label="Valid Information Cells">{"".join(cells)}</g>'
+    return json.dumps(payloads, ensure_ascii=True)
 
 
-def _build_covered_markup(sea_map: SeaMap, grid_map, indices: tuple[tuple[int, int], ...]) -> str:
-    cell_width = (grid_map.cell_size / sea_map.width) * MAP_WIDTH
-    cell_height = (grid_map.cell_size / sea_map.height) * MAP_HEIGHT
-    cells = []
-    for row, col in indices:
-        cell = grid_map.cell_at(row, col)
-        svg_x, svg_y = _map_point_to_svg(sea_map, cell.x_min, cell.y_max)
-        cells.append(
-            f'<rect x="{svg_x:.2f}" y="{svg_y:.2f}" width="{cell_width:.2f}" height="{cell_height:.2f}" '
-            'fill="rgba(234, 179, 8, 0.10)" stroke="none" />'
+def _build_planned_path_payloads(replay: SimulationReplay) -> str:
+    payloads: list[list[dict[str, object]]] = []
+    for frame in replay.frames:
+        payloads.append(
+            [
+                {"agent_id": agent_id, "points": points}
+                for agent_id, points in frame.planned_paths
+                if len(points) >= 2
+            ]
         )
-    return f'<g aria-label="Covered Cells">{"".join(cells)}</g>'
+    return json.dumps(payloads, ensure_ascii=True)
 
 
-def _build_hotspot_markup(
-    sea_map: SeaMap,
-    grid_map,
-    suspected_cells: tuple[tuple[int, int], ...],
-    confirmed_cells: tuple[tuple[int, int], ...],
-    false_alarm_cells: tuple[tuple[int, int], ...],
-) -> str:
-    elements: list[str] = []
-    for row, col in suspected_cells:
-        elements.append(_build_marker_svg(sea_map, grid_map.cell_at(row, col), "#F59E0B", "rgba(245, 158, 11, 0.18)", "suspected"))
-    for row, col in confirmed_cells:
-        elements.append(_build_marker_svg(sea_map, grid_map.cell_at(row, col), "#DC2626", "rgba(248, 113, 113, 0.18)", "confirmed"))
-    for row, col in false_alarm_cells:
-        elements.append(_build_false_alarm_svg(sea_map, grid_map.cell_at(row, col)))
-    return f'<g aria-label="Hotspot Knowledge Layer">{"".join(elements)}</g>'
-
-
-def _build_marker_svg(sea_map: SeaMap, cell, stroke: str, fill: str, label: str) -> str:
-    svg_x, svg_y = _map_point_to_svg(sea_map, cell.center_x, cell.center_y)
-    return f"""
-    <g aria-label="{label.title()} Hotspot {cell.row}-{cell.col}">
-      <circle cx="{svg_x:.2f}" cy="{svg_y:.2f}" r="11.0" fill="{fill}" stroke="{stroke}" stroke-width="1.5" stroke-dasharray="4 3" />
-      <polygon points="{svg_x:.2f},{svg_y - 8:.2f} {svg_x + 8:.2f},{svg_y:.2f} {svg_x:.2f},{svg_y + 8:.2f} {svg_x - 8:.2f},{svg_y:.2f}"
-               fill="{stroke}" opacity="0.88" />
-    </g>
-    """
-
-
-def _build_false_alarm_svg(sea_map: SeaMap, cell) -> str:
-    svg_x, svg_y = _map_point_to_svg(sea_map, cell.center_x, cell.center_y)
-    return f"""
-    <g aria-label="False Alarm {cell.row}-{cell.col}">
-      <circle cx="{svg_x:.2f}" cy="{svg_y:.2f}" r="10.0" fill="rgba(148, 163, 184, 0.10)" stroke="#64748B" stroke-width="1.3" />
-      <path d="M {svg_x - 6:.2f} {svg_y - 6:.2f} L {svg_x + 6:.2f} {svg_y + 6:.2f} M {svg_x + 6:.2f} {svg_y - 6:.2f} L {svg_x - 6:.2f} {svg_y + 6:.2f}"
-            stroke="#64748B" stroke-width="1.6" stroke-linecap="round" />
-    </g>
-    """
-
-
-def _build_frame_footprints(sea_map: SeaMap, agents) -> str:
-    return f'<g class="footprint-layer" aria-label="Replay Footprints">{"".join(_build_footprint_svg(sea_map, agent) for agent in agents)}</g>'
-
-
-def _build_trajectory_markup(sea_map: SeaMap, frame: SimulationFrame) -> str:
-    segments: list[str] = []
-    for agent_id, points in frame.trajectories:
-        if len(points) < 2:
-            continue
-        svg_points = " ".join(
-            f"{_map_point_to_svg(sea_map, x, y)[0]:.2f},{_map_point_to_svg(sea_map, x, y)[1]:.2f}"
-            for x, y in points
-        )
-        stroke = "#0F766E" if agent_id.startswith("UAV") else "#1D4ED8"
-        segments.append(
-            f'<polyline points="{svg_points}" fill="none" stroke="{stroke}" stroke-width="2.0" opacity="0.55" stroke-linecap="round" stroke-linejoin="round" />'
-        )
-    return f'<g aria-label="Trajectory Layer">{"".join(segments)}</g>'
-
-
-def _build_frame_agents(sea_map: SeaMap, agents) -> str:
-    elements: list[str] = []
-    for agent in agents:
-        center_x, center_y = _map_point_to_svg(sea_map, agent.x, agent.y)
-        if agent.kind == "USV":
-            elements.append(_build_usv_svg(agent, center_x, center_y))
-        else:
-            elements.append(_build_uav_svg(agent, center_x, center_y))
-    return "".join(elements)
+def _encode_cell_indices(indices: tuple[tuple[int, int], ...], *, cols: int) -> list[int]:
+    return [row * cols + col for row, col in indices]
 
 
 def _build_frame_summaries(frames: tuple[SimulationFrame, ...]) -> str:
@@ -521,6 +898,7 @@ def _build_frame_summaries(frames: tuple[SimulationFrame, ...]) -> str:
                 "step": frame.step,
                 "coverage_ratio": f"{frame.coverage_ratio * 100:.1f}%",
                 "valid_cells": len(frame.valid_cells),
+                "stale_cells": len(frame.stale_cells),
                 "suspected_cells": len(frame.suspected_cells),
                 "confirmed_cells": len(frame.confirmed_cells),
                 "false_alarm_cells": len(frame.false_alarm_cells),

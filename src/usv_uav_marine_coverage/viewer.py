@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 import webbrowser
 from pathlib import Path
 from typing import Literal
@@ -297,6 +296,7 @@ def write_map_html(
     """Write the sea map HTML page to disk."""
 
     target_map = sea_map or build_default_sea_map()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         build_map_html(
             target_map,
@@ -321,7 +321,7 @@ def run_map_viewer(
     """Create the sea map page and optionally open it in the browser."""
 
     if output_path is None:
-        output_path = Path(tempfile.gettempdir()) / "usv_uav_sea_map.html"
+        output_path = Path.cwd() / "outputs" / "usv_uav_sea_map.html"
 
     html_path = write_map_html(
         output_path,

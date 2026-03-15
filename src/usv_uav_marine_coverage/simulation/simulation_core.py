@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from random import Random
 
-from usv_uav_marine_coverage.agent_model import (
-    AgentState,
-    TaskMode,
-    advance_agent_towards_task,
-    assign_agent_task,
-)
+from usv_uav_marine_coverage.agent_model import AgentState
 from usv_uav_marine_coverage.agent_overlay import VisualAgent
 from usv_uav_marine_coverage.environment import (
     ObstacleLayout,
@@ -18,18 +13,13 @@ from usv_uav_marine_coverage.environment import (
     build_default_sea_map,
     build_obstacle_layout,
 )
-from usv_uav_marine_coverage.execution.basic_state_machine import (
-    transition_to_on_task,
-    transition_to_patrol,
-    transition_to_return_to_patrol,
-    transition_to_task,
-)
 from usv_uav_marine_coverage.execution.execution_types import (
     AgentExecutionState,
-    ExecutionOutcome,
     ExecutionStage,
 )
-from usv_uav_marine_coverage.execution.path_follower import follow_path_step
+from usv_uav_marine_coverage.execution.progress_feedback import (
+    build_initial_progress_states,
+)
 from usv_uav_marine_coverage.grid import (
     CoverageState,
     GridCoverageMap,
@@ -46,21 +36,34 @@ from usv_uav_marine_coverage.information_map import (
     apply_usv_confirmation,
     build_information_map,
     observe_cells,
+    spawn_baseline_tasks,
     spawn_hotspots,
 )
-from usv_uav_marine_coverage.planning.direct_line_planner import build_direct_line_plan
-from usv_uav_marine_coverage.planning.fixed_patrol_planner import build_fixed_patrol_plan
+from usv_uav_marine_coverage.planning.astar_path_planner import (
+    reset_planner_metrics,
+    snapshot_planner_metrics,
+)
 from usv_uav_marine_coverage.tasking.baseline_task_generator import build_baseline_tasks
+from usv_uav_marine_coverage.tasking.basic_task_allocator import (
+    allocate_tasks_with_basic_policy,
+)
 from usv_uav_marine_coverage.tasking.hotspot_task_generator import sync_hotspot_confirmation_tasks
-from usv_uav_marine_coverage.tasking.nearest_agent_allocator import allocate_nearest_agents
-from usv_uav_marine_coverage.tasking.task_types import (
-    TaskAssignment,
-    TaskRecord,
-    TaskStatus,
-    TaskType,
+from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
+from usv_uav_marine_coverage.tasking.uav_resupply_task_generator import (
+    build_uav_resupply_tasks,
 )
 
+from .simulation_agent_runtime import (
+    advance_agents_one_step,
+    build_initial_execution_states,
+)
 from .simulation_policy import build_demo_agent_states, build_patrol_routes
+from .simulation_task_runtime import (
+    finalize_task_resolutions,
+    select_assigned_task_for_agent,
+    serialize_task_assignment,
+    sync_task_statuses,
+)
 
 
 @dataclass(frozen=True)
@@ -70,12 +73,15 @@ class SimulationFrame:
     step: int
     agents: tuple[VisualAgent, ...]
     valid_cells: tuple[tuple[int, int], ...]
+    stale_cells: tuple[tuple[int, int], ...]
+    baseline_cells: tuple[tuple[int, int], ...]
     suspected_cells: tuple[tuple[int, int], ...]
     confirmed_cells: tuple[tuple[int, int], ...]
     false_alarm_cells: tuple[tuple[int, int], ...]
     covered_cells: tuple[tuple[int, int], ...]
     coverage_ratio: float
     events: tuple[str, ...]
+    planned_paths: tuple[tuple[str, tuple[tuple[float, float], ...]], ...]
     trajectories: tuple[tuple[str, tuple[tuple[float, float], ...]], ...]
 
 
@@ -114,11 +120,13 @@ def build_simulation_replay(
     coverage_map = build_grid_coverage_map(grid_map)
     info_map = build_information_map(grid_map, InformationMapConfig())
     rng = Random(layout.seed + 17)
+    seeded_hotspots = spawn_hotspots(info_map, step=0, rng=rng)
 
     agents = build_demo_agent_states()
     initial_agents = agents
     patrol_routes = build_patrol_routes()
-    execution_states = _build_initial_execution_states(agents)
+    execution_states = build_initial_execution_states(agents)
+    progress_states = build_initial_progress_states(agents)
     task_records: tuple[TaskRecord, ...] = ()
     trajectories = {agent.agent_id: [(agent.x, agent.y)] for agent in agents}
     step_logs: list[dict[str, object]] = []
@@ -129,8 +137,9 @@ def build_simulation_replay(
             agents=agents,
             info_map=info_map,
             coverage_map=coverage_map,
+            execution_states=execution_states,
             trajectories=trajectories,
-            events=(),
+            events=(f"Seeded {len(seeded_hotspots)} hotspot(s)",) if seeded_hotspots else (),
         )
     ]
     step_logs.append(
@@ -139,9 +148,9 @@ def build_simulation_replay(
             agents=agents,
             info_map=info_map,
             coverage_map=coverage_map,
-            events=(),
+            events=(f"Seeded {len(seeded_hotspots)} hotspot(s)",) if seeded_hotspots else (),
             observed_by_agent={},
-            spawned_hotspots=(),
+            spawned_hotspots=seeded_hotspots,
             newly_stale_cells=tuple(_collect_stale_cells(info_map)),
             detected_by_agent={},
             confirmations_by_agent={},
@@ -151,46 +160,63 @@ def build_simulation_replay(
             planned_agents=agents,
             task_records=task_records,
             execution_states=execution_states,
+            progress_states=progress_states,
+            planner_metrics=snapshot_planner_metrics(),
         )
     )
 
     for step in range(1, steps + 1):
+        reset_planner_metrics()
         events: list[str] = []
         stale_before = set(_collect_stale_cells(info_map))
         advance_information_age(info_map, step)
         stale_after = set(_collect_stale_cells(info_map))
         newly_stale_cells = tuple(sorted(stale_after - stale_before))
-        spawned = spawn_hotspots(info_map, step, rng)
-        if spawned:
-            events.append(f"Spawned {len(spawned)} hotspot(s)")
+        spawned_baselines = spawn_baseline_tasks(info_map, step, rng)
+        if spawned_baselines:
+            events.append(f"Spawned {len(spawned_baselines)} baseline task point(s)")
+        spawned: tuple[tuple[int, int], ...] = ()
 
         task_records = sync_hotspot_confirmation_tasks(
             info_map,
             step=step,
             existing_tasks=task_records,
         )
-        task_records = tuple(task_records) + build_baseline_tasks(
+        task_records = build_baseline_tasks(
             info_map,
             step=step,
             existing_tasks=task_records,
         )
-        task_records, task_assignments = allocate_nearest_agents(
+        task_records = build_uav_resupply_tasks(
+            agents,
+            step=step,
+            existing_tasks=task_records,
+        )
+        task_records, task_assignments = allocate_tasks_with_basic_policy(
             task_records,
             agents=agents,
             execution_states=execution_states,
+            grid_map=grid_map,
         )
+        if any(task.task_type == TaskType.UAV_RESUPPLY for task in task_records):
+            events.append("Low-energy UAV rendezvous task active")
 
         previous_agents = agents
         task_decisions = tuple(
-            _serialize_task_assignment(assignment) for assignment in task_assignments
+            serialize_task_assignment(assignment) for assignment in task_assignments
         )
-        agents, execution_states, task_records = _advance_simulation_step(
+        agents, execution_states, progress_states = advance_agents_one_step(
             agents=agents,
             execution_states=execution_states,
+            progress_states=progress_states,
             task_records=task_records,
             patrol_routes=patrol_routes,
+            grid_map=grid_map,
+            obstacle_layout=layout,
             dt_seconds=dt_seconds,
+            step=step,
         )
+        task_records = sync_task_statuses(task_records, execution_states)
 
         observed_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
         detected_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
@@ -211,7 +237,19 @@ def build_simulation_replay(
                 if detected:
                     events.append(f"{agent.agent_id} marked {len(detected)} suspected hotspot(s)")
             else:
-                resolved = apply_usv_confirmation(info_map, agent, observed_indices, step=step)
+                confirmation_indices = _confirmation_indices_for_usv(
+                    agent_id=agent.agent_id,
+                    observed_indices=observed_indices,
+                    task_records=task_records,
+                    execution_states=execution_states,
+                )
+                resolved = apply_usv_confirmation(
+                    info_map,
+                    agent,
+                    confirmation_indices,
+                    step=step,
+                    rng=rng,
+                )
                 confirmed_count = 0
                 false_alarm_count = 0
                 confirmed_indices: list[tuple[int, int]] = []
@@ -231,15 +269,16 @@ def build_simulation_replay(
                 if false_alarm_count:
                     events.append(f"{agent.agent_id} cleared {false_alarm_count} false alarm(s)")
 
-        task_records, execution_states = _finalize_task_resolutions(
+        task_records, execution_states, progress_states = finalize_task_resolutions(
             agents=agents,
             execution_states=execution_states,
+            progress_states=progress_states,
             task_records=task_records,
             patrol_routes=patrol_routes,
             info_map=info_map,
             step=step,
         )
-        task_records = _sync_task_statuses(task_records, execution_states)
+        task_records = sync_task_statuses(task_records, execution_states)
 
         frames.append(
             _capture_frame(
@@ -247,6 +286,7 @@ def build_simulation_replay(
                 agents=agents,
                 info_map=info_map,
                 coverage_map=coverage_map,
+                execution_states=execution_states,
                 trajectories=trajectories,
                 events=tuple(events),
             )
@@ -269,6 +309,8 @@ def build_simulation_replay(
                 planned_agents=agents,
                 task_records=task_records,
                 execution_states=execution_states,
+                progress_states=progress_states,
+                planner_metrics=snapshot_planner_metrics(),
             )
         )
 
@@ -283,311 +325,36 @@ def build_simulation_replay(
     )
 
 
-def _build_initial_execution_states(
-    agents: tuple[AgentState, ...],
-) -> dict[str, AgentExecutionState]:
-    return {
-        agent.agent_id: AgentExecutionState(
-            agent_id=agent.agent_id,
-            stage=ExecutionStage.PATROL,
-            active_task_id=None,
-            active_plan=None,
-            current_waypoint_index=0,
-            patrol_route_id=agent.agent_id,
-            patrol_waypoint_index=0,
-        )
-        for agent in agents
-    }
-
-
-def _advance_simulation_step(
+def _confirmation_indices_for_usv(
     *,
-    agents: tuple[AgentState, ...],
-    execution_states: dict[str, AgentExecutionState],
-    task_records: tuple[TaskRecord, ...],
-    patrol_routes: dict[str, tuple[tuple[float, float], ...]],
-    dt_seconds: float,
-) -> tuple[tuple[AgentState, ...], dict[str, AgentExecutionState], tuple[TaskRecord, ...]]:
-    next_agents: list[AgentState] = []
-    next_execution_states: dict[str, AgentExecutionState] = {}
-
-    for agent in agents:
-        execution_state = execution_states[agent.agent_id]
-        active_task = _assigned_task_for_agent(task_records, agent.agent_id)
-        execution_state = _pre_step_transition(
-            agent,
-            execution_state=execution_state,
-            active_task=active_task,
-            patrol_routes=patrol_routes,
-        )
-
-        updated_agent, updated_execution_state = _run_agent_stage(
-            agent,
-            execution_state=execution_state,
-            active_task=active_task,
-            patrol_routes=patrol_routes,
-            dt_seconds=dt_seconds,
-        )
-        next_agents.append(updated_agent)
-        next_execution_states[agent.agent_id] = updated_execution_state
-
-    synced_tasks = _sync_task_statuses(task_records, next_execution_states)
-    return (tuple(next_agents), next_execution_states, synced_tasks)
-
-
-def _pre_step_transition(
-    agent: AgentState,
-    *,
-    execution_state: AgentExecutionState,
-    active_task: TaskRecord | None,
-    patrol_routes: dict[str, tuple[tuple[float, float], ...]],
-) -> AgentExecutionState:
-    if execution_state.stage == ExecutionStage.PATROL and active_task is not None:
-        return transition_to_task(execution_state, task_id=active_task.task_id)
-
-    if (
-        execution_state.stage in {ExecutionStage.GO_TO_TASK, ExecutionStage.ON_TASK}
-        and active_task is None
-    ):
-        patrol_index, return_x, return_y = _nearest_patrol_rejoin_point(
-            agent,
-            patrol_routes[agent.agent_id],
-        )
-        return transition_to_return_to_patrol(
-            execution_state,
-            return_target_x=return_x,
-            return_target_y=return_y,
-            patrol_waypoint_index=patrol_index,
-        )
-    return execution_state
-
-
-def _run_agent_stage(
-    agent: AgentState,
-    *,
-    execution_state: AgentExecutionState,
-    active_task: TaskRecord | None,
-    patrol_routes: dict[str, tuple[tuple[float, float], ...]],
-    dt_seconds: float,
-) -> tuple[AgentState, AgentExecutionState]:
-    if execution_state.stage == ExecutionStage.ON_TASK:
-        confirm_agent = assign_agent_task(
-            agent, TaskMode.CONFIRM if agent.kind == "USV" else TaskMode.INVESTIGATE
-        )
-        return (advance_agent_towards_task(confirm_agent, dt_seconds), execution_state)
-
-    if execution_state.stage == ExecutionStage.GO_TO_TASK and active_task is not None:
-        plan = build_direct_line_plan(
-            agent,
-            goal_x=active_task.target_x,
-            goal_y=active_task.target_y,
-            planner_name="direct_line_planner",
-            task_id=active_task.task_id,
-        )
-        execution_state = replace(execution_state, active_plan=plan, current_waypoint_index=0)
-        advanced_agent, execution_state, outcome = follow_path_step(
-            agent,
-            execution_state,
-            dt_seconds=dt_seconds,
-        )
-        if outcome == ExecutionOutcome.TASK_SITE_REACHED:
-            return (advanced_agent, transition_to_on_task(execution_state))
-        return (advanced_agent, execution_state)
-
-    if execution_state.stage == ExecutionStage.RETURN_TO_PATROL:
-        assert (
-            execution_state.return_target_x is not None
-            and execution_state.return_target_y is not None
-        )
-        plan = build_direct_line_plan(
-            agent,
-            goal_x=execution_state.return_target_x,
-            goal_y=execution_state.return_target_y,
-            planner_name="direct_line_planner",
-            task_id=None,
-        )
-        execution_state = replace(execution_state, active_plan=plan, current_waypoint_index=0)
-        advanced_agent, execution_state, outcome = follow_path_step(
-            agent,
-            execution_state,
-            dt_seconds=dt_seconds,
-        )
-        if outcome == ExecutionOutcome.PATROL_REJOINED:
-            next_index = (execution_state.patrol_waypoint_index + 1) % len(
-                patrol_routes[agent.agent_id]
-            )
-            return (
-                advanced_agent,
-                replace(
-                    transition_to_patrol(execution_state),
-                    patrol_waypoint_index=next_index,
-                ),
-            )
-        return (advanced_agent, execution_state)
-
-    plan = build_fixed_patrol_plan(
-        agent,
-        patrol_route_id=execution_state.patrol_route_id or agent.agent_id,
-        patrol_waypoint_index=execution_state.patrol_waypoint_index,
-        patrol_routes=patrol_routes,
-    )
-    execution_state = replace(execution_state, active_plan=plan, current_waypoint_index=0)
-    advanced_agent, execution_state, outcome = follow_path_step(
-        agent,
-        execution_state,
-        dt_seconds=dt_seconds,
-    )
-    if outcome == ExecutionOutcome.WAYPOINT_REACHED:
-        next_index = (execution_state.patrol_waypoint_index + 1) % len(
-            patrol_routes[agent.agent_id]
-        )
-        execution_state = replace(
-            execution_state,
-            active_plan=None,
-            current_waypoint_index=0,
-            patrol_waypoint_index=next_index,
-        )
-    return (advanced_agent, execution_state)
-
-
-def _assigned_task_for_agent(
-    task_records: tuple[TaskRecord, ...],
     agent_id: str,
-) -> TaskRecord | None:
-    for task in task_records:
-        if task.assigned_agent_id != agent_id:
-            continue
-        if task.status in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}:
-            return task
-    return None
-
-
-def _sync_task_statuses(
+    observed_indices: tuple[tuple[int, int], ...],
     task_records: tuple[TaskRecord, ...],
     execution_states: dict[str, AgentExecutionState],
-) -> tuple[TaskRecord, ...]:
-    synced_tasks: list[TaskRecord] = []
-    for task in task_records:
-        if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
-            synced_tasks.append(task)
-            continue
-        if task.assigned_agent_id is None:
-            synced_tasks.append(task)
-            continue
+) -> tuple[tuple[int, int], ...]:
+    """Only allow hotspot confirmation while a USV is stopped on its assigned task."""
 
-        execution_state = execution_states.get(task.assigned_agent_id)
-        if execution_state is None:
-            synced_tasks.append(replace(task, status=TaskStatus.REQUEUED, assigned_agent_id=None))
-            continue
+    execution_state = execution_states.get(agent_id)
+    if execution_state is None or execution_state.stage != ExecutionStage.ON_TASK:
+        return ()
 
-        if (
-            execution_state.active_task_id == task.task_id
-            and execution_state.stage == ExecutionStage.ON_TASK
-        ):
-            synced_tasks.append(replace(task, status=TaskStatus.IN_PROGRESS))
-            continue
-        if (
-            execution_state.active_task_id == task.task_id
-            and execution_state.stage == ExecutionStage.GO_TO_TASK
-        ):
-            synced_tasks.append(replace(task, status=TaskStatus.ASSIGNED))
-            continue
-        if execution_state.active_task_id is None and execution_state.stage in {
-            ExecutionStage.PATROL,
-            ExecutionStage.RETURN_TO_PATROL,
-        }:
-            synced_tasks.append(replace(task, status=TaskStatus.REQUEUED, assigned_agent_id=None))
-            continue
-        synced_tasks.append(task)
-    return tuple(synced_tasks)
+    active_task = select_assigned_task_for_agent(task_records, agent_id)
+    if active_task is None or active_task.task_type != TaskType.HOTSPOT_CONFIRMATION:
+        return ()
+    if active_task.target_row is None or active_task.target_col is None:
+        return ()
 
-
-def _finalize_task_resolutions(
-    *,
-    agents: tuple[AgentState, ...],
-    execution_states: dict[str, AgentExecutionState],
-    task_records: tuple[TaskRecord, ...],
-    patrol_routes: dict[str, tuple[tuple[float, float], ...]],
-    info_map: InformationMap,
-    step: int,
-) -> tuple[tuple[TaskRecord, ...], dict[str, AgentExecutionState]]:
-    agent_by_id = {agent.agent_id: agent for agent in agents}
-    next_execution_states = dict(execution_states)
-    resolved_tasks: list[TaskRecord] = []
-
-    for task in task_records:
-        if task.task_type != TaskType.HOTSPOT_CONFIRMATION:
-            resolved_tasks.append(task)
-            continue
-        if task.status == TaskStatus.COMPLETED:
-            resolved_tasks.append(task)
-            continue
-
-        assert task.target_row is not None and task.target_col is not None
-        state = info_map.state_at(task.target_row, task.target_col)
-        if state.known_hotspot_state not in {
-            HotspotKnowledgeState.CONFIRMED,
-            HotspotKnowledgeState.FALSE_ALARM,
-        }:
-            resolved_tasks.append(task)
-            continue
-
-        resolved_tasks.append(
-            replace(
-                task,
-                status=TaskStatus.COMPLETED,
-                completed_step=step,
-            )
-        )
-        if task.assigned_agent_id is None:
-            continue
-
-        agent = agent_by_id.get(task.assigned_agent_id)
-        execution_state = next_execution_states.get(task.assigned_agent_id)
-        if agent is None or execution_state is None:
-            continue
-        if execution_state.stage != ExecutionStage.ON_TASK:
-            continue
-        patrol_index, return_x, return_y = _nearest_patrol_rejoin_point(
-            agent,
-            patrol_routes[agent.agent_id],
-        )
-        next_execution_states[task.assigned_agent_id] = transition_to_return_to_patrol(
-            execution_state,
-            return_target_x=return_x,
-            return_target_y=return_y,
-            patrol_waypoint_index=patrol_index,
-        )
-
-    return (tuple(resolved_tasks), next_execution_states)
-
-
-def _nearest_patrol_rejoin_point(
-    agent: AgentState,
-    patrol_route: tuple[tuple[float, float], ...],
-) -> tuple[int, float, float]:
-    indexed_points = [(index, point[0], point[1]) for index, point in enumerate(patrol_route)]
-    index, x, y = min(
-        indexed_points,
-        key=lambda item: (agent.x - item[1]) ** 2 + (agent.y - item[2]) ** 2,
-    )
-    return (index, x, y)
-
-
-def _serialize_task_assignment(assignment: TaskAssignment) -> dict[str, object]:
-    return {
-        "task_id": assignment.task_id,
-        "task_type": "hotspot_confirmation",
-        "selected_agent": assignment.agent_id,
-        "candidate_agents": [{"agent_id": assignment.agent_id}],
-        "selection_reason": assignment.selection_reason,
-        "selection_score": round(assignment.selection_score, 3),
-    }
+    target_index = (active_task.target_row, active_task.target_col)
+    if target_index not in observed_indices:
+        return ()
+    return (target_index,)
 
 
 def _collect_stale_cells(info_map: InformationMap) -> tuple[tuple[int, int], ...]:
     stale_cells: list[tuple[int, int]] = []
     for cell in info_map.grid_map.flat_cells:
+        if cell.has_obstacle:
+            continue
         if info_map.state_at(cell.row, cell.col).validity.value == "stale_known":
             stale_cells.append((cell.row, cell.col))
     return tuple(stale_cells)
@@ -599,26 +366,28 @@ def _capture_frame(
     agents: tuple[AgentState, ...],
     info_map: InformationMap,
     coverage_map: GridCoverageMap,
+    execution_states: dict[str, AgentExecutionState],
     trajectories: dict[str, list[tuple[float, float]]],
     events: tuple[str, ...],
 ) -> SimulationFrame:
     valid_cells: list[tuple[int, int]] = []
+    stale_cells: list[tuple[int, int]] = []
+    baseline_cells: list[tuple[int, int]] = []
     suspected_cells: list[tuple[int, int]] = []
-    confirmed_cells: list[tuple[int, int]] = []
-    false_alarm_cells: list[tuple[int, int]] = []
     covered_cells: list[tuple[int, int]] = []
 
     for cell in info_map.grid_map.flat_cells:
         info_state = info_map.state_at(cell.row, cell.col)
         coverage_state = coverage_map.state_at(cell.row, cell.col)
-        if info_state.validity.value == "valid":
-            valid_cells.append((cell.row, cell.col))
+        if not cell.has_obstacle:
+            if info_state.validity.value == "valid":
+                valid_cells.append((cell.row, cell.col))
+            else:
+                stale_cells.append((cell.row, cell.col))
+        if info_state.has_baseline_task:
+            baseline_cells.append((cell.row, cell.col))
         if info_state.known_hotspot_state == HotspotKnowledgeState.SUSPECTED:
             suspected_cells.append((cell.row, cell.col))
-        elif info_state.known_hotspot_state == HotspotKnowledgeState.CONFIRMED:
-            confirmed_cells.append((cell.row, cell.col))
-        elif info_state.known_hotspot_state == HotspotKnowledgeState.FALSE_ALARM:
-            false_alarm_cells.append((cell.row, cell.col))
         if coverage_state.coverage_state == CoverageState.COVERED:
             covered_cells.append((cell.row, cell.col))
 
@@ -635,13 +404,52 @@ def _capture_frame(
             for agent in agents
         ),
         valid_cells=tuple(valid_cells),
+        stale_cells=tuple(stale_cells),
+        baseline_cells=tuple(baseline_cells),
         suspected_cells=tuple(suspected_cells),
-        confirmed_cells=tuple(confirmed_cells),
-        false_alarm_cells=tuple(false_alarm_cells),
+        confirmed_cells=(),
+        false_alarm_cells=(),
         covered_cells=tuple(covered_cells),
         coverage_ratio=coverage_map.covered_ratio(),
         events=events,
+        planned_paths=tuple(
+            (
+                agent.agent_id,
+                _extract_active_plan_points(
+                    agent,
+                    execution_states.get(agent.agent_id),
+                ),
+            )
+            for agent in agents
+        ),
         trajectories=tuple(
             (agent_id, tuple(points)) for agent_id, points in sorted(trajectories.items())
         ),
     )
+
+
+def _extract_active_plan_points(
+    agent: AgentState,
+    execution_state: AgentExecutionState | None,
+) -> tuple[tuple[float, float], ...]:
+    if execution_state is None or execution_state.active_plan is None:
+        return ()
+
+    plan = execution_state.active_plan
+    if len(plan.waypoints) < 1:
+        return ()
+
+    start_index = min(execution_state.current_waypoint_index, len(plan.waypoints) - 1)
+    remaining_waypoints = plan.waypoints[start_index:]
+    if not remaining_waypoints:
+        return ()
+
+    points: list[tuple[float, float]] = [(agent.x, agent.y)]
+    for waypoint in remaining_waypoints:
+        point = (waypoint.x, waypoint.y)
+        if point == points[-1]:
+            continue
+        points.append(point)
+    if len(points) < 2:
+        return ()
+    return tuple(points)
