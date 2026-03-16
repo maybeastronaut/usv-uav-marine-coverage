@@ -1,0 +1,113 @@
+{
+  "dataset": {
+    "name": "usv_planner_return_to_patrol_stress_3seed_1200",
+    "scenario": "return_to_patrol_stress",
+    "steps": 1200,
+    "seeds": [
+      20260334,
+      20260335,
+      20260336
+    ]
+  },
+  "runs": [
+    {
+      "seed": 20260334,
+      "planner": "astar",
+      "coverage_ratio": 0.855157,
+      "valid_cells": 893,
+      "stale_cells": 474,
+      "confirmed_hotspots": 18,
+      "false_alarms": 4,
+      "astar_total_calls": 381,
+      "astar_blocked_calls": 64,
+      "astar_expanded_nodes": 82582
+    },
+    {
+      "seed": 20260334,
+      "planner": "astar_smoother",
+      "coverage_ratio": 0.903438,
+      "valid_cells": 829,
+      "stale_cells": 538,
+      "confirmed_hotspots": 23,
+      "false_alarms": 4,
+      "astar_total_calls": 257,
+      "astar_blocked_calls": 2,
+      "astar_expanded_nodes": 79205
+    },
+    {
+      "seed": 20260335,
+      "planner": "astar",
+      "coverage_ratio": 0.919532,
+      "valid_cells": 1001,
+      "stale_cells": 366,
+      "confirmed_hotspots": 15,
+      "false_alarms": 1,
+      "astar_total_calls": 288,
+      "astar_blocked_calls": 2,
+      "astar_expanded_nodes": 214345
+    },
+    {
+      "seed": 20260335,
+      "planner": "astar_smoother",
+      "coverage_ratio": 0.868325,
+      "valid_cells": 956,
+      "stale_cells": 411,
+      "confirmed_hotspots": 19,
+      "false_alarms": 3,
+      "astar_total_calls": 303,
+      "astar_blocked_calls": 1,
+      "astar_expanded_nodes": 130908
+    },
+    {
+      "seed": 20260336,
+      "planner": "astar",
+      "coverage_ratio": 0.868325,
+      "valid_cells": 874,
+      "stale_cells": 493,
+      "confirmed_hotspots": 19,
+      "false_alarms": 2,
+      "astar_total_calls": 392,
+      "astar_blocked_calls": 84,
+      "astar_expanded_nodes": 109115
+    },
+    {
+      "seed": 20260336,
+      "planner": "astar_smoother",
+      "coverage_ratio": 0.880029,
+      "valid_cells": 873,
+      "stale_cells": 494,
+      "confirmed_hotspots": 21,
+      "false_alarms": 2,
+      "astar_total_calls": 362,
+      "astar_blocked_calls": 89,
+      "astar_expanded_nodes": 90314
+    }
+  ],
+  "averages": {
+    "astar": {
+      "coverage_ratio": 0.881,
+      "valid_cells": 922.667,
+      "stale_cells": 444.333,
+      "confirmed_hotspots": 17.333,
+      "false_alarms": 2.333,
+      "astar_total_calls": 353.667,
+      "astar_blocked_calls": 50.0,
+      "astar_expanded_nodes": 135347.333
+    },
+    "astar_smoother": {
+      "coverage_ratio": 0.884,
+      "valid_cells": 886.0,
+      "stale_cells": 481.0,
+      "confirmed_hotspots": 21.0,
+      "false_alarms": 3.0,
+      "astar_total_calls": 307.333,
+      "astar_blocked_calls": 30.667,
+      "astar_expanded_nodes": 100142.333
+    }
+  },
+  "conclusion": {
+    "astar_strength": "整体 coverage 与 freshness 仍更稳定，平均 valid_cells 更高、stale_cells 更低。",
+    "astar_smoother_strength": "在最新这组 return-to-patrol 压力场景下更容易完成热点精检，同时平均 blocked calls 与 expanded nodes 更低。",
+    "comparison_note": "这组最新 3-seed 数据更适合体现任务后回巡航链的差异：astar + smoother 并没有稳定放大全局 freshness，但更清楚地放大了“热点完成更多、blocked 更少、规划成本更低”的那部分优势。"
+  }
+}

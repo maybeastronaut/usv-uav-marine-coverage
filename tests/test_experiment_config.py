@@ -62,6 +62,30 @@ execution_policy = "phase_one_execution"
         self.assertEqual(config.information_map.max_active_baseline_tasks, 3)
         self.assertEqual(config.information_map.baseline_respawn_cooldown_steps, 120)
 
+    def test_load_experiment_config_can_apply_planner_path_stress_scenario(self) -> None:
+        config = load_experiment_config(
+            Path("configs/planner_path_stress_cost_aware.toml"),
+        )
+
+        self.assertEqual(config.scenario.name, "planner_path_stress")
+        self.assertEqual(config.algorithms.task_allocator, "cost_aware_centralized_allocator")
+        self.assertEqual(config.information_map.max_active_hotspots, 10)
+        self.assertEqual(config.information_map.offshore_hotspot_spawn_probability, 0.055)
+        self.assertEqual(config.information_map.baseline_respawn_cooldown_steps, 360)
+
+    def test_load_experiment_config_can_apply_return_to_patrol_stress_scenario(self) -> None:
+        config = load_experiment_config(
+            Path("configs/return_to_patrol_stress_cost_aware.toml"),
+        )
+
+        self.assertEqual(config.scenario.name, "return_to_patrol_stress")
+        self.assertEqual(config.algorithms.task_allocator, "cost_aware_centralized_allocator")
+        self.assertEqual(config.information_map.max_active_hotspots, 8)
+        self.assertEqual(config.information_map.offshore_hotspot_spawn_probability, 0.05)
+        self.assertEqual(config.information_map.nearshore_baseline_spawn_probability, 0.00002)
+        self.assertEqual(config.information_map.baseline_respawn_cooldown_steps, 420)
+        self.assertEqual(config.information_map.information_timeout_steps, 360)
+
     def test_load_experiment_config_overlays_information_map_on_scenario(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "experiment.toml"

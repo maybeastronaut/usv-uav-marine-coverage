@@ -18,8 +18,13 @@ module execution, and future tests.
 |-- README.md
 |-- configs/
 |   |-- cost_aware_allocator.toml
+|   |-- planner_path_stress_cost_aware.toml
+|   |-- planner_path_stress_cost_aware_astar_smoother.toml
+|   |-- return_to_patrol_stress_cost_aware.toml
+|   |-- return_to_patrol_stress_cost_aware_astar_smoother.toml
 |   |-- offshore_hotspot_pressure_basic.toml
 |   |-- offshore_hotspot_pressure_cost_aware.toml
+|   |-- offshore_hotspot_pressure_cost_aware_astar_smoother.toml
 |   |-- cost_aware_uav_persistent_multi_region.toml
 |   |-- astar_smoother_baseline.toml
 |   |-- hybrid_astar_baseline.toml
@@ -30,6 +35,10 @@ module execution, and future tests.
 |   |   |   |-- batch.toml
 |   |   |   `-- ...
 |   |   |-- usv_planner_offshore_hotspot_pressure_3seed_800/
+|   |   |   |-- README.md
+|   |   |   |-- batch.toml
+|   |   |   `-- ...
+|   |   |-- usv_planner_return_to_patrol_stress_3seed_1200/
 |   |   |   |-- README.md
 |   |   |   |-- batch.toml
 |   |   |   `-- ...
@@ -127,6 +136,10 @@ module execution, and future tests.
 - `configs/offshore_hotspot_pressure_basic.toml`: 当前 `offshore_hotspot_pressure` 单种子任务层对比用的基础任务分配配置样例。
 - `configs/offshore_hotspot_pressure_cost_aware.toml`: 当前 `offshore_hotspot_pressure` 单种子任务层对比用的 `cost-aware` 任务分配配置样例。
 - `configs/offshore_hotspot_pressure_cost_aware_astar_smoother.toml`: 当前 `offshore_hotspot_pressure` 下切换 `USV astar + smoother` 的实验配置样例。
+- `configs/planner_path_stress_cost_aware.toml`: 当前 `planner_path_stress` 单种子 `USV planner` 对比用的 `cost-aware + astar` 配置样例。
+- `configs/planner_path_stress_cost_aware_astar_smoother.toml`: 当前 `planner_path_stress` 单种子 `USV planner` 对比用的 `cost-aware + astar + smoother` 配置样例。
+- `configs/return_to_patrol_stress_cost_aware.toml`: 当前 `return_to_patrol_stress` 单种子 `USV planner` 对比用的 `cost-aware + astar` 配置样例。
+- `configs/return_to_patrol_stress_cost_aware_astar_smoother.toml`: 当前 `return_to_patrol_stress` 单种子 `USV planner` 对比用的 `cost-aware + astar + smoother` 配置样例。
 - `configs/cost_aware_uav_persistent_multi_region.toml`: 当前固定 `cost_aware` 任务层、切换第二版 `UAV persistent multi-region` 规划器的组合实验配置样例。
 - `configs/astar_smoother_baseline.toml`: 当前切换 `USV A* + smoother` 规划器的基础实验配置样例，用于和默认 `astar_path_planner` 做单因素对比。
 - `configs/hybrid_astar_baseline.toml`: 当前切换 `USV hybrid A* + smoother` 规划器的基础实验配置样例，用于和默认 `astar_path_planner` 做单因素对比。
@@ -136,6 +149,7 @@ module execution, and future tests.
 - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_5seed/`: 当前任务层算法对比用的正式数据集目录，固定 `offshore_hotspot_pressure` 场景、`5` 个随机种子和 `1200 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
 - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_3seed_cooldown/`: 当前任务层第一轮对比在修正 `cost_aware` 不可达任务冷却后形成的正式数据集目录，固定 `offshore_hotspot_pressure` 场景、`3` 个随机种子和 `1200 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
 - `configs/experiment_datasets/usv_planner_offshore_hotspot_pressure_3seed_800/`: 当前 `USV` 规划层对比用的正式数据集目录，固定 `offshore_hotspot_pressure` 场景、`3` 个随机种子和 `800 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
+- `configs/experiment_datasets/usv_planner_return_to_patrol_stress_3seed_1200/`: 当前 `USV` 规划层在 `return_to_patrol_stress` 场景下的最新正式数据集目录，固定最新 `3` 个随机种子和 `1200 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
 - `configs/phase_one_batch.toml`: 当前批量实验配置样例，用于多随机种子或多运行标签的批量仿真。
 - `configs/scenario_comparison_batch.toml`: 当前按“共享 baseline 算法 + 多个可复用实验场景”做批量对比的样例。
 - `docx/current_system_flow.md`: 基于当前已有代码整理的系统实际流程说明文档。
@@ -160,7 +174,7 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/information_map.py`: 基于栅格的动态信息地图层，负责信息时效、真实热点动态生成、UAV 初检与 USV 精检两阶段热点处理流程；当前近海基础任务生成频率已进一步下调、同时活跃上限收敛为 `1` 且已服务冷却延长，并为热点生成加入区域级障碍/风险区净空判定；当前信息时效阈值已改为“近海 `800 step`、其余区域 `400 step`”。
 - `src/usv_uav_marine_coverage/planning/__init__.py`: 路径规划层子包入口，用于承载巡航规划与任务路径规划相关模块。
 - `src/usv_uav_marine_coverage/planning/astar_path_planner.py`: `USV` 带朝向状态的基础非完整约束 `A*` 路径规划模块，负责在栅格海域中结合初始航向、障碍约束、船体安全余量与风险代价生成可执行任务路径。
-- `src/usv_uav_marine_coverage/planning/astar_smoother_path_planner.py`: `USV A* + smoother` 规划模块，负责在保留 baseline `A*` 状态空间与运动原语的前提下，对搜索结果做轻量后处理平滑，降低锯齿折返但尽量不放大搜索开销。
+- `src/usv_uav_marine_coverage/planning/astar_smoother_path_planner.py`: `USV A* + smoother` 规划模块，负责在保留 baseline `A*` 状态空间与运动原语的前提下，对搜索结果做轻量后处理平滑，降低锯齿折返，并通过最大平滑段长约束避免把任务路径压缩成会触发连续重规划的超长直段。
 - `src/usv_uav_marine_coverage/planning/hybrid_astar_path_planner.py`: 改进版 `USV hybrid A*` 规划模块，负责在更丰富的运动原语和更细采样下生成路径，并通过后处理平滑减少锯齿折返。
 - `src/usv_uav_marine_coverage/planning/direct_line_planner.py`: 直达式路径规划模块，负责当前 `UAV` 的任务前往、会合补能与基础回巡航直线路径生成。
 - `src/usv_uav_marine_coverage/planning/fixed_patrol_planner.py`: 固定巡航规划模块，负责将当前 demo 巡航航点生成最小 patrol path。
@@ -173,7 +187,7 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/simulation/__init__.py`: 仿真回放子包的公开门面，保持现有对外接口稳定，并协调核心仿真、日志输出和回放页面生成。
 - `src/usv_uav_marine_coverage/simulation/experiment_config.py`: 统一实验配置层，负责 baseline 配置 dataclass、TOML 加载、CLI 覆盖与配置摘要序列化，为后续算法对比与批量实验提供统一入口。
 - `src/usv_uav_marine_coverage/simulation/experiment_batch.py`: 批量实验入口，负责加载 batch TOML、顺序运行多组配置，并输出统一的 `batch_results.jsonl` 与 `batch_summary.json`。
-- `src/usv_uav_marine_coverage/simulation/scenario_catalog.py`: 可复用实验场景目录，统一维护 `baseline_patrol / offshore_hotspot_pressure / nearshore_baseline_pressure / mixed_task_pressure` 等场景预设；实验配置与 batch 运行通过场景名复用这些预设，而不是重复拷贝整套参数。
+- `src/usv_uav_marine_coverage/simulation/scenario_catalog.py`: 可复用实验场景目录，统一维护 `baseline_patrol / planner_path_stress / return_to_patrol_stress / offshore_hotspot_pressure / nearshore_baseline_pressure / mixed_task_pressure` 等场景预设；实验配置与 batch 运行通过场景名复用这些预设，而不是重复拷贝整套参数。
 - `src/usv_uav_marine_coverage/simulation/simulation_agent_runtime.py`: 回放式仿真的智能体运行时编排模块，负责按执行阶段调度 planner、follower、反馈层与恢复逻辑；当前 `RECOVERY` 机制、局部巡航段接入和碰撞防护保留在这里，但“是否重规划 / 是否进入恢复 / 是否对坏目标冷却”的判定已下沉到 `execution/progress_feedback.py`。
 - `src/usv_uav_marine_coverage/simulation/simulation_core.py`: 回放式仿真的顶层编排流程，负责按时间步组织任务层、规划层、执行层、覆盖更新、信息刷新和回放帧采集。
 - `src/usv_uav_marine_coverage/simulation/simulation_logging.py`: 回放式仿真的结构化日志层，负责 `events.jsonl`、`summary.json`、任务决策摘要、路径摘要、执行偏差、热点处理链以及实验配置摘要记录。
@@ -304,9 +318,19 @@ name = "baseline_patrol"
 Current built-in reusable scenarios are:
 
 - `baseline_patrol`
+- `planner_path_stress`
+- `return_to_patrol_stress`
 - `offshore_hotspot_pressure`
 - `nearshore_baseline_pressure`
 - `mixed_task_pressure`
+
+`planner_path_stress` is a dedicated USV-planner comparison scenario: it keeps a moderate
+offshore hotspot load while reducing nearshore baseline-task noise, so planner differences
+are more likely to show up in cross-risk-zone travel, task ingress, and return-to-patrol behavior.
+
+`return_to_patrol_stress` pushes this one step further for post-task recovery: it keeps hotspot
+pressure moderate while lowering nearshore noise and slightly tightening information freshness,
+so differences in long return-to-patrol transitions and route-shape stability are easier to see.
 
 The scenario preset provides reusable task-pressure defaults, while the `[algorithms]`
 table remains free to switch allocators and planners. If one scenario needs small local

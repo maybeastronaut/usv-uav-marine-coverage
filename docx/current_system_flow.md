@@ -323,6 +323,8 @@
 - `simulation/experiment_config.py` 已提供统一实验配置层，当前支持 baseline 配置 dataclass、可复用场景预设、TOML 加载、CLI 覆盖与配置摘要序列化
 - `simulation/scenario_catalog.py` 已提供可复用实验场景目录，当前内置：
   - `baseline_patrol`：当前第一阶段 baseline 场景，任务密度适中，作为统一对照基线
+  - `planner_path_stress`：`USV` 路径规划对比场景，保持中等远海热点压力并进一步压低近海基础任务干扰，适合观察跨风险区往返、任务接入与回巡航路径差异
+  - `return_to_patrol_stress`：`USV` 回巡航接入压力场景，保持中等远海热点负载并进一步降低近海任务噪声，适合观察任务完成后长距离回巡航、跨风险区往返与路径折返差异
   - `offshore_hotspot_pressure`：远海热点压力场景，提高远海热点生成压力，适合观察热点响应与确认链路
   - `nearshore_baseline_pressure`：近海基础任务压力场景，提高近海基础巡检任务密度，适合观察驻区巡航与基础任务处理能力
   - `mixed_task_pressure`：混合任务压力场景，同时提高近海基础任务与远海热点压力，适合观察多任务竞争下的整体调度表现
@@ -340,9 +342,12 @@
     - 用于修正 `cost_aware` 不可达任务冷却后，重新对比 `basic_task_allocator` 与 `cost_aware_centralized_allocator`
   - `configs/experiment_datasets/usv_planner_offshore_hotspot_pressure_3seed_800/`
     - 用于在固定 `cost_aware_centralized_allocator + uav_lawnmower_planner` 下，对比 `astar_path_planner` 与 `astar_smoother_path_planner`
+  - `configs/experiment_datasets/usv_planner_return_to_patrol_stress_3seed_1200/`
+    - 用于在 `return_to_patrol_stress` 场景下，对比 `astar_path_planner` 与 `astar_smoother_path_planner` 在热点完成与回巡航链上的差异
 - 当前已固化的正式数据集固定随机种子包括：
   - `20260314 / 20260315 / 20260316 / 20260317 / 20260319`
   - `20260324 / 20260325 / 20260326`
+  - `20260334 / 20260335 / 20260336`
 - 当前已固化的正式数据集固定步数包括：
   - `1200`
   - `800`
@@ -398,7 +403,7 @@
   - `uav_persistent_multi_region_coverage_planner`：远海固定四 AOI、freshness debt 优先、事件触发 AOI 重排、区域承诺覆盖的第二版升级 planner
 - 当前 `USV` 路径规划已具备三套可切换实现：
   - `astar_path_planner`：当前 baseline，带朝向状态的风险加权网格 `A*`
-  - `astar_smoother_path_planner`：轻量升级版，保留 baseline `A*` 的状态空间和运动原语，只对 waypoint 链做后处理平滑，目标是在不显著增加搜索成本的前提下减少锯齿折返
+  - `astar_smoother_path_planner`：轻量升级版，保留 baseline `A*` 的状态空间和运动原语，只对 waypoint 链做后处理平滑，并加入最大平滑段长约束，避免把任务路径压缩成会触发连续 `GO_TO_TASK` 重规划的超长直段
   - `hybrid_astar_path_planner`：改进版，使用更丰富的转向原语、更细的碰撞采样和后处理平滑，目标是降低锯齿折返和局部保守 blocked
 - 当前 `USV` planner 切换已通过 `planning/usv_path_planner.py` 统一分发，任务层和 runtime 不再各自硬编码单一 `A*`
 - 当前第一版 `uav_multi_region_coverage_planner` 不新增新的 UAV 执行状态，而是继续复用 `patrol_route_id + patrol_waypoint_index` 执行链；规划层会按当前信息地图动态重建跨 AOI 的 patrol route，并输出当前区域级航点段

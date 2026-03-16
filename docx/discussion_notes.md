@@ -117,6 +117,8 @@
   - 相对当前 baseline 改进了什么
   - 是否影响已有实验的可比性
 - `UAV` planner 对比时，优先固定任务层为 `cost_aware_centralized_allocator`，不要再把任务层差异和 `UAV` 搜索差异混在同一轮结论里
+- `USV` planner 对比时，优先固定任务层为 `cost_aware_centralized_allocator`、固定 `UAV` 为 `uav_lawnmower_planner`，并优先使用 `planner_path_stress` 这类“中等热点压力 + 低近海任务噪声”的路径对比场景，而不是直接用热点极高压场景混入过强任务层扰动
+- 若要进一步放大 `astar + smoother` 这类路径形状优化算法的优势，优先使用 `return_to_patrol_stress` 这类“中等热点压力 + 更低近海噪声 + 更强调任务后长距离回巡航”的场景，而不是继续单纯提高热点数量
 - 当前已知现象是：即使第二版 persistent planner 加入区域承诺、事件触发重排、AOI 去冲突和 sweep 端点接入，它在 `offshore_hotspot_pressure` 下仍可能略弱于固定 lawnmower；后续排查重点应放在“双机协同”和“区域内未完成覆盖量”而不是继续增加单机即时 freshness 贪心
 - 后续新增算法时，优先复用当前已经落地的：
   - 统一实验配置层

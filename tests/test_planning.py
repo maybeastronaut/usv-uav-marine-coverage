@@ -702,6 +702,52 @@ class PlanningTestCase(unittest.TestCase):
         self.assertGreater(len(smoother_plan.waypoints), 2)
         self.assertLessEqual(len(smoother_plan.waypoints), len(astar_plan.waypoints))
         self.assertGreater(smoother_plan.estimated_cost, 0.0)
+        self.assertTrue(
+            all(
+                hypot(next_waypoint.x - current.x, next_waypoint.y - current.y) <= 55.0
+                for current, next_waypoint in zip(
+                    smoother_plan.waypoints,
+                    smoother_plan.waypoints[1:],
+                    strict=False,
+                )
+            )
+        )
+
+    def test_astar_smoother_limits_task_path_segment_length(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260325)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+        agent = replace(
+            agent,
+            x=111.606,
+            y=170.562,
+            heading_deg=-132.0,
+            speed_mps=2.475,
+            task=AgentTaskState(),
+        )
+
+        plan = build_astar_smoother_path_plan(
+            agent,
+            grid_map=grid_map,
+            goal_x=187.5,
+            goal_y=637.5,
+            planner_name="astar_smoother_path_planner",
+            task_id="baseline-service-25-7",
+        )
+
+        self.assertEqual(plan.status, PathPlanStatus.PLANNED)
+        self.assertGreater(len(plan.waypoints), 2)
+        self.assertTrue(
+            all(
+                hypot(next_waypoint.x - current.x, next_waypoint.y - current.y) <= 55.0
+                for current, next_waypoint in zip(
+                    plan.waypoints,
+                    plan.waypoints[1:],
+                    strict=False,
+                )
+            )
+        )
 
     def test_hybrid_astar_can_plan_out_from_tight_start_pose(self) -> None:
         sea_map = build_default_sea_map()

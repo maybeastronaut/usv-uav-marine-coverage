@@ -33,6 +33,7 @@ class PlannerTuning:
     segment_sample_count: int
     smoothing_enabled: bool = False
     smoothing_cost_tolerance: float = 0.0
+    max_smoothed_segment_length_m: float | None = None
 
     @property
     def heading_step_deg(self) -> float:
@@ -61,6 +62,7 @@ ASTAR_SMOOTHER_TUNING = PlannerTuning(
     segment_sample_count=4,
     smoothing_enabled=True,
     smoothing_cost_tolerance=8.0,
+    max_smoothed_segment_length_m=55.0,
 )
 
 HYBRID_ASTAR_TUNING = PlannerTuning(
@@ -74,6 +76,7 @@ HYBRID_ASTAR_TUNING = PlannerTuning(
     segment_sample_count=6,
     smoothing_enabled=True,
     smoothing_cost_tolerance=12.0,
+    max_smoothed_segment_length_m=70.0,
 )
 
 
@@ -560,6 +563,12 @@ def _smooth_waypoints(
     while current_index < len(waypoints) - 1:
         next_index = current_index + 1
         for candidate_index in range(len(waypoints) - 1, current_index + 1, -1):
+            if _exceeds_smoothed_segment_limit(
+                waypoints[current_index],
+                waypoints[candidate_index],
+                tuning=tuning,
+            ):
+                continue
             if not _segment_is_collision_free(
                 grid_map,
                 current_x=waypoints[current_index].x,
@@ -588,6 +597,17 @@ def _smooth_waypoints(
         smoothed.append(waypoints[next_index])
         current_index = next_index
     return tuple(smoothed)
+
+
+def _exceeds_smoothed_segment_limit(
+    start: Waypoint,
+    end: Waypoint,
+    *,
+    tuning: PlannerTuning,
+) -> bool:
+    if tuning.max_smoothed_segment_length_m is None:
+        return False
+    return hypot(end.x - start.x, end.y - start.y) > tuning.max_smoothed_segment_length_m
 
 
 def _waypoint_path_cost(

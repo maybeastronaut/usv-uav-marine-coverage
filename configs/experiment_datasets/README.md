@@ -48,6 +48,14 @@
     - 每个 seed 的 `events.jsonl`
     - 每个 seed 的 `summary.json`
   - 适合观察 `astar` 与 `astar + smoother` 在高远海热点压力下的效果/成本取舍
+- `usv_planner_return_to_patrol_stress_3seed_1200/`
+  - 当前正式 `USV` 回巡航接入压力对比数据集目录
+  - 已包含：
+    - `batch.toml`
+    - 聚合对比结果
+    - 每个 seed 的 `events.jsonl`
+    - 每个 seed 的 `summary.json`
+  - 适合观察 `astar` 与 `astar + smoother` 在任务后长距离回巡航场景下的热点完成数、blocked 行为与规划成本差异
 
 ## 后续建议的数据集方向
 
