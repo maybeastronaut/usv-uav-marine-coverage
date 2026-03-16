@@ -1,0 +1,8 @@
+# Generated replay and experiment artifacts should not affect GitHub language stats.
+*.html linguist-generated=true
+*.jsonl linguist-generated=true
+*.svg linguist-generated=true
+
+# Machine-readable generated summaries should also be ignored by Linguist.
+*_summary.json linguist-generated=true
+*_results.jsonl linguist-generated=true
