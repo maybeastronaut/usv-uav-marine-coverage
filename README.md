@@ -17,7 +17,15 @@ module execution, and future tests.
 |-- AGENTS.md
 |-- README.md
 |-- configs/
+|   |-- cost_aware_allocator.toml
+|   |-- experiment_datasets/
+|   |   |-- README.md
+|   |   `-- task_allocator_offshore_hotspot_pressure_5seed/
+|   |       |-- README.md
+|   |       |-- batch.toml
+|   |       `-- ...
 |   |-- phase_one_batch.toml
+|   |-- scenario_comparison_batch.toml
 |   `-- phase_one_baseline.toml
 |-- docx/
 |   |-- current_system_flow.md
@@ -28,6 +36,9 @@ module execution, and future tests.
 |       |-- simulation_replay_summary.json
 |       `-- simulation_replay.html
 |-- outputs/
+|   |-- experiments/
+|   |   `-- task_allocator/
+|   |       `-- offshore_hotspot_pressure_5seed_1200/
 |   `-- ...
 |-- pyproject.toml
 |-- src/
@@ -55,6 +66,7 @@ module execution, and future tests.
 |       |   `-- usv_patrol_planner.py
 |       |-- simulation/
 |       |   |-- __init__.py
+|       |   |-- scenario_catalog.py
 |       |   |-- experiment_config.py
 |       |   |-- simulation_agent_runtime.py
 |       |   |-- simulation_core.py
@@ -64,8 +76,10 @@ module execution, and future tests.
 |       |   `-- simulation_task_runtime.py
 |       |-- tasking/
 |       |   |-- __init__.py
+|       |   |-- allocator_common.py
 |       |   |-- baseline_task_generator.py
 |       |   |-- basic_task_allocator.py
+|       |   |-- cost_aware_task_allocator.py
 |       |   |-- hotspot_task_generator.py
 |       |   |-- task_types.py
 |       |   `-- uav_resupply_task_generator.py
@@ -74,12 +88,15 @@ module execution, and future tests.
     |-- test_agent_model.py
     |-- test_environment.py
     |-- test_execution.py
+    |-- test_experiment_batch.py
+    |-- test_experiment_config.py
     |-- test_grid.py
     |-- test_information_map.py
     |-- test_planning.py
     |-- test_simulation.py
     |-- test_simulation_runtime.py
     |-- test_smoke.py
+    |-- test_tasking.py
     `-- test_viewer.py
 ```
 
@@ -88,7 +105,11 @@ module execution, and future tests.
 - `AGENTS.md`: Codex 在本仓库中的开发约束、编码规范、文档同步规则和协作方式说明。
 - `README.md`: 项目总览、环境配置方式、运行方式、测试方式和工程结构说明。
 - `configs/phase_one_baseline.toml`: 当前第一阶段 baseline 的统一实验配置样例，集中定义仿真步数、随机种子、算法选择和信息地图参数。
+- `configs/cost_aware_allocator.toml`: 当前第一版 `cost-aware centralized allocator` 的实验配置样例，用于与 baseline 任务分配器做直接对比。
+- `configs/experiment_datasets/README.md`: 实验数据集目录说明，约定如何组织“能突出算法特点”的可复用对比数据集。
+- `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_5seed/`: 当前任务层算法对比用的正式数据集目录，固定 `offshore_hotspot_pressure` 场景、`5` 个随机种子和 `1200 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
 - `configs/phase_one_batch.toml`: 当前批量实验配置样例，用于多随机种子或多运行标签的批量仿真。
+- `configs/scenario_comparison_batch.toml`: 当前按“共享 baseline 算法 + 多个可复用实验场景”做批量对比的样例。
 - `docx/current_system_flow.md`: 基于当前已有代码整理的系统实际流程说明文档。
 - `docx/discussion_notes.md`: 讨论阶段确认的建模方案、状态标记和后续实现依据。
 - `docx/generated/sea_map.html`: 当前默认生成的 HTML 海图产物，可直接用于查看 `clean` 模式结果。
@@ -96,6 +117,7 @@ module execution, and future tests.
 - `docx/generated/simulation_replay_events.jsonl`: 当前回放式仿真同步生成的逐事件日志文件，适合 AI 按时间步复盘整体行为，并分析任务指派、路径摘要、执行偏差与热点处理链。
 - `docx/generated/simulation_replay_summary.json`: 当前回放式仿真同步生成的最终汇总日志文件，适合快速评估覆盖率、热点处理和路径长度等结果。
 - `outputs/`: 默认输出目录。未显式指定 `--output` 时，静态海图和回放式仿真产物都会写到这里。
+- `outputs/experiments/task_allocator/offshore_hotspot_pressure_5seed_1200/`: 当前任务层算法正式对比产物目录，存放 `offshore_hotspot_pressure` 场景下 `5` 个随机种子、`1200 step` 的 `basic vs cost-aware` 对比结果与汇总。
 - `pyproject.toml`: Python 项目配置、依赖声明、`pytest` 和 `ruff` 的工具配置入口。
 - `src/usv_uav_marine_coverage/__init__.py`: 项目包入口与基础版本信息。
 - `src/usv_uav_marine_coverage/__main__.py`: 命令行运行入口，用于生成静态海图或回放式仿真预览 HTML，并设置页面初始显示模式。
@@ -119,6 +141,7 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/simulation/__init__.py`: 仿真回放子包的公开门面，保持现有对外接口稳定，并协调核心仿真、日志输出和回放页面生成。
 - `src/usv_uav_marine_coverage/simulation/experiment_config.py`: 统一实验配置层，负责 baseline 配置 dataclass、TOML 加载、CLI 覆盖与配置摘要序列化，为后续算法对比与批量实验提供统一入口。
 - `src/usv_uav_marine_coverage/simulation/experiment_batch.py`: 批量实验入口，负责加载 batch TOML、顺序运行多组配置，并输出统一的 `batch_results.jsonl` 与 `batch_summary.json`。
+- `src/usv_uav_marine_coverage/simulation/scenario_catalog.py`: 可复用实验场景目录，统一维护 `baseline_patrol / offshore_hotspot_pressure / nearshore_baseline_pressure / mixed_task_pressure` 等场景预设；实验配置与 batch 运行通过场景名复用这些预设，而不是重复拷贝整套参数。
 - `src/usv_uav_marine_coverage/simulation/simulation_agent_runtime.py`: 回放式仿真的智能体运行时编排模块，负责按执行阶段调度 planner、follower、反馈层与恢复逻辑；当前 `RECOVERY` 机制、局部巡航段接入和碰撞防护保留在这里，但“是否重规划 / 是否进入恢复 / 是否对坏目标冷却”的判定已下沉到 `execution/progress_feedback.py`。
 - `src/usv_uav_marine_coverage/simulation/simulation_core.py`: 回放式仿真的顶层编排流程，负责按时间步组织任务层、规划层、执行层、覆盖更新、信息刷新和回放帧采集。
 - `src/usv_uav_marine_coverage/simulation/simulation_logging.py`: 回放式仿真的结构化日志层，负责 `events.jsonl`、`summary.json`、任务决策摘要、路径摘要、执行偏差、热点处理链以及实验配置摘要记录。
@@ -127,19 +150,26 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/simulation/simulation_replay_view.py`: 回放 HTML/SVG 视图层，负责页面结构、图层渲染、时间步控件和前端交互脚本；当前 `USV` 回放插值已改为基于船头朝向的样条过渡，并修正了世界坐标航向与 SVG 旋转方向不一致的问题；当前还新增了栅格信息新鲜度图层，可直接显示 `valid/stale` 信息分布，且 `valid/stale` 统计已改为只统计非障碍格；当前回放输出已从“每帧完整 SVG 预渲染”调整为“前端按原始数据即时渲染”，并且页面只展示智能体的当前规划路径虚线，不再直接展示真实历史轨迹。
 - `src/usv_uav_marine_coverage/simulation/simulation_task_runtime.py`: 回放式仿真的任务运行时模块，负责任务生命周期同步、任务关闭收尾和任务分配摘要序列化；当前任务完成后的 `USV` 不再接回最近全局 waypoint，而是优先接入最近局部巡航段。
 - `src/usv_uav_marine_coverage/tasking/__init__.py`: 任务层子包入口，用于承载任务类型、任务生成与任务分配相关模块。
+- `src/usv_uav_marine_coverage/tasking/allocator_common.py`: 任务分配器共享 helper，统一责任区过滤、已有 assignment 保留和 `uav_resupply` 专用分配逻辑。
 - `src/usv_uav_marine_coverage/tasking/baseline_task_generator.py`: 基础监测任务生成模块，负责从近海动态基础监测需求同步生成 `baseline_service` 任务。
 - `src/usv_uav_marine_coverage/tasking/basic_task_allocator.py`: 第一版基础任务分配算法，负责按“热点优先、同类按创建时间”排序后，在责任分区内选择可达 `USV` 中规划代价最低的执行体；当前默认规则为 `USV-1` 负责近海任务、`USV-2/USV-3` 分别负责远海上/下半区任务，同一步内的 agent-task 可达性筛选已加短期缓存，避免重复触发相同 `A*`。
+- `src/usv_uav_marine_coverage/tasking/cost_aware_task_allocator.py`: 第一版代价感知集中式任务分配算法，负责在严格责任区约束下对 `baseline_service` 和 `hotspot_confirmation` 构建代价矩阵，并以“优先级分层 + 集中式贪心”方式选择总代价最低的 `USV-task` 组合；`uav_resupply` 仍保持专门分配逻辑。
 - `src/usv_uav_marine_coverage/tasking/hotspot_task_generator.py`: 热点任务生成模块，负责从当前 `suspected` 热点状态同步生成 `hotspot_confirmation` 任务。
 - `src/usv_uav_marine_coverage/tasking/task_types.py`: 任务数据结构模块，统一任务类型、来源、生命周期与分配结果表达。
 - `src/usv_uav_marine_coverage/tasking/uav_resupply_task_generator.py`: `UAV` 补能任务生成模块，负责按最近 `USV` 可达能耗提前触发并同步生成 `uav_resupply` 会合补能任务。
 - `src/usv_uav_marine_coverage/viewer.py`: 海图 HTML/SVG 渲染逻辑，负责同一 HTML 内 `clean/debug` 切换视图、标签开关、预留轨迹层下的底图、障碍、监测点、热点、静态覆盖预览与静态智能体外观输出。
 - `tests/test_agent_model.py`: 验证第一阶段闭环更新下的 `UAV/USV` 机动差异、到达减速逻辑以及探测/覆盖半径判定逻辑。
 - `tests/test_environment.py`: 验证默认海域尺寸、三区带范围、障碍环境生成约束以及监测点/热点生成结果。
+- `tests/test_execution.py`: 验证执行层路径段跟踪、局部避障和恢复链路的关键边界。
+- `tests/test_experiment_batch.py`: 验证批量实验配置读取、失败不中断和批量汇总输出。
+- `tests/test_experiment_config.py`: 验证统一实验配置层、场景预设解析和实验配置合法性校验。
 - `tests/test_grid.py`: 验证离散栅格网络的分辨率、坐标映射、环境属性落格结果以及 `footprint` 覆盖映射逻辑。
 - `tests/test_information_map.py`: 验证信息地图的时效刷新、热点生成、UAV 疑似标记、USV 确认与假警报流程。
+- `tests/test_planning.py`: 验证 `UAV/USV` 路径规划、巡航路径生成与规划边界。
 - `tests/test_simulation.py`: 验证回放式仿真预览的帧生成、智能体运动和 HTML 控件/图层输出。
 - `tests/test_simulation_runtime.py`: 验证回放式仿真运行时 helper 的单步推进、任务收尾与任务状态同步边界。
 - `tests/test_smoke.py`: 验证项目包是否能被基础导入。
+- `tests/test_tasking.py`: 验证任务生成、基础任务分配器和 `cost-aware centralized allocator` 的规则与边界。
 - `tests/test_viewer.py`: 验证 `clean/debug` 模式下海图 HTML 的关键图层、静态覆盖预览开关与智能体标识是否正确。
 
 ## Setup
@@ -232,10 +262,47 @@ If you want to run the replay with a unified experiment configuration:
 python -m usv_uav_marine_coverage --simulate --config configs/phase_one_baseline.toml
 ```
 
+Every experiment config can now include a reusable scenario section:
+
+```toml
+[scenario]
+name = "baseline_patrol"
+```
+
+Current built-in reusable scenarios are:
+
+- `baseline_patrol`
+- `offshore_hotspot_pressure`
+- `nearshore_baseline_pressure`
+- `mixed_task_pressure`
+
+The scenario preset provides reusable task-pressure defaults, while the `[algorithms]`
+table remains free to switch allocators and planners. If one scenario needs small local
+adjustments, the `[information_map]` table can still override the preset without creating
+a brand-new scenario definition.
+
+If you want to run the first cost-aware task-allocation comparison configuration:
+
+```bash
+python -m usv_uav_marine_coverage --simulate --config configs/cost_aware_allocator.toml
+```
+
 If you want to run a batch experiment across multiple seeds or run labels:
 
 ```bash
 python -m usv_uav_marine_coverage --simulate --batch-config configs/phase_one_batch.toml
+```
+
+If you want to compare several reusable scenarios under one shared baseline config:
+
+```bash
+python -m usv_uav_marine_coverage --simulate --batch-config configs/scenario_comparison_batch.toml
+```
+
+If you want to rerun the current formal `basic vs cost-aware` task-allocation comparison dataset:
+
+```bash
+python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_5seed/batch.toml
 ```
 
 If you want a longer replay:

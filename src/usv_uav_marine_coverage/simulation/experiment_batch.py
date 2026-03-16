@@ -17,6 +17,7 @@ class BatchRunSpec:
 
     label: str
     config_path: Path
+    scenario_override: str | None = None
     seed_override: int | None = None
     steps_override: int | None = None
     dt_override: float | None = None
@@ -81,6 +82,7 @@ def load_batch_experiment_spec(path: Path) -> BatchExperimentSpec:
             if not isinstance(config_value, str) or not config_value:
                 raise ValueError(f"runs[{index}].config must be a non-empty string")
             config_path = _resolve_relative(path, Path(config_value))
+        scenario_override = _optional_str(run_raw, "scenario")
         seed_override = _optional_int(run_raw, "seed")
         steps_override = _optional_int(run_raw, "steps")
         dt_override = _optional_float(run_raw, "dt_seconds")
@@ -88,6 +90,7 @@ def load_batch_experiment_spec(path: Path) -> BatchExperimentSpec:
             BatchRunSpec(
                 label=label,
                 config_path=config_path,
+                scenario_override=scenario_override,
                 seed_override=seed_override,
                 steps_override=steps_override,
                 dt_override=dt_override,
@@ -117,6 +120,7 @@ def run_batch_experiment(
         html_path = spec.output_dir / f"{run.label}.html"
         resolved_config = load_experiment_config(
             run.config_path,
+            scenario_override=run.scenario_override,
             seed_override=run.seed_override,
             steps_override=run.steps_override,
             dt_override=run.dt_override,
@@ -126,6 +130,7 @@ def run_batch_experiment(
                 output_path=html_path,
                 generate_html=spec.generate_html,
                 config_path=run.config_path,
+                scenario_name=run.scenario_override,
                 seed=run.seed_override,
                 steps=run.steps_override,
                 dt_seconds=run.dt_override,
@@ -135,6 +140,7 @@ def run_batch_experiment(
                 {
                     "label": run.label,
                     "config_path": str(run.config_path),
+                    "scenario_override": run.scenario_override,
                     "experiment_config": serialize_experiment_config(resolved_config),
                     "status": "failed",
                     "error_type": type(exc).__name__,
@@ -152,6 +158,7 @@ def run_batch_experiment(
             {
                 "label": run.label,
                 "config_path": str(run.config_path),
+                "scenario_override": run.scenario_override,
                 "experiment_config": serialize_experiment_config(resolved_config),
                 "status": "completed",
                 "error_type": None,
@@ -288,6 +295,15 @@ def _optional_float(raw: dict[str, object], key: str) -> float | None:
     if not isinstance(value, (int, float)):
         raise ValueError(f"{key} must be a float when provided")
     return float(value)
+
+
+def _optional_str(raw: dict[str, object], key: str) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be a non-empty string when provided")
+    return value
 
 
 def _resolve_relative(base_file: Path, candidate: Path) -> Path:

@@ -40,7 +40,10 @@
 - 基于栅格的信息地图层
 - 第一版任务层、路径层与执行层接口
 - 统一实验配置层
+- 可复用实验场景目录
+- 实验数据集配置目录
 - 批量实验入口与统一实验汇总输出
+- 两套可切换的任务分配算法
 - 基础巡检与热点确认双任务源最小闭环
 - 覆盖映射静态可视化测试
 - 正式圆形 `footprint` 展示
@@ -288,7 +291,11 @@
 - `PATROL -> GO_TO_TASK -> ON_TASK -> GO_TO_RENDEZVOUS -> ON_RECHARGE -> RETURN_TO_PATROL` 的基础执行状态机
 - `baseline_service + hotspot_confirmation` 任务生成、分配、`USV` 风险加权 `A*` 路径执行与任务关闭
 - `uav_resupply` 低电量补能任务生成、最近 `USV` 会合、附着跟随充电与回巡航
-- 当前任务层由 `basic_task_allocator` 统一执行“热点优先、同类按创建时间、责任分区内最低代价 `USV` 分配”的基础任务算法
+- 当前任务层已支持两套可切换的任务分配算法：
+  - `basic_task_allocator`
+  - `cost_aware_centralized_allocator`
+- 当前 `basic_task_allocator` 负责“热点优先、同类按创建时间、责任分区内最低代价 `USV` 分配”的基础任务算法
+- 当前 `cost_aware_centralized_allocator` 负责在严格责任区约束下，对 `baseline_service` 和 `hotspot_confirmation` 建立代价矩阵，并以“优先级分层 + 集中式贪心”方式做集中分配
 - 当前任务层会将 `uav_resupply` 作为最高优先级紧急任务处理，并为低电量 `UAV` 选择最近 `USV` 作为会合补能对象
 - 当前 `uav_resupply` 触发阈值采用“到最近 `USV` 的预计可达能耗 + 45 单位安全余量”
 - 当前 `uav_resupply` 释放阈值采用“充到 `90%` 电量后脱离 `USV` 回到巡航”
@@ -304,8 +311,29 @@
 当前模块组织方式：
 
 - `simulation/` 子包统一承载当前回放仿真相关模块
-- `simulation/experiment_config.py` 已提供统一实验配置层，当前支持 baseline 配置 dataclass、TOML 加载、CLI 覆盖与配置摘要序列化
+- `simulation/experiment_config.py` 已提供统一实验配置层，当前支持 baseline 配置 dataclass、可复用场景预设、TOML 加载、CLI 覆盖与配置摘要序列化
+- `simulation/scenario_catalog.py` 已提供可复用实验场景目录，当前内置：
+  - `baseline_patrol`：当前第一阶段 baseline 场景，任务密度适中，作为统一对照基线
+  - `offshore_hotspot_pressure`：远海热点压力场景，提高远海热点生成压力，适合观察热点响应与确认链路
+  - `nearshore_baseline_pressure`：近海基础任务压力场景，提高近海基础巡检任务密度，适合观察驻区巡航与基础任务处理能力
+  - `mixed_task_pressure`：混合任务压力场景，同时提高近海基础任务与远海热点压力，适合观察多任务竞争下的整体调度表现
+- `configs/experiment_datasets/` 已提供实验数据集配置目录，当前用于集中维护“固定场景 + 固定随机种子集合 + 固定步数 + 固定统计口径”的正式对比数据集
+- 当前首个正式实验数据集为：`configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_5seed/`
+  - 用于对比 `basic_task_allocator` 与 `cost_aware_centralized_allocator`
+  - 固定场景：`offshore_hotspot_pressure`
+  - 固定随机种子：`20260314 / 20260315 / 20260316 / 20260317 / 20260319`
+  - 固定步数：`1200`
+  - 当前目录内已同时保存：
+    - `batch.toml`
+    - `comparison_summary.json`
+    - 每个 seed 的 `events.jsonl`
+    - 每个 seed 的 `summary.json`
+- 当前实验配置中的 `[scenario]` 段会先选定一个场景预设，再允许 `[information_map]` 对该场景做局部覆盖，从而避免为不同算法重复复制整套场景参数
+- 当前这套场景机制已经可以在“同一场景下切换不同算法”与“同一算法下切换不同场景”两种实验方式中复用，避免把场景参数和算法配置绑定在一起
+- 当前实验配置层已支持选择 `basic_task_allocator` 或 `cost_aware_centralized_allocator` 作为任务层算法
 - `simulation/experiment_batch.py` 已提供批量实验入口，当前支持读取 batch TOML、顺序运行多组实验，并输出 `batch_results.jsonl` 与 `batch_summary.json`
+- 当前 batch 运行已支持按 run 覆盖 `scenario`，从而可以在同一 base config 下复用多个实验场景做算法对比
+- 当前正式 `5-seed / 1200-step` 任务层对比结果已经同步固化进上述实验数据集目录，可直接作为后续算法复现实验与对比基线使用
 - `simulation/simulation_core.py` 负责回放仿真的顶层时间步编排，并组织帧采集与日志采集
 - `simulation/simulation_agent_runtime.py` 负责智能体单步推进、路径执行、恢复动作执行与巡航回接点计算
 - `execution/progress_feedback.py` 负责 `USV` 的执行反馈判定，包括无进展检测、坏目标冷却以及是否进入 `RECOVERY` / 是否允许重规划

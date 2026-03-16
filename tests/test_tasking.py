@@ -8,10 +8,15 @@ from usv_uav_marine_coverage.environment import (
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState, ExecutionStage
 from usv_uav_marine_coverage.grid import build_grid_map
 from usv_uav_marine_coverage.information_map import build_information_map
+from usv_uav_marine_coverage.planning.path_types import PathPlan, PathPlanStatus, Waypoint
 from usv_uav_marine_coverage.simulation.simulation_policy import build_demo_agent_states
 from usv_uav_marine_coverage.tasking.baseline_task_generator import build_baseline_tasks
 from usv_uav_marine_coverage.tasking.basic_task_allocator import (
     allocate_tasks_with_basic_policy,
+)
+from usv_uav_marine_coverage.tasking.cost_aware_task_allocator import (
+    _reachable_cost,
+    allocate_tasks_with_cost_aware_policy,
 )
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskSource, TaskStatus, TaskType
 from usv_uav_marine_coverage.tasking.uav_resupply_task_generator import (
@@ -24,6 +29,20 @@ class TaskingTestCase(unittest.TestCase):
         sea_map = build_default_sea_map()
         obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
         return build_grid_map(sea_map, obstacle_layout)
+
+    def _build_idle_execution_states(self, agents):
+        return {
+            agent.agent_id: AgentExecutionState(
+                agent_id=agent.agent_id,
+                stage=ExecutionStage.PATROL,
+                active_task_id=None,
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id=agent.agent_id,
+                patrol_waypoint_index=0,
+            )
+            for agent in agents
+        }
 
     def test_build_uav_resupply_tasks_creates_task_for_low_energy_uav(self) -> None:
         agents = tuple(
@@ -506,18 +525,7 @@ class TaskingTestCase(unittest.TestCase):
 
     def test_allocator_limits_lower_offshore_tasks_to_usv_3_partition(self) -> None:
         agents = build_demo_agent_states()
-        execution_states = {
-            agent.agent_id: AgentExecutionState(
-                agent_id=agent.agent_id,
-                stage=ExecutionStage.PATROL,
-                active_task_id=None,
-                active_plan=None,
-                current_waypoint_index=0,
-                patrol_route_id=agent.agent_id,
-                patrol_waypoint_index=0,
-            )
-            for agent in agents
-        }
+        execution_states = self._build_idle_execution_states(agents)
         task = TaskRecord(
             task_id="hotspot-confirmation-lower-offshore",
             task_type=TaskType.HOTSPOT_CONFIRMATION,
@@ -540,6 +548,257 @@ class TaskingTestCase(unittest.TestCase):
 
         self.assertEqual(updated_tasks[0].assigned_agent_id, "USV-3")
         self.assertEqual(decisions[0].agent_id, "USV-3")
+
+    def test_cost_aware_allocator_prioritizes_hotspot_layer(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        tasks = (
+            TaskRecord(
+                task_id="baseline-service-nearshore",
+                task_type=TaskType.BASELINE_SERVICE,
+                source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+                status=TaskStatus.PENDING,
+                priority=1,
+                target_x=180.0,
+                target_y=520.0,
+                target_row=12,
+                target_col=7,
+                created_step=1,
+            ),
+            TaskRecord(
+                task_id="hotspot-confirmation-upper",
+                task_type=TaskType.HOTSPOT_CONFIRMATION,
+                source=TaskSource.UAV_SUSPECTED,
+                status=TaskStatus.PENDING,
+                priority=10,
+                target_x=700.0,
+                target_y=320.0,
+                target_row=10,
+                target_col=28,
+                created_step=2,
+            ),
+        )
+
+        _, decisions = allocate_tasks_with_cost_aware_policy(
+            tasks,
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=self._build_runtime_grid_map(),
+        )
+
+        self.assertEqual(
+            [decision.task_id for decision in decisions],
+            ["hotspot-confirmation-upper", "baseline-service-nearshore"],
+        )
+
+    def test_cost_aware_allocator_picks_lower_cost_task_inside_partition(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = {
+            agent.agent_id: AgentExecutionState(
+                agent_id=agent.agent_id,
+                stage=ExecutionStage.PATROL
+                if agent.agent_id == "USV-2"
+                else ExecutionStage.GO_TO_TASK
+                if agent.kind == "USV"
+                else ExecutionStage.PATROL,
+                active_task_id=None
+                if agent.agent_id == "USV-2"
+                else "busy-task"
+                if agent.kind == "USV"
+                else None,
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id=agent.agent_id,
+                patrol_waypoint_index=0,
+            )
+            for agent in agents
+        }
+        tasks = (
+            TaskRecord(
+                task_id="hotspot-confirmation-upper-near",
+                task_type=TaskType.HOTSPOT_CONFIRMATION,
+                source=TaskSource.UAV_SUSPECTED,
+                status=TaskStatus.PENDING,
+                priority=10,
+                target_x=700.0,
+                target_y=320.0,
+                target_row=10,
+                target_col=28,
+                created_step=4,
+            ),
+            TaskRecord(
+                task_id="hotspot-confirmation-upper-far",
+                task_type=TaskType.HOTSPOT_CONFIRMATION,
+                source=TaskSource.UAV_SUSPECTED,
+                status=TaskStatus.PENDING,
+                priority=10,
+                target_x=900.0,
+                target_y=320.0,
+                target_row=10,
+                target_col=36,
+                created_step=2,
+            ),
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_cost_aware_policy(
+            tasks,
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=self._build_runtime_grid_map(),
+        )
+
+        assigned_by_id = {task.task_id: task.assigned_agent_id for task in updated_tasks}
+        self.assertEqual(assigned_by_id["hotspot-confirmation-upper-near"], "USV-2")
+        self.assertIsNone(assigned_by_id["hotspot-confirmation-upper-far"])
+        self.assertEqual(decisions[0].task_id, "hotspot-confirmation-upper-near")
+        self.assertEqual(
+            decisions[0].selection_reason,
+            "lowest_cost_partition_usv_for_hotspot_confirmation",
+        )
+
+    def test_cost_aware_allocator_keeps_partition_even_if_other_usv_is_closer(self) -> None:
+        agents = tuple(
+            replace(agent, x=650.0, y=315.0) if agent.agent_id == "USV-3" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="hotspot-confirmation-upper-zone",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_SUSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_cost_aware_policy(
+            (task,),
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=self._build_runtime_grid_map(),
+        )
+
+        self.assertEqual(updated_tasks[0].assigned_agent_id, "USV-2")
+        self.assertEqual(decisions[0].agent_id, "USV-2")
+
+    def test_cost_aware_allocator_requeues_unreachable_partition_candidate(self) -> None:
+        grid_map = self._build_runtime_grid_map()
+        agents = tuple(
+            replace(agent, x=287.5, y=487.5) if agent.agent_id == "USV-2" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="hotspot-confirmation-upper-unreachable",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_SUSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_cost_aware_policy(
+            (task,),
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=grid_map,
+        )
+
+        self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
+        self.assertIsNone(updated_tasks[0].assigned_agent_id)
+        self.assertEqual(decisions, ())
+
+    def test_cost_aware_allocator_preserves_uav_resupply_logic(self) -> None:
+        agents = tuple(
+            agent if agent.agent_id != "UAV-1" else replace(agent, energy_level=30.0)
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.PENDING,
+            priority=20,
+            target_x=150.0,
+            target_y=260.0,
+            target_row=None,
+            target_col=None,
+            created_step=5,
+            assigned_agent_id="UAV-1",
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_cost_aware_policy(
+            (task,),
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=self._build_runtime_grid_map(),
+        )
+
+        self.assertEqual(updated_tasks[0].assigned_agent_id, "UAV-1")
+        self.assertEqual(updated_tasks[0].support_agent_id, "USV-1")
+        self.assertEqual(decisions[0].selection_reason, "nearest_usv_rendezvous_for_uav_resupply")
+
+    def test_cost_aware_reachable_cost_uses_cache_for_same_agent_task_pair(self) -> None:
+        from unittest.mock import patch
+
+        grid_map = self._build_runtime_grid_map()
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+        task = TaskRecord(
+            task_id="baseline-service-cache",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=180.0,
+            target_y=540.0,
+            target_row=6,
+            target_col=3,
+            created_step=5,
+        )
+        cache: dict[tuple[str, str, float, float], tuple[bool, float]] = {}
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.cost_aware_task_allocator.build_astar_path_plan"
+        ) as planner:
+            planner.return_value = PathPlan(
+                plan_id="mock-plan",
+                planner_name="astar_path_planner",
+                agent_id=agent.agent_id,
+                task_id=task.task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(
+                    Waypoint(x=agent.x, y=agent.y),
+                    Waypoint(x=task.target_x, y=task.target_y),
+                ),
+                goal_x=task.target_x,
+                goal_y=task.target_y,
+                estimated_cost=42.0,
+            )
+            first_cost = _reachable_cost(
+                task,
+                agent=agent,
+                grid_map=grid_map,
+                reachability_cache=cache,
+            )
+            second_cost = _reachable_cost(
+                task,
+                agent=agent,
+                grid_map=grid_map,
+                reachability_cache=cache,
+            )
+
+        self.assertEqual(first_cost, 42.0)
+        self.assertEqual(second_cost, 42.0)
+        self.assertEqual(planner.call_count, 1)
 
 
 if __name__ == "__main__":

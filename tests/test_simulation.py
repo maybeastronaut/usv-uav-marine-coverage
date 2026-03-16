@@ -148,6 +148,9 @@ seed = 20260314
 steps = 6
 dt_seconds = 1.0
 
+[scenario]
+name = "mixed_task_pressure"
+
 [algorithms]
 task_allocator = "basic_task_allocator"
 usv_path_planner = "astar_path_planner"
@@ -171,6 +174,10 @@ nearshore_information_timeout_steps = 800
             self.assertEqual(summary["simulation"]["seed"], 20260314)
             self.assertEqual(summary["simulation"]["steps"], 6)
             self.assertEqual(
+                summary["simulation"]["experiment_config"]["scenario"]["name"],
+                "mixed_task_pressure",
+            )
+            self.assertEqual(
                 summary["simulation"]["experiment_config"]["information_map"][
                     "nearshore_information_timeout_steps"
                 ],
@@ -192,6 +199,22 @@ nearshore_information_timeout_steps = 800
             self.assertFalse(output_path.exists())
             self.assertTrue(artifacts.events_path.exists())
             self.assertTrue(artifacts.summary_path.exists())
+
+    def test_simulation_artifacts_can_run_with_cost_aware_allocator_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "simulation_replay.html"
+            artifacts = write_simulation_artifacts(
+                output_path=output_path,
+                generate_html=False,
+                config_path=Path("configs/cost_aware_allocator.toml"),
+                steps=5,
+            )
+
+            summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                summary["simulation"]["experiment_config"]["algorithms"]["task_allocator"],
+                "cost_aware_centralized_allocator",
+            )
 
     def test_usv_only_confirms_hotspot_while_on_task_at_target_cell(self) -> None:
         execution_states = {

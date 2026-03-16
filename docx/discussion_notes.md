@@ -22,18 +22,18 @@
 
 ### 1.2 明确升级顺序
 
-- 任务层先做：`cost-aware centralized allocator`
-- 原因：最贴合当前中心化架构，见效快，且最容易和当前 baseline 做直接对比
-- `UAV` 规划层再做：`multi-region coverage planner`
+- 当前下一步优先做：`UAV` 规划层的 `multi-region coverage planner`
 - 原因：当前 `UAV` 仍是固定分区割草机搜索，区域级覆盖规划的提升空间最大
 - `USV` 规划层再做：`hybrid A* + smoother`
 - 原因：当前 `USV` 已经有基础 `A*`，继续往带平滑和更稳定机动的一体化路径规划升级最自然
 - 最后再做：`CBBA / auction allocator`
-- 原因：更适合作为第二种任务层对比算法，用来和集中式代价分配器形成对照
+- 原因：更适合作为第二种任务层对比算法，用来和当前已落地的集中式代价分配器形成对照
 
 ### 1.3 任务层升级方向
 
-- 当前任务层是基础责任分区 + 启发式分配
+- 当前任务层已经具备：
+  - 基础责任分区 + 启发式分配
+  - 第一版 `cost-aware centralized allocator`
 - 后续可升级方向包括：
   - 更复杂优先级规则
   - 弱分区与跨区支援

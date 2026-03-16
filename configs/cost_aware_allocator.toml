@@ -1,0 +1,17 @@
+[simulation]
+seed = 20260314
+steps = 1200
+dt_seconds = 1.0
+
+[scenario]
+name = "baseline_patrol"
+
+[algorithms]
+task_allocator = "cost_aware_centralized_allocator"
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+
+[information_map]
+information_timeout_steps = 400
+nearshore_information_timeout_steps = 800

@@ -23,6 +23,7 @@ from usv_uav_marine_coverage.execution.progress_feedback import (
 from usv_uav_marine_coverage.grid import (
     CoverageState,
     GridCoverageMap,
+    GridMap,
     apply_agent_coverage,
     build_grid_coverage_map,
     build_grid_map,
@@ -45,6 +46,9 @@ from usv_uav_marine_coverage.planning.astar_path_planner import (
 from usv_uav_marine_coverage.tasking.baseline_task_generator import build_baseline_tasks
 from usv_uav_marine_coverage.tasking.basic_task_allocator import (
     allocate_tasks_with_basic_policy,
+)
+from usv_uav_marine_coverage.tasking.cost_aware_task_allocator import (
+    allocate_tasks_with_cost_aware_policy,
 )
 from usv_uav_marine_coverage.tasking.hotspot_task_generator import sync_hotspot_confirmation_tasks
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
@@ -210,8 +214,9 @@ def build_simulation_replay(
             step=step,
             existing_tasks=task_records,
         )
-        task_records, task_assignments = allocate_tasks_with_basic_policy(
+        task_records, task_assignments = _allocate_task_records(
             task_records,
+            task_allocator=effective_config.algorithms.task_allocator,
             agents=agents,
             execution_states=execution_states,
             grid_map=grid_map,
@@ -377,6 +382,31 @@ def _collect_stale_cells(info_map: InformationMap) -> tuple[tuple[int, int], ...
         if info_map.state_at(cell.row, cell.col).validity.value == "stale_known":
             stale_cells.append((cell.row, cell.col))
     return tuple(stale_cells)
+
+
+def _allocate_task_records(
+    task_records: tuple[TaskRecord, ...],
+    *,
+    task_allocator: str,
+    agents: tuple[AgentState, ...],
+    execution_states: dict[str, AgentExecutionState],
+    grid_map: GridMap,
+) -> tuple[tuple[TaskRecord, ...], tuple]:
+    if task_allocator == "basic_task_allocator":
+        return allocate_tasks_with_basic_policy(
+            task_records,
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=grid_map,
+        )
+    if task_allocator == "cost_aware_centralized_allocator":
+        return allocate_tasks_with_cost_aware_policy(
+            task_records,
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=grid_map,
+        )
+    raise ValueError(f"Unsupported task allocator {task_allocator!r}")
 
 
 def _capture_frame(

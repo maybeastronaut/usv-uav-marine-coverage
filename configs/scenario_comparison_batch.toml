@@ -1,0 +1,29 @@
+[batch]
+name = "scenario_comparison_batch"
+base_config = "phase_one_baseline.toml"
+output_dir = "../outputs/experiments/scenario_comparison_batch"
+generate_html = false
+
+[[runs]]
+label = "baseline_patrol_seed_20260314"
+scenario = "baseline_patrol"
+seed = 20260314
+steps = 400
+
+[[runs]]
+label = "offshore_hotspot_pressure_seed_20260314"
+scenario = "offshore_hotspot_pressure"
+seed = 20260314
+steps = 400
+
+[[runs]]
+label = "nearshore_baseline_pressure_seed_20260314"
+scenario = "nearshore_baseline_pressure"
+seed = 20260314
+steps = 400
+
+[[runs]]
+label = "mixed_task_pressure_seed_20260314"
+scenario = "mixed_task_pressure"
+seed = 20260314
+steps = 400

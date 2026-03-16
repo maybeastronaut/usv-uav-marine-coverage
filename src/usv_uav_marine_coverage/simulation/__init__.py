@@ -30,6 +30,7 @@ from .simulation_replay_view import build_simulation_html
 def write_simulation_html(
     output_path: Path,
     config_path: Path | None = None,
+    scenario_name: str | None = None,
     seed: int | None = None,
     steps: int | None = None,
     dt_seconds: float | None = None,
@@ -40,6 +41,7 @@ def write_simulation_html(
         output_path,
         generate_html=True,
         config_path=config_path,
+        scenario_name=scenario_name,
         seed=seed,
         steps=steps,
         dt_seconds=dt_seconds,
@@ -52,6 +54,7 @@ def write_simulation_artifacts(
     output_path: Path,
     generate_html: bool = True,
     config_path: Path | None = None,
+    scenario_name: str | None = None,
     seed: int | None = None,
     steps: int | None = None,
     dt_seconds: float | None = None,
@@ -60,6 +63,7 @@ def write_simulation_artifacts(
 
     experiment_config = _resolve_experiment_config(
         config_path=config_path,
+        scenario_name=scenario_name,
         seed=seed,
         steps=steps,
         dt_seconds=dt_seconds,
@@ -85,6 +89,7 @@ def run_simulation_viewer(
     open_browser: bool = True,
     generate_html: bool = True,
     config_path: Path | None = None,
+    scenario_name: str | None = None,
     seed: int | None = None,
     steps: int | None = None,
     dt_seconds: float | None = None,
@@ -98,6 +103,7 @@ def run_simulation_viewer(
         output_path,
         generate_html=generate_html,
         config_path=config_path,
+        scenario_name=scenario_name,
         seed=seed,
         steps=steps,
         dt_seconds=dt_seconds,
@@ -110,12 +116,14 @@ def run_simulation_viewer(
 def _resolve_experiment_config(
     *,
     config_path: Path | None,
+    scenario_name: str | None,
     seed: int | None,
     steps: int | None,
     dt_seconds: float | None,
 ) -> ExperimentConfig:
     if config_path is None:
         config = build_default_experiment_config(
+            scenario_name=scenario_name,
             seed=seed,
             steps=40 if steps is None else steps,
             dt_seconds=1.0 if dt_seconds is None else dt_seconds,
@@ -123,6 +131,7 @@ def _resolve_experiment_config(
     else:
         config = load_experiment_config(
             config_path,
+            scenario_override=scenario_name,
             seed_override=seed,
             steps_override=steps,
             dt_override=dt_seconds,

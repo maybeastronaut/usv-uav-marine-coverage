@@ -19,6 +19,14 @@ class ExperimentBatchTestCase(unittest.TestCase):
         self.assertFalse(spec.generate_html)
         self.assertEqual(len(spec.runs), 2)
         self.assertEqual(spec.runs[0].label, "baseline_seed_20260314")
+        self.assertIsNone(spec.runs[0].scenario_override)
+
+    def test_load_batch_experiment_spec_reads_per_run_scenario_override(self) -> None:
+        spec = load_batch_experiment_spec(Path("configs/scenario_comparison_batch.toml"))
+
+        self.assertEqual(spec.name, "scenario_comparison_batch")
+        self.assertEqual(len(spec.runs), 4)
+        self.assertEqual(spec.runs[1].scenario_override, "offshore_hotspot_pressure")
 
     def test_run_batch_experiment_writes_aggregate_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -30,6 +38,9 @@ class ExperimentBatchTestCase(unittest.TestCase):
 seed = 20260314
 steps = 4
 dt_seconds = 1.0
+
+[scenario]
+name = "baseline_patrol"
 
 [algorithms]
 task_allocator = "basic_task_allocator"
@@ -54,11 +65,13 @@ generate_html = false
 
 [[runs]]
 label = "seed_a"
+scenario = "baseline_patrol"
 seed = 20260314
 steps = 4
 
 [[runs]]
 label = "seed_b"
+scenario = "mixed_task_pressure"
 seed = 20260314
 steps = 4
                 """.strip(),
@@ -80,6 +93,11 @@ steps = 4
             self.assertIn("aggregates", summary)
             self.assertIn("coverage_ratio", summary["aggregates"])
             self.assertEqual(summary["runs"][0]["label"], "seed_a")
+            self.assertEqual(summary["runs"][1]["scenario_override"], "mixed_task_pressure")
+            self.assertEqual(
+                summary["runs"][1]["experiment_config"]["scenario"]["name"],
+                "mixed_task_pressure",
+            )
             self.assertEqual(summary["batch"]["successful_runs"], 2)
             self.assertEqual(summary["batch"]["failed_runs"], 0)
 
@@ -93,6 +111,9 @@ steps = 4
 seed = 20260314
 steps = 4
 dt_seconds = 1.0
+
+[scenario]
+name = "baseline_patrol"
 
 [algorithms]
 task_allocator = "basic_task_allocator"
