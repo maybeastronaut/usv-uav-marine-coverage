@@ -52,6 +52,7 @@ def write_events_jsonl(replay: SimulationReplay, output_path: Path) -> None:
             "algorithm_stage": "replay_preview",
             "environment_model": "three_zone_continuous_sea",
             "grid_model": "25m_rectangular_grid",
+            "experiment_config": replay.experiment_config,
         },
         {
             "record_type": "environment_snapshot",
@@ -96,6 +97,7 @@ def build_summary_payload(replay: SimulationReplay) -> dict[str, object]:
             "steps": replay.frames[-1].step,
             "dt_seconds": replay.dt_seconds,
             "algorithm_stage": "replay_preview",
+            "experiment_config": replay.experiment_config,
         },
         "environment": {
             "sea_map": build_sea_map_snapshot(replay.sea_map),
@@ -137,6 +139,7 @@ def build_obstacle_layout_snapshot(layout: ObstacleLayout) -> dict[str, object]:
 
     return {
         "seed": layout.seed,
+        "generation_attempts": layout.generation_attempts,
         "risk_zone_obstacles": [
             {
                 "name": obstacle.name,

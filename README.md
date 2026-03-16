@@ -16,6 +16,9 @@ module execution, and future tests.
 .
 |-- AGENTS.md
 |-- README.md
+|-- configs/
+|   |-- phase_one_batch.toml
+|   `-- phase_one_baseline.toml
 |-- docx/
 |   |-- current_system_flow.md
 |   |-- discussion_notes.md
@@ -52,6 +55,7 @@ module execution, and future tests.
 |       |   `-- usv_patrol_planner.py
 |       |-- simulation/
 |       |   |-- __init__.py
+|       |   |-- experiment_config.py
 |       |   |-- simulation_agent_runtime.py
 |       |   |-- simulation_core.py
 |       |   |-- simulation_logging.py
@@ -83,6 +87,8 @@ module execution, and future tests.
 
 - `AGENTS.md`: Codex 在本仓库中的开发约束、编码规范、文档同步规则和协作方式说明。
 - `README.md`: 项目总览、环境配置方式、运行方式、测试方式和工程结构说明。
+- `configs/phase_one_baseline.toml`: 当前第一阶段 baseline 的统一实验配置样例，集中定义仿真步数、随机种子、算法选择和信息地图参数。
+- `configs/phase_one_batch.toml`: 当前批量实验配置样例，用于多随机种子或多运行标签的批量仿真。
 - `docx/current_system_flow.md`: 基于当前已有代码整理的系统实际流程说明文档。
 - `docx/discussion_notes.md`: 讨论阶段确认的建模方案、状态标记和后续实现依据。
 - `docx/generated/sea_map.html`: 当前默认生成的 HTML 海图产物，可直接用于查看 `clean` 模式结果。
@@ -100,7 +106,7 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/execution/execution_types.py`: 执行层共享数据结构模块，统一执行状态、执行阶段与执行结果表达。
 - `src/usv_uav_marine_coverage/execution/path_follower.py`: 路径执行层模块，负责将路径段转换为前视跟踪目标，并逐步推进路径段跟踪、航点切换与 `USV` 的局部反应式避障修正。
 - `src/usv_uav_marine_coverage/execution/progress_feedback.py`: 执行反馈层模块，专门负责 `USV` 无进展检测、坏目标冷却与重规划/进入 `RECOVERY` 的判定，不直接调用 planner。
-- `src/usv_uav_marine_coverage/environment.py`: 海域环境、三区带结构、障碍布局与伪随机环境生成逻辑；初始状态不再预放基础监测点或任务热点。
+- `src/usv_uav_marine_coverage/environment.py`: 海域环境、三区带结构、障碍布局与伪随机环境生成逻辑；当前障碍环境已改为“确定性自动重采样直到合法”，避免部分 `seed` 因航道或重叠约束失败；初始状态不再预放基础监测点或任务热点。
 - `src/usv_uav_marine_coverage/grid.py`: 将连续海域环境映射为 `25m` 规则矩形栅格网络，并提供基于智能体 `footprint` 的动态覆盖状态更新。
 - `src/usv_uav_marine_coverage/information_map.py`: 基于栅格的动态信息地图层，负责信息时效、真实热点与认知热点分离、UAV 疑似标记与 USV 确认流程；当前近海基础任务生成频率已进一步下调、同时活跃上限收敛为 `1` 且已服务冷却延长，并为热点生成加入区域级障碍/风险区净空判定；当前信息时效阈值已改为“近海 `800 step`、其余区域 `400 step`”。
 - `src/usv_uav_marine_coverage/planning/__init__.py`: 路径规划层子包入口，用于承载巡航规划与任务路径规划相关模块。
@@ -111,9 +117,11 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/planning/uav_lawnmower_planner.py`: `UAV` 割草机式搜索规划模块，负责生成远海分区的 boustrophedon 搜索航线，并输出当前巡航段的 patrol path。
 - `src/usv_uav_marine_coverage/planning/usv_patrol_planner.py`: `USV` 巡航规划模块，负责生成默认的“`1` 艘近海、`2` 艘远海”分区巡航路线，并作为默认巡航层的路径算法实现；其中 `USV-1` 当前使用近海多航线水平蛇形巡航，并在回巡航时优先接回当前巡航序列的前向航段，以尽可能重访近海各区域。
 - `src/usv_uav_marine_coverage/simulation/__init__.py`: 仿真回放子包的公开门面，保持现有对外接口稳定，并协调核心仿真、日志输出和回放页面生成。
+- `src/usv_uav_marine_coverage/simulation/experiment_config.py`: 统一实验配置层，负责 baseline 配置 dataclass、TOML 加载、CLI 覆盖与配置摘要序列化，为后续算法对比与批量实验提供统一入口。
+- `src/usv_uav_marine_coverage/simulation/experiment_batch.py`: 批量实验入口，负责加载 batch TOML、顺序运行多组配置，并输出统一的 `batch_results.jsonl` 与 `batch_summary.json`。
 - `src/usv_uav_marine_coverage/simulation/simulation_agent_runtime.py`: 回放式仿真的智能体运行时编排模块，负责按执行阶段调度 planner、follower、反馈层与恢复逻辑；当前 `RECOVERY` 机制、局部巡航段接入和碰撞防护保留在这里，但“是否重规划 / 是否进入恢复 / 是否对坏目标冷却”的判定已下沉到 `execution/progress_feedback.py`。
 - `src/usv_uav_marine_coverage/simulation/simulation_core.py`: 回放式仿真的顶层编排流程，负责按时间步组织任务层、规划层、执行层、覆盖更新、信息刷新和回放帧采集。
-- `src/usv_uav_marine_coverage/simulation/simulation_logging.py`: 回放式仿真的结构化日志层，负责 `events.jsonl`、`summary.json`、任务决策摘要、路径摘要、执行偏差和热点处理链记录。
+- `src/usv_uav_marine_coverage/simulation/simulation_logging.py`: 回放式仿真的结构化日志层，负责 `events.jsonl`、`summary.json`、任务决策摘要、路径摘要、执行偏差、热点处理链以及实验配置摘要记录。
 - 当前 `events.jsonl` 与 `summary.json` 已额外输出 `A*` 规划诊断统计，包括每步总调用次数、成功/blocked 次数，以及按 `allocator / patrol / go_to_task / return_to_patrol` 分组的调用与展开节点数，便于定位长步数仿真中的性能瓶颈。
 - `src/usv_uav_marine_coverage/simulation/simulation_policy.py`: 当前回放预览的兼容辅助层，负责 demo 智能体和默认 patrol 数据装配，并调用规划层生成 `USV/UAV` 巡航路线。
 - `src/usv_uav_marine_coverage/simulation/simulation_replay_view.py`: 回放 HTML/SVG 视图层，负责页面结构、图层渲染、时间步控件和前端交互脚本；当前 `USV` 回放插值已改为基于船头朝向的样条过渡，并修正了世界坐标航向与 SVG 旋转方向不一致的问题；当前还新增了栅格信息新鲜度图层，可直接显示 `valid/stale` 信息分布，且 `valid/stale` 统计已改为只统计非障碍格；当前回放输出已从“每帧完整 SVG 预渲染”调整为“前端按原始数据即时渲染”，并且页面只展示智能体的当前规划路径虚线，不再直接展示真实历史轨迹。
@@ -159,6 +167,7 @@ The generated HTML now includes:
 The default `clean` initial view includes:
 
 - a pseudo-random obstacle layout
+- a deterministic auto-resampling path that keeps retrying candidate obstacle layouts until they satisfy corridor and non-overlap constraints for the chosen external `seed`
 - a middle-risk-zone layout that guarantees at least `2` irregular traversable routes without drawing fixed lanes
 - `3` offshore islets and `2` offshore risk areas
 - a static visual mockup of `3` USVs and `2` UAVs for appearance inspection only, all starting on the left side
@@ -201,6 +210,10 @@ If you want reproducible obstacle generation:
 python -m usv_uav_marine_coverage --seed 20260314
 ```
 
+The obstacle generator now keeps the external `seed` stable and internally
+resamples candidate layouts until it finds a legal one, so historically failing
+seeds can still be used in batch experiments without manual filtering.
+
 If you want the page to open with the debug view selected:
 
 ```bash
@@ -213,6 +226,18 @@ If you want the replay-style simulation preview:
 python -m usv_uav_marine_coverage --simulate
 ```
 
+If you want to run the replay with a unified experiment configuration:
+
+```bash
+python -m usv_uav_marine_coverage --simulate --config configs/phase_one_baseline.toml
+```
+
+If you want to run a batch experiment across multiple seeds or run labels:
+
+```bash
+python -m usv_uav_marine_coverage --simulate --batch-config configs/phase_one_batch.toml
+```
+
 If you want a longer replay:
 
 ```bash
@@ -223,6 +248,15 @@ Every replay run now also writes two machine-readable log files next to the HTML
 
 - `<stem>_events.jsonl`: step-by-step simulation events and state snapshots
 - `<stem>_summary.json`: final replay summary for fast review
+
+The first metadata record in `events.jsonl` and the `simulation` section in `summary.json`
+now also include the resolved `experiment_config`, so future algorithm-comparison runs can be
+reproduced from one explicit configuration snapshot.
+
+Batch experiment runs additionally produce:
+
+- `batch_results.jsonl`: one summarized record per run
+- `batch_summary.json`: aggregate metrics across all successful runs, plus failure records when a run cannot be constructed
 
 If you omit `--output`, the default replay output base path is `outputs/usv_uav_simulation_replay.html`.
 

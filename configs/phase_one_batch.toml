@@ -1,0 +1,15 @@
+[batch]
+name = "phase_one_baseline_batch"
+base_config = "phase_one_baseline.toml"
+output_dir = "../outputs/experiments/phase_one_baseline_batch"
+generate_html = false
+
+[[runs]]
+label = "baseline_seed_20260314"
+seed = 20260314
+steps = 1200
+
+[[runs]]
+label = "baseline_seed_20260317"
+seed = 20260317
+steps = 1200

@@ -30,7 +30,6 @@ from usv_uav_marine_coverage.grid import (
 from usv_uav_marine_coverage.information_map import (
     HotspotKnowledgeState,
     InformationMap,
-    InformationMapConfig,
     advance_information_age,
     apply_uav_detection,
     apply_usv_confirmation,
@@ -53,6 +52,7 @@ from usv_uav_marine_coverage.tasking.uav_resupply_task_generator import (
     build_uav_resupply_tasks,
 )
 
+from .experiment_config import ExperimentConfig, serialize_experiment_config
 from .simulation_agent_runtime import (
     advance_agents_one_step,
     build_initial_execution_states,
@@ -94,6 +94,7 @@ class SimulationReplay:
     frames: tuple[SimulationFrame, ...]
     seed: int
     dt_seconds: float
+    experiment_config: dict[str, object]
     initial_agents: tuple[AgentState, ...]
     step_logs: tuple[dict[str, object], ...]
 
@@ -101,6 +102,7 @@ class SimulationReplay:
 def build_simulation_replay(
     sea_map: SeaMap | None = None,
     obstacle_layout: ObstacleLayout | None = None,
+    experiment_config: ExperimentConfig | None = None,
     seed: int | None = None,
     steps: int = 40,
     dt_seconds: float = 1.0,
@@ -109,16 +111,32 @@ def build_simulation_replay(
 
     from .simulation_logging import build_step_log
 
-    if steps <= 0:
+    effective_config = experiment_config
+    if effective_config is None:
+        from .experiment_config import build_default_experiment_config
+
+        effective_config = build_default_experiment_config(
+            seed=seed,
+            steps=steps,
+            dt_seconds=dt_seconds,
+        )
+
+    effective_steps = effective_config.simulation.steps
+    effective_dt_seconds = effective_config.simulation.dt_seconds
+
+    if effective_steps <= 0:
         raise ValueError("Simulation steps must be positive.")
-    if dt_seconds <= 0:
+    if effective_dt_seconds <= 0:
         raise ValueError("Simulation time step must be positive.")
 
     target_map = sea_map or build_default_sea_map()
-    layout = obstacle_layout or build_obstacle_layout(target_map, seed=seed)
+    layout = obstacle_layout or build_obstacle_layout(
+        target_map,
+        seed=effective_config.simulation.seed,
+    )
     grid_map = build_grid_map(target_map, layout)
     coverage_map = build_grid_coverage_map(grid_map)
-    info_map = build_information_map(grid_map, InformationMapConfig())
+    info_map = build_information_map(grid_map, effective_config.information_map)
     rng = Random(layout.seed + 17)
     seeded_hotspots = spawn_hotspots(info_map, step=0, rng=rng)
 
@@ -165,7 +183,7 @@ def build_simulation_replay(
         )
     )
 
-    for step in range(1, steps + 1):
+    for step in range(1, effective_steps + 1):
         reset_planner_metrics()
         events: list[str] = []
         stale_before = set(_collect_stale_cells(info_map))
@@ -213,7 +231,7 @@ def build_simulation_replay(
             patrol_routes=patrol_routes,
             grid_map=grid_map,
             obstacle_layout=layout,
-            dt_seconds=dt_seconds,
+            dt_seconds=effective_dt_seconds,
             step=step,
         )
         task_records = sync_task_statuses(task_records, execution_states)
@@ -319,7 +337,8 @@ def build_simulation_replay(
         obstacle_layout=layout,
         frames=tuple(frames),
         seed=layout.seed,
-        dt_seconds=dt_seconds,
+        dt_seconds=effective_dt_seconds,
+        experiment_config=serialize_experiment_config(effective_config),
         initial_agents=initial_agents,
         step_logs=tuple(step_logs),
     )

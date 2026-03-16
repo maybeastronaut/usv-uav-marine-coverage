@@ -43,3 +43,17 @@ class EnvironmentTestCase(unittest.TestCase):
         )
         self.assertEqual(layout.nearshore_monitor_points, ())
         self.assertEqual(layout.offshore_hotspots, ())
+        self.assertEqual(layout.generation_attempts, 1)
+
+    def test_historically_invalid_seed_resamples_until_legal(self) -> None:
+        sea_map = build_default_sea_map()
+
+        layout = build_obstacle_layout(sea_map, seed=20260315)
+        repeated_layout = build_obstacle_layout(sea_map, seed=20260315)
+
+        self.assertEqual(layout, repeated_layout)
+        self.assertEqual(layout.seed, 20260315)
+        self.assertGreater(layout.generation_attempts, 1)
+        self.assertEqual(len(layout.risk_zone_obstacles), 4)
+        self.assertEqual(len(layout.traversable_corridors), 2)
+        self.assertEqual(len(layout.offshore_features), 5)

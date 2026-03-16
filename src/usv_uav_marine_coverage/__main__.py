@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from usv_uav_marine_coverage.simulation import run_simulation_viewer
+from usv_uav_marine_coverage.simulation import (
+    load_batch_experiment_spec,
+    run_batch_experiment,
+    run_simulation_viewer,
+)
 from usv_uav_marine_coverage.viewer import run_map_viewer
 
 
@@ -15,6 +19,16 @@ def main() -> None:
         "--output",
         type=Path,
         help="Optional base output path. Defaults to the outputs/ directory.",
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="Optional TOML experiment config for simulation runs.",
+    )
+    parser.add_argument(
+        "--batch-config",
+        type=Path,
+        help="Optional TOML batch experiment config for simulation runs.",
     )
     parser.add_argument(
         "--no-open",
@@ -45,15 +59,28 @@ def main() -> None:
     parser.add_argument(
         "--steps",
         type=int,
-        default=40,
-        help="Number of simulation steps for the replay preview. Defaults to 40.",
+        help="Optional number of simulation steps. Defaults to 40 unless provided by --config.",
     )
     args = parser.parse_args()
     if args.simulate:
+        if args.batch_config is not None:
+            conflicting_args = (
+                args.config,
+                args.output,
+                args.seed,
+                args.steps,
+            )
+            if any(value is not None for value in conflicting_args):
+                parser.error(
+                    "--batch-config cannot be combined with --config, --output, --seed, or --steps"
+                )
+            run_batch_experiment(load_batch_experiment_spec(args.batch_config))
+            return
         run_simulation_viewer(
             output_path=args.output,
             open_browser=not args.no_open and not args.no_html,
             generate_html=not args.no_html,
+            config_path=args.config,
             seed=args.seed,
             steps=args.steps,
         )

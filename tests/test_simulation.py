@@ -97,6 +97,11 @@ class SimulationTestCase(unittest.TestCase):
             self.assertGreaterEqual(len(event_lines), 4)
             first_record = json.loads(event_lines[0])
             self.assertEqual(first_record["record_type"], "simulation_metadata")
+            self.assertIn("experiment_config", first_record)
+            self.assertEqual(
+                first_record["experiment_config"]["algorithms"]["task_allocator"],
+                "basic_task_allocator",
+            )
 
             step_records = [
                 json.loads(line) for line in event_lines if '"record_type": "step_snapshot"' in line
@@ -126,11 +131,51 @@ class SimulationTestCase(unittest.TestCase):
             self.assertIn("environment", summary)
             self.assertIn("initial_agents", summary)
             self.assertIn("final_metrics", summary)
+            self.assertIn("experiment_config", summary["simulation"])
             self.assertIn("stale_cells", summary["final_metrics"])
             self.assertIn("event_totals", summary["final_metrics"])
             self.assertIn("astar_total_calls", summary["final_metrics"]["event_totals"])
             self.assertIn("astar_expanded_nodes", summary["final_metrics"]["event_totals"])
             self.assertIn("energy_level", summary["initial_agents"][0])
+
+    def test_simulation_artifacts_can_load_experiment_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_path = Path(temp_dir) / "experiment.toml"
+            config_path.write_text(
+                """
+[simulation]
+seed = 20260314
+steps = 6
+dt_seconds = 1.0
+
+[algorithms]
+task_allocator = "basic_task_allocator"
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+
+[information_map]
+information_timeout_steps = 400
+nearshore_information_timeout_steps = 800
+                """.strip(),
+                encoding="utf-8",
+            )
+            output_path = Path(temp_dir) / "simulation_replay.html"
+            artifacts = write_simulation_artifacts(
+                output_path=output_path,
+                generate_html=False,
+                config_path=config_path,
+            )
+
+            summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["simulation"]["seed"], 20260314)
+            self.assertEqual(summary["simulation"]["steps"], 6)
+            self.assertEqual(
+                summary["simulation"]["experiment_config"]["information_map"][
+                    "nearshore_information_timeout_steps"
+                ],
+                800,
+            )
 
     def test_simulation_artifacts_can_skip_html_and_still_write_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

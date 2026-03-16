@@ -6,6 +6,8 @@ import random
 from dataclasses import dataclass
 from typing import Literal
 
+MAX_OBSTACLE_LAYOUT_ATTEMPTS = 64
+
 
 @dataclass(frozen=True)
 class SeaZone:
@@ -104,6 +106,7 @@ class ObstacleLayout:
     offshore_features: tuple[CircularFeature, ...]
     nearshore_monitor_points: tuple[MonitoringTarget, ...]
     offshore_hotspots: tuple[MonitoringTarget, ...]
+    generation_attempts: int = 1
 
 
 def build_default_sea_map() -> SeaMap:
@@ -139,10 +142,49 @@ def build_obstacle_layout(
     sea_map: SeaMap,
     seed: int | None = None,
 ) -> ObstacleLayout:
-    """Build the obstacle layout for a simulation run."""
+    """Build a legal obstacle layout for a simulation run.
+
+    The first attempt keeps the historical single-sample behavior for a given
+    seed. If that candidate fails validation, the generator deterministically
+    resamples follow-up candidates derived from the same external seed until a
+    legal layout is found.
+    """
 
     actual_seed = seed if seed is not None else random.SystemRandom().randrange(1, 1_000_000_000)
-    generator = random.Random(actual_seed)
+    last_error: ValueError | None = None
+
+    for attempt_index in range(MAX_OBSTACLE_LAYOUT_ATTEMPTS):
+        candidate_seed = actual_seed + attempt_index
+        candidate_layout = _build_obstacle_layout_candidate(
+            sea_map=sea_map,
+            actual_seed=actual_seed,
+            candidate_seed=candidate_seed,
+            generation_attempts=attempt_index + 1,
+        )
+        try:
+            validate_obstacle_layout(sea_map, candidate_layout)
+        except ValueError as error:
+            last_error = error
+            continue
+        return candidate_layout
+
+    raise ValueError(
+        "Failed to construct a legal obstacle layout after "
+        f"{MAX_OBSTACLE_LAYOUT_ATTEMPTS} deterministic attempts for seed {actual_seed}: "
+        f"{last_error}"
+    )
+
+
+def _build_obstacle_layout_candidate(
+    *,
+    sea_map: SeaMap,
+    actual_seed: int,
+    candidate_seed: int,
+    generation_attempts: int,
+) -> ObstacleLayout:
+    """Build one deterministic obstacle-layout candidate from a candidate seed."""
+
+    generator = random.Random(candidate_seed)
 
     traversable_corridors = (
         TraversableCorridor(
@@ -197,16 +239,15 @@ def build_obstacle_layout(
     )
 
     offshore_features = _build_offshore_features(generator, sea_map)
-    layout = ObstacleLayout(
+    return ObstacleLayout(
         seed=actual_seed,
         traversable_corridors=traversable_corridors,
         risk_zone_obstacles=risk_zone_obstacles,
         offshore_features=offshore_features,
         nearshore_monitor_points=(),
         offshore_hotspots=(),
+        generation_attempts=generation_attempts,
     )
-    validate_obstacle_layout(sea_map, layout)
-    return layout
 
 
 def validate_sea_map(sea_map: SeaMap) -> None:
