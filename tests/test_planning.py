@@ -7,7 +7,12 @@ from usv_uav_marine_coverage.environment import (
     build_default_sea_map,
     build_obstacle_layout,
 )
+from usv_uav_marine_coverage.execution.execution_types import UavCoverageState
 from usv_uav_marine_coverage.grid import build_grid_map
+from usv_uav_marine_coverage.information_map import (
+    InformationValidity,
+    build_information_map,
+)
 from usv_uav_marine_coverage.planning.astar_path_planner import build_astar_path_plan
 from usv_uav_marine_coverage.planning.direct_line_planner import build_direct_line_plan
 from usv_uav_marine_coverage.planning.fixed_patrol_planner import build_fixed_patrol_plan
@@ -15,6 +20,21 @@ from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
 from usv_uav_marine_coverage.planning.uav_lawnmower_planner import (
     build_lawnmower_route,
     build_uav_lawnmower_plan,
+)
+from usv_uav_marine_coverage.planning.uav_multi_region_coverage_planner import (
+    build_fixed_uav_search_regions,
+    build_uav_multi_region_plan,
+    build_uav_multi_region_route,
+    rank_uav_search_regions,
+    select_uav_multi_region_waypoint_index,
+)
+from usv_uav_marine_coverage.planning.uav_persistent_multi_region_coverage_planner import (
+    advance_uav_region_waypoint,
+    build_empty_uav_coverage_state,
+    build_uav_persistent_multi_region_plan,
+    build_uav_region_coverage_route,
+    rank_persistent_uav_search_regions,
+    select_persistent_uav_region,
 )
 from usv_uav_marine_coverage.planning.usv_patrol_planner import (
     build_default_usv_patrol_routes,
@@ -174,6 +194,337 @@ class PlanningTestCase(unittest.TestCase):
         self.assertEqual(len(plan.waypoints), 2)
         self.assertEqual((plan.goal_x, plan.goal_y), patrol_routes[agent.agent_id][0])
         self.assertGreater(len(patrol_routes[agent.agent_id]), 4)
+
+    def test_multi_region_route_builds_four_fixed_offshore_aois(self) -> None:
+        regions = build_fixed_uav_search_regions(
+            min_x=485.0,
+            max_x=940.0,
+            min_y=120.0,
+            max_y=880.0,
+        )
+
+        self.assertEqual(
+            tuple(region.region_id for region in regions),
+            ("upper_left", "upper_right", "lower_left", "lower_right"),
+        )
+        self.assertEqual(len(regions), 4)
+
+    def test_multi_region_ranking_prefers_staler_region_before_nearer_region(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        info_map = build_information_map(grid_map)
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")
+        regions = build_fixed_uav_search_regions(
+            min_x=sea_map.offshore.x_start + 35.0,
+            max_x=sea_map.offshore.x_end - 60.0,
+            min_y=120.0,
+            max_y=880.0,
+        )
+
+        for row in grid_map.cells:
+            for cell in row:
+                if cell.zone_name != "Offshore Zone" or cell.has_obstacle:
+                    continue
+                state = info_map.state_at(cell.row, cell.col)
+                if cell.center_x <= (regions[0].max_x) and cell.center_y <= (regions[0].max_y):
+                    state.information_age = 900
+                    state.validity = InformationValidity.STALE_KNOWN
+                else:
+                    state.information_age = 0
+                    state.validity = InformationValidity.VALID
+
+        ranked = rank_uav_search_regions(
+            agent=agent,
+            info_map=info_map,
+            regions=regions,
+        )
+
+        self.assertEqual(ranked[0].region_id, "upper_left")
+
+    def test_multi_region_route_preserves_boustrophedon_segments(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")
+
+        route = build_uav_multi_region_route(
+            agent,
+            info_map=None,
+            min_x=485.0,
+            max_x=940.0,
+            min_y=120.0,
+            max_y=880.0,
+            lane_spacing=170.0,
+        )
+
+        self.assertGreater(len(route), 8)
+        self.assertTrue(
+            any(route[index][0] != route[index + 1][0] for index in range(len(route) - 1))
+        )
+        self.assertTrue(
+            any(route[index][1] == route[index + 1][1] for index in range(len(route) - 1))
+        )
+
+    def test_uav_multi_region_planner_targets_current_search_waypoint(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")
+        patrol_routes = build_patrol_routes(
+            uav_search_planner="uav_multi_region_coverage_planner",
+            agents=build_demo_agent_states(),
+        )
+
+        plan = build_uav_multi_region_plan(
+            agent,
+            patrol_route_id=agent.agent_id,
+            patrol_waypoint_index=0,
+            patrol_routes=patrol_routes,
+        )
+
+        self.assertEqual(plan.planner_name, "uav_multi_region_coverage_planner")
+        self.assertEqual(len(plan.waypoints), 2)
+        self.assertEqual((plan.goal_x, plan.goal_y), patrol_routes[agent.agent_id][0])
+
+    def test_multi_region_waypoint_selection_skips_nearby_patrol_waypoint(self) -> None:
+        agent = replace(
+            next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1"),
+            x=705.931,
+            y=502.165,
+        )
+        patrol_route = (
+            (711.0, 500.0),
+            (711.0, 580.0),
+            (711.0, 760.0),
+        )
+
+        waypoint_index = select_uav_multi_region_waypoint_index(
+            agent,
+            patrol_route=patrol_route,
+            patrol_waypoint_index=0,
+        )
+
+        self.assertEqual(waypoint_index, 1)
+
+    def test_persistent_multi_region_ranking_prefers_staler_then_older_region(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        info_map = build_information_map(grid_map)
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")
+        regions = build_fixed_uav_search_regions(
+            min_x=sea_map.offshore.x_start + 35.0,
+            max_x=sea_map.offshore.x_end - 60.0,
+            min_y=120.0,
+            max_y=880.0,
+        )
+
+        upper_right = regions[1]
+        lower_left = regions[2]
+        for row in grid_map.cells:
+            for cell in row:
+                if cell.zone_name != "Offshore Zone" or cell.has_obstacle:
+                    continue
+                state = info_map.state_at(cell.row, cell.col)
+                if (
+                    upper_right.min_x <= cell.center_x <= upper_right.max_x
+                    and upper_right.min_y <= cell.center_y <= upper_right.max_y
+                ):
+                    state.information_age = 850
+                    state.validity = InformationValidity.STALE_KNOWN
+                elif (
+                    lower_left.min_x <= cell.center_x <= lower_left.max_x
+                    and lower_left.min_y <= cell.center_y <= lower_left.max_y
+                ):
+                    state.information_age = 700
+                    state.validity = InformationValidity.STALE_KNOWN
+                else:
+                    state.information_age = 0
+                    state.validity = InformationValidity.VALID
+
+        ranked = rank_persistent_uav_search_regions(
+            agent=agent,
+            info_map=info_map,
+            regions=regions,
+            coverage_state=build_empty_uav_coverage_state(agent.agent_id),
+            step=40,
+        )
+
+        self.assertEqual(ranked[0].region_id, "upper_right")
+        self.assertGreaterEqual(ranked[0].stale_ratio, ranked[1].stale_ratio)
+
+    def test_persistent_multi_region_selection_keeps_committed_region(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        info_map = build_information_map(grid_map)
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")
+        regions = build_fixed_uav_search_regions(
+            min_x=sea_map.offshore.x_start + 35.0,
+            max_x=sea_map.offshore.x_end - 60.0,
+            min_y=120.0,
+            max_y=880.0,
+        )
+        current_state = UavCoverageState(
+            agent_id=agent.agent_id,
+            current_region_id="upper_left",
+            region_route=((600.0, 180.0), (880.0, 180.0), (880.0, 350.0)),
+            region_waypoint_index=1,
+            region_entry_step=10,
+            committed_waypoints_remaining=2,
+            last_replan_step=10,
+            last_replan_reason="forced_region_replan",
+            region_last_visit_steps=(("upper_left", 10),),
+        )
+        upper_right = regions[1]
+        for row in grid_map.cells:
+            for cell in row:
+                if cell.zone_name != "Offshore Zone" or cell.has_obstacle:
+                    continue
+                state = info_map.state_at(cell.row, cell.col)
+                if (
+                    upper_right.min_x <= cell.center_x <= upper_right.max_x
+                    and upper_right.min_y <= cell.center_y <= upper_right.max_y
+                ):
+                    state.information_age = 900
+                    state.validity = InformationValidity.STALE_KNOWN
+                else:
+                    state.information_age = 0
+                    state.validity = InformationValidity.VALID
+
+        selected_state, selected_score = select_persistent_uav_region(
+            agent=agent,
+            info_map=info_map,
+            regions=regions,
+            coverage_state=current_state,
+            step=20,
+        )
+
+        self.assertEqual(selected_state.current_region_id, "upper_left")
+        self.assertEqual(selected_score.region_id, "upper_left")
+
+    def test_persistent_multi_region_selection_replans_when_route_is_complete(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        info_map = build_information_map(grid_map)
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")
+        regions = build_fixed_uav_search_regions(
+            min_x=sea_map.offshore.x_start + 35.0,
+            max_x=sea_map.offshore.x_end - 60.0,
+            min_y=120.0,
+            max_y=880.0,
+        )
+        current_state = UavCoverageState(
+            agent_id=agent.agent_id,
+            current_region_id="upper_left",
+            region_route=((600.0, 180.0),),
+            region_waypoint_index=1,
+            region_entry_step=0,
+            committed_waypoints_remaining=0,
+            last_replan_step=0,
+            last_replan_reason="forced_region_replan",
+            region_last_visit_steps=(("upper_left", 0),),
+        )
+
+        selected_state, _ = select_persistent_uav_region(
+            agent=agent,
+            info_map=info_map,
+            regions=regions,
+            coverage_state=current_state,
+            step=70,
+        )
+
+        self.assertNotEqual(selected_state.current_region_id, None)
+        self.assertGreater(len(selected_state.region_route), 0)
+        self.assertEqual(selected_state.region_waypoint_index, 0)
+
+    def test_persistent_multi_region_selection_prefers_unoccupied_region(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        info_map = build_information_map(grid_map)
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")
+        regions = build_fixed_uav_search_regions(
+            min_x=sea_map.offshore.x_start + 35.0,
+            max_x=sea_map.offshore.x_end - 60.0,
+            min_y=120.0,
+            max_y=880.0,
+        )
+        current_state = build_empty_uav_coverage_state(agent.agent_id)
+
+        selected_state, selected_score = select_persistent_uav_region(
+            agent=agent,
+            info_map=info_map,
+            regions=regions,
+            coverage_state=current_state,
+            step=0,
+            force_replan=True,
+            occupied_region_ids=frozenset({"upper_left"}),
+        )
+
+        self.assertNotEqual(selected_score.region_id, "upper_left")
+        self.assertEqual(selected_state.current_region_id, selected_score.region_id)
+
+    def test_persistent_multi_region_selection_enters_from_nearest_route_endpoint(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        info_map = build_information_map(grid_map)
+        base_agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")
+        regions = build_fixed_uav_search_regions(
+            min_x=sea_map.offshore.x_start + 35.0,
+            max_x=sea_map.offshore.x_end - 60.0,
+            min_y=120.0,
+            max_y=880.0,
+        )
+        target_region = next(region for region in regions if region.region_id == "lower_right")
+        base_route = build_uav_region_coverage_route(target_region)
+        agent = replace(base_agent, x=base_route[-1][0], y=base_route[-1][1] - 5.0)
+
+        selected_state, selected_score = select_persistent_uav_region(
+            agent=agent,
+            info_map=info_map,
+            regions=(target_region,),
+            coverage_state=build_empty_uav_coverage_state(agent.agent_id),
+            step=0,
+            force_replan=True,
+        )
+
+        self.assertEqual(selected_score.region_id, "lower_right")
+        self.assertEqual(selected_state.region_waypoint_index, 0)
+        self.assertEqual(selected_state.region_route[0], base_route[-1])
+        self.assertEqual(selected_state.region_route[-1], base_route[0])
+
+    def test_persistent_multi_region_plan_matches_current_region_waypoint(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")
+        coverage_state = UavCoverageState(
+            agent_id=agent.agent_id,
+            current_region_id="lower_right",
+            region_route=((820.0, 620.0), (880.0, 620.0)),
+            region_waypoint_index=0,
+            region_entry_step=0,
+            committed_waypoints_remaining=2,
+        )
+
+        plan = build_uav_persistent_multi_region_plan(
+            agent,
+            coverage_state=coverage_state,
+        )
+
+        self.assertEqual(plan.planner_name, "uav_persistent_multi_region_coverage_planner")
+        self.assertEqual((plan.goal_x, plan.goal_y), (820.0, 620.0))
+
+    def test_advance_uav_region_waypoint_clears_completed_route(self) -> None:
+        coverage_state = UavCoverageState(
+            agent_id="UAV-1",
+            current_region_id="upper_left",
+            region_route=((600.0, 180.0),),
+            region_waypoint_index=0,
+            region_entry_step=0,
+            committed_waypoints_remaining=1,
+        )
+
+        updated_state = advance_uav_region_waypoint(coverage_state)
+
+        self.assertIsNone(updated_state.current_region_id)
+        self.assertEqual(updated_state.region_route, ())
+        self.assertEqual(updated_state.last_replan_reason, "region_route_complete")
 
     def test_astar_path_planner_builds_multi_waypoint_usv_route(self) -> None:
         sea_map = build_default_sea_map()

@@ -196,14 +196,19 @@ def _finalize_hotspot_task(
         HotspotKnowledgeState.FALSE_ALARM,
     }:
         return (task, execution_states, progress_states)
+    state.ground_truth_hotspot = False
+    state.ground_truth_hotspot_id = None
+    state.ground_truth_hotspot_created_step = None
     state.hotspot_resolution_step = step
     state.known_hotspot_state = HotspotKnowledgeState.NONE
     state.known_hotspot_id = None
-    state.suspected_by = None
-    state.suspicion_step = None
-    state.confirmation_progress = 0
+    state.uav_checked_by = None
+    state.uav_check_step = None
+    state.uav_inspection_progress = 0
+    state.usv_inspection_progress = 0
     state.task_status = TaskStatus.COMPLETED
     state.assigned_agent_id = None
+    state.confirmed_by = None
     return _complete_task_and_return(
         task,
         agent_by_id=agent_by_id,

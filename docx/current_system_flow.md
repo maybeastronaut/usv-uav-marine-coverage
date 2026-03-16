@@ -41,9 +41,10 @@
 - 第一版任务层、路径层与执行层接口
 - 统一实验配置层
 - 可复用实验场景目录
-- 实验数据集配置目录
+- 正式实验数据集目录
 - 批量实验入口与统一实验汇总输出
 - 两套可切换的任务分配算法
+- 三套可切换的 `UAV` 搜索规划算法
 - 基础巡检与热点确认双任务源最小闭环
 - 覆盖映射静态可视化测试
 - 正式圆形 `footprint` 展示
@@ -54,6 +55,7 @@
 - 同一 HTML 内 `clean/debug` 双模式海图切换显示
 - 智能体编号标签开关
 - 当前帧规划路径虚线展示
+- GitHub 语言统计已通过 `.gitattributes` 忽略生成型 HTML/日志产物
 
 当前系统的真实边界是：
 
@@ -119,7 +121,7 @@
 当前改为在仿真过程中动态维护两类任务源：
 
 - 近海区随机生成基础任务点
-- 海域内随机播种 `12` 个热点源
+- 海域内伪随机动态生成热点源
 
 这些动态任务源当前的生成规则是：
 
@@ -127,7 +129,13 @@
 - 会落在对应分区内部
 - 会避开障碍与风险区
 - 当前热点生成已收紧为“中心格及周边一圈邻域”都不得与障碍或风险区重叠
-- 仿真中 ground-truth hotspot 总量固定为 `12`
+- 仿真中同时存在的 ground-truth hotspot 硬上限为 `12`
+- 当前热点处理链已经明确为：
+  - 真实热点可以在海域中伪随机产生
+  - 只有当 `UAV` 在当前 step 观测到该热点所在格子时，才会完成热点初检
+  - 只有完成 `UAV` 初检后，系统才会生成 `hotspot_confirmation`
+  - `USV` 在任务点固定驻留若干步完成精检后，热点被判为 `confirmed` 或 `false_alarm`
+  - 一旦 `USV` 精检完成，该热点会从 ground-truth 层和活跃可视化层中一并移除
 
 这部分的作用是：
 
@@ -242,7 +250,7 @@
 - 基础监测任务
 - 真实热点状态
 - 系统认知的热点状态
-- UAV 疑似标记与 USV 确认进度
+- UAV 初检与 USV 精检进度
 
 当前信息地图已经支持：
 
@@ -251,8 +259,8 @@
 - 当前默认信息失效阈值为 `400 steps`
 - 当前近海基础任务生成频率已进一步下调，同时活跃上限收敛为 `1` 并加入更长的已服务点冷却时间，避免近海任务点过密刷新
 - 栅格重新观测后立即恢复为 `valid`
-- 近海/远海动态热点刷新
-- UAV 对真实热点或误报热点进行 `suspected` 标记
+- 近海/远海动态热点生成
+- UAV 对当前观测到的真实热点完成初检
 - USV 近距离连续停留若干步后将热点判为 `confirmed` 或 `false_alarm`
 - 热点任务一旦完成，会立即从当前活跃热点可视化层移除，并记录为已关闭，后续不再被重复发现为待确认热点
 
@@ -261,8 +269,8 @@
 - 当前信息地图不引入独立区域图，直接以栅格为最小信息单元
 - 当前回放页面中的 `valid/stale cells` 只统计非障碍格，不再把障碍格计入信息新鲜度统计
 - 静态障碍和风险区默认从一开始全局已知
-- 假警报当前仅来自 UAV 误报
-- 真实热点源仍保留在环境真相层中，但回放层只展示当前仍待确认的活跃热点
+- 假警报当前来自 `USV` 精检阶段的误判收敛
+- 热点在 `USV` 精检完成后会从环境真相层中移除
 
 ### 2.8 回放式仿真预览与最小闭环
 
@@ -282,7 +290,7 @@
 - 时间步滑块
 - 播放/暂停
 - 覆盖率统计
-- `suspected / confirmed / false_alarm` 热点状态
+- `UAV checked / confirmed / false_alarm` 热点状态
 - 事件日志面板
 - 同步输出的 `events.jsonl` 逐事件日志
 - 同步输出的 `summary.json` 最终汇总日志
@@ -296,17 +304,17 @@
   - `cost_aware_centralized_allocator`
 - 当前 `basic_task_allocator` 负责“热点优先、同类按创建时间、责任分区内最低代价 `USV` 分配”的基础任务算法
 - 当前 `cost_aware_centralized_allocator` 负责在严格责任区约束下，对 `baseline_service` 和 `hotspot_confirmation` 建立代价矩阵，并以“优先级分层 + 集中式贪心”方式做集中分配
+- 当前 `cost_aware_centralized_allocator` 已额外加入“不可达任务冷却”机制：若某个任务对责任区内当前可用 `USV` 都不可达，则该任务会进入短时 backoff，避免在连续多个 step 内重复触发同一组 `A*` 可达性检查
 - 当前任务层会将 `uav_resupply` 作为最高优先级紧急任务处理，并为低电量 `UAV` 选择最近 `USV` 作为会合补能对象
 - 当前 `uav_resupply` 触发阈值采用“到最近 `USV` 的预计可达能耗 + 45 单位安全余量”
 - 当前 `uav_resupply` 释放阈值采用“充到 `90%` 电量后脱离 `USV` 回到巡航”
 - 当前 `UAV` 补能速率为每步 `12` 单位能量
 - `USV` 仅在到达任务点并进入 `ON_TASK` 固定驻留 `5` 步后，才会完成热点确认或基础任务处理
 - `UAV` 在低电量时会按“能否安全飞到最近 `USV`”提前触发补能，并从搜索巡航切换到 `GO_TO_RENDEZVOUS -> ON_RECHARGE -> RETURN_TO_PATROL`
-- 近海基础任务点动态生成与海域内 `12` 个热点源播种
+- 近海基础任务点动态生成与海域内最多 `12` 个热点源动态存在
 - 动态 hotspot 数量硬上限 `12`
-- `UAV` 疑似热点数量硬上限 `12`
-- `UAV` 只会发现已播种的 `12` 个热点，不再主动制造额外误报热点
-- `USV` 对疑似热点执行确认时，按 `90% confirmed / 10% false_alarm` 进行收敛
+- `UAV` 只会对当前观测到的真实热点完成初检，不再额外制造误报热点
+- `USV` 对已完成 UAV 初检的热点执行精检时，按 `90% confirmed / 10% false_alarm` 进行收敛
 
 当前模块组织方式：
 
@@ -318,9 +326,17 @@
   - `nearshore_baseline_pressure`：近海基础任务压力场景，提高近海基础巡检任务密度，适合观察驻区巡航与基础任务处理能力
   - `mixed_task_pressure`：混合任务压力场景，同时提高近海基础任务与远海热点压力，适合观察多任务竞争下的整体调度表现
 - `configs/experiment_datasets/` 已提供实验数据集配置目录，当前用于集中维护“固定场景 + 固定随机种子集合 + 固定步数 + 固定统计口径”的正式对比数据集
-- 当前首个正式实验数据集为：`configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_5seed/`
-  - 用于对比 `basic_task_allocator` 与 `cost_aware_centralized_allocator`
-  - 固定场景：`offshore_hotspot_pressure`
+- `configs/experiment_datasets/` 当前已作为正式实验数据集目录使用，不再只是存放配置；目录内可同时保存：
+  - `batch.toml`
+  - `comparison_summary.json`
+  - 每个 seed 的 `events.jsonl`
+  - 每个 seed 的 `summary.json`
+  - 代表性回放 `HTML`
+- 当前已固化的正式任务层对比数据集包括：
+  - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_5seed/`
+    - 用于较早阶段的 `basic_task_allocator` 与 `cost_aware_centralized_allocator` 对比
+  - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_3seed_cooldown/`
+    - 用于修正 `cost_aware` 不可达任务冷却后，重新对比 `basic_task_allocator` 与 `cost_aware_centralized_allocator`
   - 固定随机种子：`20260314 / 20260315 / 20260316 / 20260317 / 20260319`
   - 固定步数：`1200`
   - 当前目录内已同时保存：
@@ -331,13 +347,24 @@
 - 当前实验配置中的 `[scenario]` 段会先选定一个场景预设，再允许 `[information_map]` 对该场景做局部覆盖，从而避免为不同算法重复复制整套场景参数
 - 当前这套场景机制已经可以在“同一场景下切换不同算法”与“同一算法下切换不同场景”两种实验方式中复用，避免把场景参数和算法配置绑定在一起
 - 当前实验配置层已支持选择 `basic_task_allocator` 或 `cost_aware_centralized_allocator` 作为任务层算法
+- 当前实验配置层已支持选择：
+  - `uav_lawnmower_planner`
+  - `uav_multi_region_coverage_planner`
+  - `uav_persistent_multi_region_coverage_planner`
+  作为 `UAV` 搜索规划算法
 - `simulation/experiment_batch.py` 已提供批量实验入口，当前支持读取 batch TOML、顺序运行多组实验，并输出 `batch_results.jsonl` 与 `batch_summary.json`
 - 当前 batch 运行已支持按 run 覆盖 `scenario`，从而可以在同一 base config 下复用多个实验场景做算法对比
 - 当前正式 `5-seed / 1200-step` 任务层对比结果已经同步固化进上述实验数据集目录，可直接作为后续算法复现实验与对比基线使用
+- 当前 `outputs/` 目录仍是默认运行输出目录；batch 复现实验与未固化的中间产物继续写到这里
+- 若某轮实验结果被认定为正式合格数据集，可将其关键配置、代表性日志、汇总结果与回放副本同步固化到 `configs/experiment_datasets/`，但不应假定 `outputs/` 已失去复现用途
 - `simulation/simulation_core.py` 负责回放仿真的顶层时间步编排，并组织帧采集与日志采集
 - `simulation/simulation_agent_runtime.py` 负责智能体单步推进、路径执行、恢复动作执行与巡航回接点计算
 - `execution/progress_feedback.py` 负责 `USV` 的执行反馈判定，包括无进展检测、坏目标冷却以及是否进入 `RECOVERY` / 是否允许重规划
-- `simulation/simulation_policy.py` 负责当前 demo 智能体与默认 patrol 数据装配；`USV` 巡航环由 `planning/usv_patrol_planner.py` 生成，`UAV` 搜索航线由 `planning/uav_lawnmower_planner.py` 生成
+- `simulation/simulation_policy.py` 负责当前 demo 智能体与默认 patrol 数据装配；`USV` 巡航环由 `planning/usv_patrol_planner.py` 生成，`UAV` 搜索航线可按实验配置在：
+  - `planning/uav_lawnmower_planner.py`
+  - `planning/uav_multi_region_coverage_planner.py`
+  - `planning/uav_persistent_multi_region_coverage_planner.py`
+  之间切换
 - `simulation/simulation_task_runtime.py` 负责任务生命周期同步、任务关闭收尾与任务决策摘要适配
 - `simulation/simulation_logging.py` 负责结构化日志输出
 - `simulation/simulation_replay_view.py` 负责 HTML 回放页面生成
@@ -347,8 +374,33 @@
 
 - 当前正式接入主循环的是 `baseline_service + hotspot_confirmation`
 - 当前主循环已接入 `baseline_service + hotspot_confirmation + uav_resupply`
-- 当前双任务源闭环为：近海基础监测点动态生成 `baseline_service`，远海隐藏热点经 `UAV` 发现后生成 `hotspot_confirmation`
+- 当前双任务源闭环为：近海基础监测点动态生成 `baseline_service`，远海动态热点经 `UAV` 初检后生成 `hotspot_confirmation`
 - 当前 `UAV` 巡航已切换为分区割草机式搜索，而不再只是少量固定航点往返
+- 当前 `UAV` 搜索规划已具备三套可切换实现：
+  - `uav_lawnmower_planner`：固定上下分区割草机搜索 baseline
+  - `uav_multi_region_coverage_planner`：远海固定四 AOI、多区域新鲜度优先排序、区域内割草机覆盖的第一版升级 planner
+  - `uav_persistent_multi_region_coverage_planner`：远海固定四 AOI、freshness debt 优先、事件触发 AOI 重排、区域承诺覆盖的第二版升级 planner
+- 当前第一版 `uav_multi_region_coverage_planner` 不新增新的 UAV 执行状态，而是继续复用 `patrol_route_id + patrol_waypoint_index` 执行链；规划层会按当前信息地图动态重建跨 AOI 的 patrol route，并输出当前区域级航点段
+- 当前第二版 `uav_persistent_multi_region_coverage_planner` 已新增并行 `UavCoverageState`，用来记录当前 AOI、区域内 route、承诺剩余航点和最近重排原因；它不改 `AgentExecutionState`，而是通过 `simulation/uav_coverage_runtime.py` 与 runtime 协同工作
+- 当前第二版 `uav_persistent_multi_region_coverage_planner` 已进一步加入：
+  - 双 `UAV` 间的 AOI 去冲突选择，尽量避免两架机同时扎进同一个远海区域
+  - AOI 重新进入时的 sweep 端点接入与必要时 route 反向，避免从区域中段插入破坏割草机覆盖连续性
+- 当前第二版 persistent planner 的 AOI 切换不是每步贪心重排，而是按以下事件触发：
+  - 当前 AOI route 完成
+  - patrol route 缺失/失效
+  - 区域承诺释放后，其他 AOI 的 freshness debt 明显更高
+  - 补能或回巡航恢复后需要重新选择 AOI
+- 当前两版 `UAV` 多区域 planner 都属于“受近年文献方向启发的规则式工程实现”，不是对论文原算法的严格复现；当前主要借鉴的思想包括：
+  - 海上多 `UAV` 覆盖规划里的“区域间访问顺序 + 区域内覆盖”分层思路
+  - persistent search / adaptive replanning 里的“事件触发重排”思路
+  - boustrophedon coverage redistribution 里的“区域内持续扫带覆盖”思路
+  - Age of Information / freshness 驱动覆盖里的“以 stale ratio、信息年龄和最近访问时间作为调度信号”思路
+- 当前第二版 `uav_persistent_multi_region_coverage_planner` 的具体方法可概括为：
+  - 固定 `4` 个远海 AOI
+  - AOI 内部继续使用割草机覆盖
+  - 区域间按 `stale_ratio -> mean_information_age -> time_since_last_region_visit -> travel_cost -> region_id` 排序
+  - 只在事件触发时做 AOI 重排，而不是每步重排
+  - 进入 AOI 后执行最小区域承诺，并尽量避免双机扎堆到同一区域
 - 当前 `USV` 默认巡航分区已调整为：`USV-1` 负责近海区，`USV-2/USV-3` 负责远海上/下两个分区
 - 当前 `USV` 任务分配也已按同一责任区执行：近海任务默认只分给 `USV-1`，非近海任务按上下半区分别优先分给 `USV-2/USV-3`，从而形成“驻区巡航、驻区优先处理任务、任务完成后回本区”的初版分区机制
 - 当前近海信息新鲜度阈值已单独提高到 `800 step`，其余海域保持 `400 step`，避免近海基础监测区域过快整体失效

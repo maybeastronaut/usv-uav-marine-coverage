@@ -156,7 +156,11 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
         "cost_aware_centralized_allocator",
     }
     supported_usv_planners = {"astar_path_planner"}
-    supported_uav_planners = {"uav_lawnmower_planner"}
+    supported_uav_planners = {
+        "uav_lawnmower_planner",
+        "uav_multi_region_coverage_planner",
+        "uav_persistent_multi_region_coverage_planner",
+    }
     supported_execution = {"phase_one_execution"}
     supported_scenarios = set(list_scenario_names())
 

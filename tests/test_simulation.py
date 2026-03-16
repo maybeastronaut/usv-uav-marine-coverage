@@ -56,6 +56,17 @@ class SimulationTestCase(unittest.TestCase):
             replay.step_logs[-1]["coverage"]["total_coverable_cells"],
         )
 
+    def test_seeded_hotspots_do_not_create_confirmation_tasks_at_step_zero(self) -> None:
+        replay = build_simulation_replay(seed=20260314, steps=1, dt_seconds=1.0)
+
+        hotspot_tasks = [
+            task
+            for task in replay.step_logs[0]["task_layer"]["tasks"]
+            if task["task_type"] == "hotspot_confirmation"
+        ]
+
+        self.assertEqual(hotspot_tasks, [])
+
     def test_simulation_html_contains_replay_controls_and_layers(self) -> None:
         replay = build_simulation_replay(seed=20260314, steps=4, dt_seconds=1.0)
         html = build_simulation_html(replay)
@@ -214,6 +225,38 @@ nearshore_information_timeout_steps = 800
             self.assertEqual(
                 summary["simulation"]["experiment_config"]["algorithms"]["task_allocator"],
                 "cost_aware_centralized_allocator",
+            )
+
+    def test_simulation_artifacts_can_run_with_uav_multi_region_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "simulation_replay.html"
+            artifacts = write_simulation_artifacts(
+                output_path=output_path,
+                generate_html=False,
+                config_path=Path("configs/uav_multi_region_coverage.toml"),
+                steps=5,
+            )
+
+            summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                summary["simulation"]["experiment_config"]["algorithms"]["uav_search_planner"],
+                "uav_multi_region_coverage_planner",
+            )
+
+    def test_simulation_artifacts_can_run_with_uav_persistent_multi_region_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "simulation_replay.html"
+            artifacts = write_simulation_artifacts(
+                output_path=output_path,
+                generate_html=False,
+                config_path=Path("configs/uav_persistent_multi_region_coverage.toml"),
+                steps=5,
+            )
+
+            summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                summary["simulation"]["experiment_config"]["algorithms"]["uav_search_planner"],
+                "uav_persistent_multi_region_coverage_planner",
             )
 
     def test_usv_only_confirms_hotspot_while_on_task_at_target_cell(self) -> None:

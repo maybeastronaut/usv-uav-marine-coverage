@@ -13,6 +13,7 @@ from usv_uav_marine_coverage.environment import ObstacleLayout, SeaMap
 from usv_uav_marine_coverage.execution.execution_types import (
     AgentExecutionState,
     AgentProgressState,
+    UavCoverageState,
 )
 from usv_uav_marine_coverage.grid import GridCoverageMap
 from usv_uav_marine_coverage.information_map import HotspotKnowledgeState, InformationMap
@@ -110,7 +111,7 @@ def build_summary_payload(replay: SimulationReplay) -> dict[str, object]:
             "total_coverable_cells": int(final_coverage["total_coverable_cells"]),
             "valid_cells": len(final_frame.valid_cells),
             "stale_cells": len(final_frame.stale_cells),
-            "suspected_cells": len(final_frame.suspected_cells),
+            "uav_checked_cells": len(final_frame.uav_checked_cells),
             "confirmed_cells": len(final_frame.confirmed_cells),
             "false_alarm_cells": len(final_frame.false_alarm_cells),
             "active_ground_truth_hotspots": count_active_ground_truth_hotspots(replay.step_logs),
@@ -255,13 +256,14 @@ def build_step_log(
     task_records: tuple[TaskRecord, ...],
     execution_states: dict[str, AgentExecutionState],
     progress_states: dict[str, AgentProgressState],
+    uav_coverage_states: dict[str, UavCoverageState] | None,
     planner_metrics: PlannerMetricsSnapshot,
 ) -> dict[str, object]:
     """Build one structured per-step simulation log record."""
 
     valid_cells = 0
     stale_known_cells = 0
-    suspected_cells = 0
+    uav_checked_cells = 0
     confirmed_cells = 0
     false_alarm_cells = 0
     active_ground_truth_hotspots = 0
@@ -273,8 +275,8 @@ def build_step_log(
             stale_known_cells += 1
         if state.ground_truth_hotspot:
             active_ground_truth_hotspots += 1
-        if state.known_hotspot_state == HotspotKnowledgeState.SUSPECTED:
-            suspected_cells += 1
+        if state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED:
+            uav_checked_cells += 1
         elif state.known_hotspot_state == HotspotKnowledgeState.CONFIRMED:
             confirmed_cells += 1
         elif state.known_hotspot_state == HotspotKnowledgeState.FALSE_ALARM:
@@ -292,12 +294,14 @@ def build_step_log(
         prior_agents=prior_agents,
         planned_agents=planned_agents,
         execution_states=execution_states,
+        uav_coverage_states=uav_coverage_states,
         step=step,
     )
     execution_updates = build_execution_updates(
         agents,
         execution_states=execution_states,
         progress_states=progress_states,
+        uav_coverage_states=uav_coverage_states,
     )
     hotspot_chain = build_hotspot_chain_updates(
         info_map,
@@ -319,7 +323,7 @@ def build_step_log(
             "valid_cells": valid_cells,
             "stale_known_cells": stale_known_cells,
             "active_ground_truth_hotspots": active_ground_truth_hotspots,
-            "suspected_cells": suspected_cells,
+            "uav_checked_cells": uav_checked_cells,
             "confirmed_cells": confirmed_cells,
             "false_alarm_cells": false_alarm_cells,
         },
@@ -328,7 +332,7 @@ def build_step_log(
             "task_decisions": list(task_decisions),
             "tasks": [serialize_task_record(task) for task in task_records],
             "task_rejections": [],
-            "newly_suspected_by_agent": serialize_index_mapping(detected_by_agent),
+            "newly_uav_checked_by_agent": serialize_index_mapping(detected_by_agent),
             "confirmed_by_agent": serialize_index_mapping(confirmations_by_agent),
             "false_alarms_by_agent": serialize_index_mapping(false_alarms_by_agent),
         },
@@ -373,7 +377,7 @@ def build_event_totals(step_logs: tuple[dict[str, object], ...]) -> dict[str, in
 
     totals = {
         "spawned_hotspots": 0,
-        "suspected_marks": 0,
+        "uav_checked_marks": 0,
         "confirmed_hotspots": 0,
         "false_alarms": 0,
         "astar_total_calls": 0,
@@ -387,8 +391,8 @@ def build_event_totals(step_logs: tuple[dict[str, object], ...]) -> dict[str, in
         task_layer = record["task_layer"]
         path_layer = record["path_layer"]
         totals["spawned_hotspots"] += len(observation_updates["spawned_hotspots"])
-        totals["suspected_marks"] += sum(
-            len(indices) for indices in task_layer["newly_suspected_by_agent"].values()
+        totals["uav_checked_marks"] += sum(
+            len(indices) for indices in task_layer["newly_uav_checked_by_agent"].values()
         )
         totals["confirmed_hotspots"] += sum(
             len(indices) for indices in task_layer["confirmed_by_agent"].values()
@@ -414,6 +418,7 @@ def build_path_plan_logs(
     prior_agents: tuple[AgentState, ...],
     planned_agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
+    uav_coverage_states: dict[str, UavCoverageState] | None,
     step: int,
 ) -> list[dict[str, object]]:
     """Build path-plan summary records for the current step."""
@@ -446,6 +451,9 @@ def build_path_plan_logs(
         planner_name = None
         plan_status = None
         task_id = None
+        coverage_state = (
+            None if uav_coverage_states is None else uav_coverage_states.get(agent.agent_id)
+        )
         if execution_state is not None and execution_state.active_plan is not None:
             goal = grid_map.locate_cell(
                 execution_state.active_plan.goal_x,
@@ -471,6 +479,12 @@ def build_path_plan_logs(
                 "path_length_estimate": estimated_cost,
                 "replan_reason": replan_reason,
                 "plan_status": plan_status,
+                "patrol_region_id": None
+                if coverage_state is None
+                else coverage_state.current_region_id,
+                "region_replan_reason": None
+                if coverage_state is None
+                else coverage_state.last_replan_reason,
             }
         )
     return plan_logs
@@ -481,6 +495,7 @@ def build_execution_updates(
     *,
     execution_states: dict[str, AgentExecutionState],
     progress_states: dict[str, AgentProgressState],
+    uav_coverage_states: dict[str, UavCoverageState] | None,
 ) -> dict[str, object]:
     """Build execution-deviation snapshots for the current step."""
 
@@ -488,6 +503,9 @@ def build_execution_updates(
     for agent in agents:
         execution_state = execution_states.get(agent.agent_id)
         progress_state = progress_states.get(agent.agent_id)
+        coverage_state = (
+            None if uav_coverage_states is None else uav_coverage_states.get(agent.agent_id)
+        )
         tracking_error = None
         heading_error = None
         if (
@@ -537,6 +555,12 @@ def build_execution_updates(
                 "blocked_goal_signature": None
                 if progress_state is None
                 else progress_state.blocked_goal_signature,
+                "patrol_region_id": None
+                if coverage_state is None
+                else coverage_state.current_region_id,
+                "region_replan_reason": None
+                if coverage_state is None
+                else coverage_state.last_replan_reason,
                 "entered_recovery": False
                 if execution_state is None or progress_state is None
                 else (
@@ -618,7 +642,7 @@ def build_hotspot_chain_updates(
                 {
                     "hotspot_id": state.ground_truth_hotspot_id,
                     "cell": [row, col],
-                    "detected_by": agent_id,
+                    "uav_checked_by": agent_id,
                     "known_state_before": "none",
                     "known_state_after": state.known_hotspot_state.value,
                     "ground_truth_state": state.ground_truth_hotspot,
@@ -633,7 +657,7 @@ def build_hotspot_chain_updates(
                     "hotspot_id": state.ground_truth_hotspot_id,
                     "cell": [row, col],
                     "confirmed_by": agent_id,
-                    "known_state_before": "suspected",
+                    "known_state_before": "uav_checked",
                     "known_state_after": "confirmed",
                     "ground_truth_state": state.ground_truth_hotspot,
                     "final_resolution": "confirmed",
@@ -647,7 +671,7 @@ def build_hotspot_chain_updates(
                     "hotspot_id": state.ground_truth_hotspot_id,
                     "cell": [row, col],
                     "confirmed_by": agent_id,
-                    "known_state_before": "suspected",
+                    "known_state_before": "uav_checked",
                     "known_state_after": "false_alarm",
                     "ground_truth_state": state.ground_truth_hotspot,
                     "final_resolution": "false_alarm",

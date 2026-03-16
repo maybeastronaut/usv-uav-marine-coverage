@@ -14,6 +14,7 @@ from usv_uav_marine_coverage.execution.execution_types import (
     AgentProgressState,
     ExecutionOutcome,
     ExecutionStage,
+    UavCoverageState,
 )
 from usv_uav_marine_coverage.execution.progress_feedback import (
     build_initial_progress_states,
@@ -126,6 +127,188 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         self.assertEqual(guarded_agent.turn_rate_degps, advanced_agent.turn_rate_degps)
         self.assertIsNone(guarded_state.active_plan)
         self.assertEqual(guarded_state.current_waypoint_index, 0)
+
+    def test_advance_agents_one_step_supports_uav_multi_region_patrol(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        grid_map = _build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        patrol_routes = build_patrol_routes(
+            uav_search_planner="uav_multi_region_coverage_planner",
+            agents=agents,
+            info_map=info_map,
+        )
+
+        updated_agents, updated_execution_states, _ = advance_agents_one_step(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            task_records=(),
+            patrol_routes=patrol_routes,
+            grid_map=grid_map,
+            info_map=info_map,
+            dt_seconds=1.0,
+            uav_search_planner="uav_multi_region_coverage_planner",
+        )
+
+        uav_before = next(agent for agent in agents if agent.agent_id == "UAV-1")
+        uav_after = next(agent for agent in updated_agents if agent.agent_id == "UAV-1")
+        uav_state = updated_execution_states["UAV-1"]
+
+        self.assertEqual(uav_state.stage, ExecutionStage.PATROL)
+        self.assertNotEqual((uav_before.x, uav_before.y), (uav_after.x, uav_after.y))
+        self.assertIsNotNone(uav_state.active_plan)
+        assert uav_state.active_plan is not None
+        self.assertEqual(
+            uav_state.active_plan.planner_name,
+            "uav_multi_region_coverage_planner",
+        )
+
+    def test_uav_multi_region_patrol_does_not_freeze_on_nearby_first_waypoint(self) -> None:
+        agents = tuple(
+            replace(agent, x=705.931, y=502.165) if agent.agent_id == "UAV-1" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        grid_map = _build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        patrol_routes = build_patrol_routes(
+            uav_search_planner="uav_multi_region_coverage_planner",
+            agents=agents,
+            info_map=info_map,
+        )
+
+        updated_agents, updated_execution_states, _ = advance_agents_one_step(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            task_records=(),
+            patrol_routes=patrol_routes,
+            grid_map=grid_map,
+            info_map=info_map,
+            dt_seconds=1.0,
+            uav_search_planner="uav_multi_region_coverage_planner",
+        )
+
+        uav_before = next(agent for agent in agents if agent.agent_id == "UAV-1")
+        uav_after = next(agent for agent in updated_agents if agent.agent_id == "UAV-1")
+        uav_state = updated_execution_states["UAV-1"]
+
+        self.assertNotEqual((uav_before.x, uav_before.y), (uav_after.x, uav_after.y))
+        self.assertIsNotNone(uav_state.active_plan)
+        assert uav_state.active_plan is not None
+        self.assertEqual(
+            uav_state.active_plan.planner_name,
+            "uav_multi_region_coverage_planner",
+        )
+
+    def test_advance_agents_one_step_supports_uav_persistent_multi_region_patrol(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        grid_map = _build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        uav_coverage_states: dict[str, UavCoverageState] = {}
+        patrol_routes = build_patrol_routes(
+            uav_search_planner="uav_persistent_multi_region_coverage_planner",
+            agents=agents,
+            info_map=info_map,
+            uav_coverage_states=uav_coverage_states,
+        )
+
+        updated_agents, updated_execution_states, _ = advance_agents_one_step(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            uav_coverage_states=uav_coverage_states,
+            task_records=(),
+            patrol_routes=patrol_routes,
+            grid_map=grid_map,
+            info_map=info_map,
+            dt_seconds=1.0,
+            uav_search_planner="uav_persistent_multi_region_coverage_planner",
+        )
+
+        uav_before = next(agent for agent in agents if agent.agent_id == "UAV-1")
+        uav_after = next(agent for agent in updated_agents if agent.agent_id == "UAV-1")
+        uav_state = updated_execution_states["UAV-1"]
+
+        self.assertNotEqual((uav_before.x, uav_before.y), (uav_after.x, uav_after.y))
+        self.assertIsNotNone(uav_state.active_plan)
+        assert uav_state.active_plan is not None
+        self.assertEqual(
+            uav_state.active_plan.planner_name,
+            "uav_persistent_multi_region_coverage_planner",
+        )
+        self.assertIsNotNone(uav_coverage_states["UAV-1"].current_region_id)
+
+    def test_uav_persistent_multi_region_patrol_keeps_region_commitment(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        grid_map = _build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        uav_coverage_states: dict[str, UavCoverageState] = {}
+        patrol_routes = build_patrol_routes(
+            uav_search_planner="uav_persistent_multi_region_coverage_planner",
+            agents=agents,
+            info_map=info_map,
+            uav_coverage_states=uav_coverage_states,
+        )
+
+        current_region_id = uav_coverage_states["UAV-1"].current_region_id
+        for step in range(1, 4):
+            agents, execution_states, progress_states = advance_agents_one_step(
+                agents=agents,
+                execution_states=execution_states,
+                progress_states=progress_states,
+                uav_coverage_states=uav_coverage_states,
+                task_records=(),
+                patrol_routes=patrol_routes,
+                grid_map=grid_map,
+                info_map=info_map,
+                dt_seconds=1.0,
+                step=step,
+                uav_search_planner="uav_persistent_multi_region_coverage_planner",
+            )
+
+        self.assertEqual(uav_coverage_states["UAV-1"].current_region_id, current_region_id)
+
+    def test_uav_persistent_multi_region_initializes_two_uavs_in_distinct_regions(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        grid_map = _build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        uav_coverage_states: dict[str, UavCoverageState] = {}
+        patrol_routes = build_patrol_routes(
+            uav_search_planner="uav_persistent_multi_region_coverage_planner",
+            agents=agents,
+            info_map=info_map,
+            uav_coverage_states=uav_coverage_states,
+        )
+
+        advance_agents_one_step(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            uav_coverage_states=uav_coverage_states,
+            task_records=(),
+            patrol_routes=patrol_routes,
+            grid_map=grid_map,
+            info_map=info_map,
+            dt_seconds=1.0,
+            uav_search_planner="uav_persistent_multi_region_coverage_planner",
+        )
+
+        self.assertIsNotNone(uav_coverage_states["UAV-1"].current_region_id)
+        self.assertIsNotNone(uav_coverage_states["UAV-2"].current_region_id)
+        self.assertNotEqual(
+            uav_coverage_states["UAV-1"].current_region_id,
+            uav_coverage_states["UAV-2"].current_region_id,
+        )
 
     def test_apply_usv_collision_guard_respects_hull_clearance_near_obstacle_edge(self) -> None:
         obstacle_layout = ObstacleLayout(

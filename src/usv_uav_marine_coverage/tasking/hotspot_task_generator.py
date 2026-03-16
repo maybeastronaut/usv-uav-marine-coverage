@@ -1,4 +1,4 @@
-"""Hotspot-confirmation task generation helpers."""
+"""USV fine-inspection task generation helpers for UAV-checked hotspots."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ def sync_hotspot_confirmation_tasks(
     step: int,
     existing_tasks: tuple[TaskRecord, ...] = (),
 ) -> tuple[TaskRecord, ...]:
-    """Sync hotspot-confirmation tasks from the current information map."""
+    """Sync USV fine-inspection tasks from the current information map."""
 
     existing_by_id = {task.task_id: task for task in existing_tasks}
     next_tasks: list[TaskRecord] = []
@@ -26,14 +26,14 @@ def sync_hotspot_confirmation_tasks(
         task_id = f"hotspot-confirmation-{cell.row}-{cell.col}"
         existing = existing_by_id.get(task_id)
 
-        if state.known_hotspot_state == HotspotKnowledgeState.SUSPECTED:
+        if state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED:
             active_ids.add(task_id)
             if existing is None:
                 next_tasks.append(
                     TaskRecord(
                         task_id=task_id,
                         task_type=TaskType.HOTSPOT_CONFIRMATION,
-                        source=_task_source_for_observer(state.suspected_by),
+                        source=_task_source_for_observer(state.uav_checked_by),
                         status=TaskStatus.PENDING,
                         priority=10,
                         target_x=cell.center_x,
@@ -92,4 +92,4 @@ def sync_hotspot_confirmation_tasks(
 def _task_source_for_observer(observer_id: str | None) -> TaskSource:
     if observer_id is not None and observer_id.startswith("USV"):
         return TaskSource.USV_ANOMALY
-    return TaskSource.UAV_SUSPECTED
+    return TaskSource.UAV_INSPECTED

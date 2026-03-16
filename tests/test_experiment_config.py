@@ -149,6 +149,23 @@ nearshore_information_timeout_steps = 800
 
         validate_experiment_config(config)
 
+    def test_validate_experiment_config_accepts_uav_multi_region_planner(self) -> None:
+        config = load_experiment_config(Path("configs/uav_multi_region_coverage.toml"))
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_uav_persistent_multi_region_planner(self) -> None:
+        config = load_experiment_config(Path("configs/uav_persistent_multi_region_coverage.toml"))
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_cost_aware_persistent_combo(self) -> None:
+        config = load_experiment_config(
+            Path("configs/cost_aware_uav_persistent_multi_region.toml")
+        )
+
+        validate_experiment_config(config)
+
     def test_load_experiment_config_rejects_unknown_scenario_name(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "experiment.toml"

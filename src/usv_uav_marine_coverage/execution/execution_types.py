@@ -61,3 +61,18 @@ class AgentProgressState:
     blocked_goal_signature: str | None = None
     pre_recovery_stage: ExecutionStage | None = None
     pre_recovery_task_id: str | None = None
+
+
+@dataclass(frozen=True)
+class UavCoverageState:
+    """Persistent UAV patrol-coverage state kept outside execution state."""
+
+    agent_id: str
+    current_region_id: str | None = None
+    region_route: tuple[tuple[float, float], ...] = ()
+    region_waypoint_index: int = 0
+    region_entry_step: int = -1
+    committed_waypoints_remaining: int = 0
+    last_replan_step: int = -1
+    last_replan_reason: str | None = None
+    region_last_visit_steps: tuple[tuple[str, int], ...] = ()

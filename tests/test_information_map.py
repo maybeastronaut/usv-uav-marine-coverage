@@ -17,6 +17,10 @@ from usv_uav_marine_coverage.information_map import (
     spawn_baseline_tasks,
     spawn_hotspots,
 )
+from usv_uav_marine_coverage.tasking.hotspot_task_generator import (
+    sync_hotspot_confirmation_tasks,
+)
+from usv_uav_marine_coverage.tasking.task_types import TaskType
 
 
 class InformationMapTestCase(unittest.TestCase):
@@ -185,11 +189,8 @@ class InformationMapTestCase(unittest.TestCase):
         self.assertEqual(info_map.active_hotspot_count, 12)
         self.assertEqual(spawned_again, ())
 
-    def test_uav_detection_respects_suspected_hotspot_cap(self) -> None:
-        config = InformationMapConfig(
-            max_suspected_hotspots=2,
-        )
-        info_map = build_information_map(self.grid_map, config)
+    def test_uav_detection_checks_all_observed_hotspots(self) -> None:
+        info_map = build_information_map(self.grid_map, InformationMapConfig())
         candidate_cells = [
             cell
             for cell in self.grid_map.flat_cells
@@ -211,6 +212,12 @@ class InformationMapTestCase(unittest.TestCase):
             coverage_radius=80.0,
             task=AgentTaskState(),
         )
+        observe_cells(
+            info_map,
+            tuple((cell.row, cell.col) for cell in candidate_cells),
+            observer_id="UAV-3",
+            step=2,
+        )
 
         detected = apply_uav_detection(
             info_map,
@@ -220,8 +227,8 @@ class InformationMapTestCase(unittest.TestCase):
             rng=Random(11),
         )
 
-        self.assertEqual(len(detected), 2)
-        self.assertEqual(info_map.active_suspected_hotspot_count, 2)
+        self.assertEqual(len(detected), 4)
+        self.assertEqual(info_map.active_uav_checked_hotspot_count, 4)
 
     def test_spawn_baseline_tasks_respects_recent_service_cooldown(self) -> None:
         config = InformationMapConfig(
@@ -272,6 +279,12 @@ class InformationMapTestCase(unittest.TestCase):
             coverage_radius=80.0,
             task=AgentTaskState(),
         )
+        observe_cells(
+            info_map,
+            ((hotspot_cell.row, hotspot_cell.col),),
+            observer_id="UAV-1",
+            step=5,
+        )
 
         detected = apply_uav_detection(
             info_map,
@@ -285,6 +298,192 @@ class InformationMapTestCase(unittest.TestCase):
         self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.SUSPECTED)
         self.assertEqual(state.known_hotspot_id, 9)
         self.assertEqual(state.suspected_by, "UAV-1")
+
+    def test_uav_does_not_expose_stale_hotspot_without_current_step_observation(self) -> None:
+        info_map = build_information_map(self.grid_map)
+        hotspot_cell = next(
+            cell
+            for cell in self.grid_map.flat_cells
+            if cell.zone_name == "Offshore Zone"
+            and not cell.has_obstacle
+            and not cell.has_risk_area
+            and not cell.has_baseline_point
+        )
+        state = info_map.state_at(hotspot_cell.row, hotspot_cell.col)
+        state.ground_truth_hotspot = True
+        state.ground_truth_hotspot_id = 12
+        state.last_observed_step = 1
+        state.information_age = 10
+        state.validity = InformationValidity.STALE_KNOWN
+
+        uav = AgentState(
+            agent_id="UAV-1",
+            kind="UAV",
+            x=hotspot_cell.center_x,
+            y=hotspot_cell.center_y,
+            heading_deg=0.0,
+            speed_mps=0.0,
+            max_speed_mps=0.0,
+            detection_radius=120.0,
+            coverage_radius=80.0,
+            task=AgentTaskState(),
+        )
+
+        detected = apply_uav_detection(
+            info_map,
+            uav,
+            ((hotspot_cell.row, hotspot_cell.col),),
+            step=5,
+            rng=Random(3),
+        )
+
+        self.assertEqual(detected, ())
+        self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.NONE)
+
+    def test_uav_does_not_reexpose_hotspot_from_old_valid_information(self) -> None:
+        info_map = build_information_map(self.grid_map)
+        hotspot_cell = next(
+            cell
+            for cell in self.grid_map.flat_cells
+            if cell.zone_name == "Offshore Zone"
+            and not cell.has_obstacle
+            and not cell.has_risk_area
+            and not cell.has_baseline_point
+        )
+        state = info_map.state_at(hotspot_cell.row, hotspot_cell.col)
+        state.ground_truth_hotspot = True
+        state.ground_truth_hotspot_id = 13
+        state.last_observed_step = 4
+        state.information_age = 0
+        state.validity = InformationValidity.VALID
+
+        uav = AgentState(
+            agent_id="UAV-1",
+            kind="UAV",
+            x=hotspot_cell.center_x,
+            y=hotspot_cell.center_y,
+            heading_deg=0.0,
+            speed_mps=0.0,
+            max_speed_mps=0.0,
+            detection_radius=120.0,
+            coverage_radius=80.0,
+            task=AgentTaskState(),
+        )
+
+        detected = apply_uav_detection(
+            info_map,
+            uav,
+            ((hotspot_cell.row, hotspot_cell.col),),
+            step=5,
+            rng=Random(3),
+        )
+
+        self.assertEqual(detected, ())
+        self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.NONE)
+
+    def test_suspected_hotspot_can_remain_after_region_becomes_stale(self) -> None:
+        info_map = build_information_map(
+            self.grid_map,
+            InformationMapConfig(
+                information_timeout_steps=1,
+                nearshore_information_timeout_steps=1,
+            ),
+        )
+        hotspot_cell = next(
+            cell
+            for cell in self.grid_map.flat_cells
+            if cell.zone_name == "Offshore Zone"
+            and not cell.has_obstacle
+            and not cell.has_risk_area
+            and not cell.has_baseline_point
+        )
+        state = info_map.state_at(hotspot_cell.row, hotspot_cell.col)
+        state.ground_truth_hotspot = True
+        state.ground_truth_hotspot_id = 14
+
+        observe_cells(
+            info_map,
+            ((hotspot_cell.row, hotspot_cell.col),),
+            observer_id="UAV-1",
+            step=2,
+        )
+        apply_uav_detection(
+            info_map,
+            AgentState(
+                agent_id="UAV-1",
+                kind="UAV",
+                x=hotspot_cell.center_x,
+                y=hotspot_cell.center_y,
+                heading_deg=0.0,
+                speed_mps=0.0,
+                max_speed_mps=0.0,
+                detection_radius=120.0,
+                coverage_radius=80.0,
+                task=AgentTaskState(),
+            ),
+            ((hotspot_cell.row, hotspot_cell.col),),
+            step=2,
+            rng=Random(4),
+        )
+
+        advance_information_age(info_map, step=4)
+
+        self.assertEqual(state.validity, InformationValidity.STALE_KNOWN)
+        self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.SUSPECTED)
+
+    def test_hotspot_confirmation_task_only_comes_from_suspected_state(self) -> None:
+        info_map = build_information_map(self.grid_map)
+        hotspot_cell = next(
+            cell
+            for cell in self.grid_map.flat_cells
+            if cell.zone_name == "Offshore Zone"
+            and not cell.has_obstacle
+            and not cell.has_risk_area
+            and not cell.has_baseline_point
+        )
+        state = info_map.state_at(hotspot_cell.row, hotspot_cell.col)
+        state.ground_truth_hotspot = True
+        state.ground_truth_hotspot_id = 15
+
+        tasks_before_detection = sync_hotspot_confirmation_tasks(
+            info_map,
+            step=0,
+            existing_tasks=(),
+        )
+
+        observe_cells(
+            info_map,
+            ((hotspot_cell.row, hotspot_cell.col),),
+            observer_id="UAV-1",
+            step=1,
+        )
+        apply_uav_detection(
+            info_map,
+            AgentState(
+                agent_id="UAV-1",
+                kind="UAV",
+                x=hotspot_cell.center_x,
+                y=hotspot_cell.center_y,
+                heading_deg=0.0,
+                speed_mps=0.0,
+                max_speed_mps=0.0,
+                detection_radius=120.0,
+                coverage_radius=80.0,
+                task=AgentTaskState(),
+            ),
+            ((hotspot_cell.row, hotspot_cell.col),),
+            step=1,
+            rng=Random(4),
+        )
+        tasks_after_detection = sync_hotspot_confirmation_tasks(
+            info_map,
+            step=1,
+            existing_tasks=(),
+        )
+
+        self.assertEqual(tasks_before_detection, ())
+        self.assertEqual(len(tasks_after_detection), 1)
+        self.assertEqual(tasks_after_detection[0].task_type, TaskType.HOTSPOT_CONFIRMATION)
 
     def test_uav_does_not_mark_non_hotspot_cell_as_suspected(self) -> None:
         config = InformationMapConfig()

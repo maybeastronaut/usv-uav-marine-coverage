@@ -17,7 +17,8 @@ class TaskType(StrEnum):
 class TaskSource(StrEnum):
     """Origin of one task record."""
 
-    UAV_SUSPECTED = "uav_suspected"
+    UAV_INSPECTED = "uav_inspected"
+    UAV_SUSPECTED = "uav_inspected"
     USV_ANOMALY = "usv_anomaly"
     SYSTEM_BASELINE_TIMEOUT = "system_baseline_timeout"
     SYSTEM_LOW_BATTERY = "system_low_battery"
@@ -51,6 +52,7 @@ class TaskRecord:
     assigned_agent_id: str | None = None
     support_agent_id: str | None = None
     completed_step: int | None = None
+    retry_after_step: int | None = None
 
 
 @dataclass(frozen=True)

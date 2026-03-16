@@ -21,7 +21,8 @@ class HotspotKnowledgeState(StrEnum):
     """System knowledge state for one hotspot cell."""
 
     NONE = "none"
-    SUSPECTED = "suspected"
+    UAV_CHECKED = "uav_checked"
+    SUSPECTED = "uav_checked"
     CONFIRMED = "confirmed"
     FALSE_ALARM = "false_alarm"
 
@@ -47,6 +48,7 @@ class InformationMapConfig:
     nearshore_baseline_spawn_probability: float = 0.0002
     baseline_respawn_cooldown_steps: int = 240
     uav_false_alarm_probability: float = 0.08
+    uav_hotspot_inspection_steps: int = 1
     usv_true_hotspot_probability: float = 0.9
     usv_confirmation_steps: int = 5
     baseline_service_steps: int = 5
@@ -71,13 +73,44 @@ class GridInformationCell:
     ground_truth_hotspot_created_step: int | None = None
     known_hotspot_state: HotspotKnowledgeState = HotspotKnowledgeState.NONE
     known_hotspot_id: int | None = None
-    suspected_by: str | None = None
+    uav_checked_by: str | None = None
     confirmed_by: str | None = None
-    suspicion_step: int | None = None
+    uav_check_step: int | None = None
     hotspot_resolution_step: int | None = None
-    confirmation_progress: int = 0
+    uav_inspection_progress: int = 0
+    usv_inspection_progress: int = 0
     assigned_agent_id: str | None = None
     task_status: TaskStatus = TaskStatus.IDLE
+
+    @property
+    def suspected_by(self) -> str | None:
+        """Backward-compatible alias for the old hotspot suspicion owner field."""
+
+        return self.uav_checked_by
+
+    @suspected_by.setter
+    def suspected_by(self, value: str | None) -> None:
+        self.uav_checked_by = value
+
+    @property
+    def suspicion_step(self) -> int | None:
+        """Backward-compatible alias for the old hotspot suspicion step field."""
+
+        return self.uav_check_step
+
+    @suspicion_step.setter
+    def suspicion_step(self, value: int | None) -> None:
+        self.uav_check_step = value
+
+    @property
+    def confirmation_progress(self) -> int:
+        """Backward-compatible alias for the old USV confirmation counter."""
+
+        return self.usv_inspection_progress
+
+    @confirmation_progress.setter
+    def confirmation_progress(self, value: int) -> None:
+        self.usv_inspection_progress = value
 
 
 @dataclass
@@ -101,13 +134,19 @@ class InformationMap:
         return sum(1 for row in self.states for state in row if state.has_baseline_task)
 
     @property
-    def active_suspected_hotspot_count(self) -> int:
+    def active_uav_checked_hotspot_count(self) -> int:
         return sum(
             1
             for row in self.states
             for state in row
-            if state.known_hotspot_state == HotspotKnowledgeState.SUSPECTED
+            if state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED
         )
+
+    @property
+    def active_suspected_hotspot_count(self) -> int:
+        """Backward-compatible alias for old suspected-hotspot counts."""
+
+        return self.active_uav_checked_hotspot_count
 
 
 def build_information_map(
@@ -151,10 +190,9 @@ def observe_cells(
         state.last_observed_step = step
         state.information_age = 0
         state.validity = InformationValidity.VALID
-        if state.known_hotspot_state == HotspotKnowledgeState.FALSE_ALARM:
-            state.suspected_by = observer_id
         if state.known_hotspot_state == HotspotKnowledgeState.NONE:
-            state.confirmation_progress = 0
+            state.uav_inspection_progress = 0
+            state.usv_inspection_progress = 0
 
 
 def advance_information_age(info_map: InformationMap, step: int) -> None:
@@ -192,7 +230,7 @@ def spawn_hotspots(
     step: int,
     rng: Random,
 ) -> tuple[tuple[int, int], ...]:
-    """Seed up to the configured hotspot cap on random eligible cells."""
+    """Spawn hotspots pseudo-randomly on eligible cells up to the configured cap."""
 
     if step < 0:
         raise ValueError("Simulation step must be non-negative.")
@@ -215,14 +253,36 @@ def spawn_hotspots(
 
     rng.shuffle(candidate_indices)
     spawned_indices: list[tuple[int, int]] = []
-    for row_index, col_index in candidate_indices[:remaining_slots]:
+    for row_index, col_index in candidate_indices:
+        if remaining_slots <= 0:
+            break
+        cell = info_map.grid_map.cell_at(row_index, col_index)
+        spawn_probability = _hotspot_spawn_probability(
+            info_map.config,
+            cell.zone_name,
+        )
+        if spawn_probability <= 0.0:
+            continue
+        if rng.random() >= spawn_probability:
+            continue
         state = info_map.state_at(row_index, col_index)
         hotspot_id = info_map.next_hotspot_id
         info_map.next_hotspot_id += 1
         state.ground_truth_hotspot = True
         state.ground_truth_hotspot_id = hotspot_id
         state.ground_truth_hotspot_created_step = step
+        state.known_hotspot_state = HotspotKnowledgeState.NONE
+        state.known_hotspot_id = None
+        state.uav_checked_by = None
+        state.confirmed_by = None
+        state.uav_check_step = None
+        state.hotspot_resolution_step = None
+        state.uav_inspection_progress = 0
+        state.usv_inspection_progress = 0
+        state.assigned_agent_id = None
+        state.task_status = TaskStatus.IDLE
         spawned_indices.append((row_index, col_index))
+        remaining_slots -= 1
     return tuple(spawned_indices)
 
 
@@ -267,19 +327,21 @@ def spawn_baseline_tasks(
     return tuple(spawned_indices)
 
 
-def apply_uav_detection(
+def apply_uav_hotspot_inspection(
     info_map: InformationMap,
     agent: AgentState,
     observed_indices: tuple[tuple[int, int], ...],
     step: int,
     rng: Random,
 ) -> tuple[tuple[int, int], ...]:
-    """Mark observed cells as suspected based on true hotspots or UAV false alarms."""
+    """Let a UAV complete the coarse inspection for currently observed hotspots."""
 
-    detected_indices: list[tuple[int, int]] = []
+    _ = rng
+    inspected_indices: list[tuple[int, int]] = []
     for row, col in observed_indices:
         state = info_map.state_at(row, col)
         if state.known_hotspot_state in {
+            HotspotKnowledgeState.UAV_CHECKED,
             HotspotKnowledgeState.CONFIRMED,
             HotspotKnowledgeState.FALSE_ALARM,
         }:
@@ -287,22 +349,40 @@ def apply_uav_detection(
         if state.hotspot_resolution_step is not None:
             continue
 
-        if not state.ground_truth_hotspot:
-            continue
-        if (
-            state.known_hotspot_state != HotspotKnowledgeState.SUSPECTED
-            and info_map.active_suspected_hotspot_count >= info_map.config.max_suspected_hotspots
-        ):
+        if not _is_hotspot_visible_to_uav(state, step):
             continue
 
-        state.known_hotspot_state = HotspotKnowledgeState.SUSPECTED
+        state.uav_inspection_progress += 1
+        if state.uav_inspection_progress < info_map.config.uav_hotspot_inspection_steps:
+            continue
+
+        state.known_hotspot_state = HotspotKnowledgeState.UAV_CHECKED
         state.known_hotspot_id = state.ground_truth_hotspot_id
-        state.suspected_by = agent.agent_id
-        state.suspicion_step = step
-        state.confirmation_progress = 0
-        detected_indices.append((row, col))
+        state.uav_checked_by = agent.agent_id
+        state.uav_check_step = step
+        state.usv_inspection_progress = 0
+        state.task_status = TaskStatus.IDLE
+        inspected_indices.append((row, col))
 
-    return tuple(detected_indices)
+    return tuple(inspected_indices)
+
+
+def apply_uav_detection(
+    info_map: InformationMap,
+    agent: AgentState,
+    observed_indices: tuple[tuple[int, int], ...],
+    step: int,
+    rng: Random,
+) -> tuple[tuple[int, int], ...]:
+    """Backward-compatible wrapper for the UAV hotspot inspection step."""
+
+    return apply_uav_hotspot_inspection(
+        info_map,
+        agent,
+        observed_indices,
+        step,
+        rng,
+    )
 
 
 def apply_usv_confirmation(
@@ -312,17 +392,17 @@ def apply_usv_confirmation(
     step: int,
     rng: Random | None = None,
 ) -> tuple[tuple[int, int], ...]:
-    """Advance USV confirmation progress and finalize suspected hotspots."""
+    """Advance USV fine-inspection progress for UAV-checked hotspots."""
 
     confirmation_rng = rng or Random(0)
     resolved_indices: list[tuple[int, int]] = []
     for row, col in observed_indices:
         state = info_map.state_at(row, col)
-        if state.known_hotspot_state != HotspotKnowledgeState.SUSPECTED:
+        if state.known_hotspot_state != HotspotKnowledgeState.UAV_CHECKED:
             continue
 
-        state.confirmation_progress += 1
-        if state.confirmation_progress < info_map.config.usv_confirmation_steps:
+        state.usv_inspection_progress += 1
+        if state.usv_inspection_progress < info_map.config.usv_confirmation_steps:
             continue
 
         state.confirmed_by = agent.agent_id
@@ -341,6 +421,30 @@ def apply_usv_confirmation(
         resolved_indices.append((row, col))
 
     return tuple(resolved_indices)
+
+
+def _is_hotspot_visible_to_uav(
+    state: GridInformationCell,
+    step: int,
+) -> bool:
+    """Only the current-step UAV observation can reveal one hidden hotspot."""
+
+    return (
+        state.ground_truth_hotspot
+        and state.validity == InformationValidity.VALID
+        and state.last_observed_step == step
+    )
+
+
+def _hotspot_spawn_probability(
+    config: InformationMapConfig,
+    zone_name: str,
+) -> float:
+    if zone_name == "Nearshore Zone":
+        return config.nearshore_hotspot_spawn_probability
+    if zone_name == "Offshore Zone":
+        return config.offshore_hotspot_spawn_probability
+    return 0.0
 
 
 def _is_hotspot_eligible(cell) -> bool:

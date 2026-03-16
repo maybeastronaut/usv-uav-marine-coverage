@@ -30,6 +30,7 @@ from usv_uav_marine_coverage.execution.execution_types import (
     AgentProgressState,
     ExecutionOutcome,
     ExecutionStage,
+    UavCoverageState,
 )
 from usv_uav_marine_coverage.execution.path_follower import follow_path_step
 from usv_uav_marine_coverage.execution.progress_feedback import (
@@ -41,11 +42,27 @@ from usv_uav_marine_coverage.execution.progress_feedback import (
     should_replan_task,
 )
 from usv_uav_marine_coverage.grid import GridMap
+from usv_uav_marine_coverage.information_map import InformationMap
 from usv_uav_marine_coverage.planning.astar_path_planner import build_astar_path_plan
 from usv_uav_marine_coverage.planning.direct_line_planner import build_direct_line_plan
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus, Waypoint
 from usv_uav_marine_coverage.planning.uav_lawnmower_planner import (
     build_uav_lawnmower_plan,
+)
+from usv_uav_marine_coverage.planning.uav_multi_region_coverage_planner import (
+    UAV_MULTI_REGION_LANE_SPACING_M,
+    UAV_MULTI_REGION_MAX_Y,
+    UAV_MULTI_REGION_MIN_Y,
+    UAV_MULTI_REGION_X_MARGIN_LEFT,
+    UAV_MULTI_REGION_X_MARGIN_RIGHT,
+    build_uav_multi_region_plan,
+    build_uav_multi_region_route,
+    select_uav_multi_region_waypoint_index,
+)
+from usv_uav_marine_coverage.planning.uav_persistent_multi_region_coverage_planner import (
+    advance_uav_region_waypoint,
+    build_empty_uav_coverage_state,
+    build_uav_persistent_multi_region_plan,
 )
 from usv_uav_marine_coverage.planning.usv_patrol_planner import (
     PatrolSegmentAccess,
@@ -53,6 +70,8 @@ from usv_uav_marine_coverage.planning.usv_patrol_planner import (
     find_progressive_patrol_segment_access,
 )
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
+
+from .uav_coverage_runtime import resolve_persistent_uav_coverage_state, uav_offshore_x_bounds
 
 USV_COLLISION_SAMPLE_SPACING_M = 2.0
 USV_STALL_DISTANCE_EPS_M = 1e-3
@@ -89,9 +108,12 @@ def advance_agents_one_step(
     task_records: tuple[TaskRecord, ...],
     patrol_routes: dict[str, tuple[tuple[float, float], ...]],
     grid_map: GridMap,
+    info_map: InformationMap | None = None,
     obstacle_layout: ObstacleLayout | None = None,
     dt_seconds: float,
     step: int = 0,
+    uav_search_planner: str = "uav_lawnmower_planner",
+    uav_coverage_states: dict[str, UavCoverageState] | None = None,
 ) -> tuple[
     tuple[AgentState, ...],
     dict[str, AgentExecutionState],
@@ -128,9 +150,12 @@ def advance_agents_one_step(
             agent_by_id=agent_by_id,
             patrol_routes=patrol_routes,
             grid_map=grid_map,
+            info_map=info_map,
             obstacle_layout=obstacle_layout,
             dt_seconds=dt_seconds,
             step=step,
+            uav_search_planner=uav_search_planner,
+            uav_coverage_states=uav_coverage_states,
         )
         updated_execution_state, updated_progress_state = _evaluate_agent_progress(
             agent,
@@ -215,9 +240,12 @@ def _run_agent_stage(
     agent_by_id: dict[str, AgentState],
     patrol_routes: dict[str, tuple[tuple[float, float], ...]],
     grid_map: GridMap,
+    info_map: InformationMap | None,
     obstacle_layout: ObstacleLayout | None,
     dt_seconds: float,
     step: int,
+    uav_search_planner: str,
+    uav_coverage_states: dict[str, UavCoverageState] | None,
 ) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
     if execution_state.stage == ExecutionStage.RECOVERY:
         return _run_usv_recovery_step(
@@ -427,12 +455,64 @@ def _run_agent_stage(
         return (advanced_agent, execution_state, progress_state)
 
     if agent.kind == "UAV":
-        plan = build_uav_lawnmower_plan(
-            agent,
-            patrol_route_id=execution_state.patrol_route_id or agent.agent_id,
-            patrol_waypoint_index=execution_state.patrol_waypoint_index,
-            patrol_routes=patrol_routes,
-        )
+        route_id = execution_state.patrol_route_id or agent.agent_id
+        if uav_search_planner == "uav_persistent_multi_region_coverage_planner":
+            persistent_state_store = {} if uav_coverage_states is None else uav_coverage_states
+            persistent_coverage_state = persistent_state_store.get(agent.agent_id)
+            if persistent_coverage_state is None:
+                persistent_coverage_state = build_empty_uav_coverage_state(agent.agent_id)
+            persistent_coverage_state = resolve_persistent_uav_coverage_state(
+                agent=agent,
+                coverage_state=persistent_coverage_state,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=step,
+                all_coverage_states=persistent_state_store,
+            )
+            persistent_state_store[agent.agent_id] = persistent_coverage_state
+            patrol_routes[route_id] = persistent_coverage_state.region_route
+            execution_state = replace(
+                execution_state,
+                patrol_waypoint_index=persistent_coverage_state.region_waypoint_index,
+            )
+            plan = build_uav_persistent_multi_region_plan(
+                agent,
+                coverage_state=persistent_coverage_state,
+            )
+        elif uav_search_planner == "uav_multi_region_coverage_planner":
+            offshore_min_x, offshore_max_x = uav_offshore_x_bounds(grid_map)
+            patrol_route = build_uav_multi_region_route(
+                agent,
+                info_map=info_map,
+                min_x=offshore_min_x + UAV_MULTI_REGION_X_MARGIN_LEFT,
+                max_x=offshore_max_x - UAV_MULTI_REGION_X_MARGIN_RIGHT,
+                min_y=UAV_MULTI_REGION_MIN_Y,
+                max_y=UAV_MULTI_REGION_MAX_Y,
+                lane_spacing=UAV_MULTI_REGION_LANE_SPACING_M,
+            )
+            patrol_routes[route_id] = patrol_route
+            patrol_waypoint_index = select_uav_multi_region_waypoint_index(
+                agent,
+                patrol_route=patrol_route,
+                patrol_waypoint_index=execution_state.patrol_waypoint_index,
+            )
+            execution_state = replace(
+                execution_state,
+                patrol_waypoint_index=patrol_waypoint_index,
+            )
+            plan = build_uav_multi_region_plan(
+                agent,
+                patrol_route_id=route_id,
+                patrol_waypoint_index=patrol_waypoint_index,
+                patrol_routes=patrol_routes,
+            )
+        else:
+            plan = build_uav_lawnmower_plan(
+                agent,
+                patrol_route_id=route_id,
+                patrol_waypoint_index=execution_state.patrol_waypoint_index,
+                patrol_routes=patrol_routes,
+            )
     else:
         patrol_route = patrol_routes[execution_state.patrol_route_id or agent.agent_id]
         patrol_goal_x, patrol_goal_y = patrol_route[execution_state.patrol_waypoint_index]
@@ -500,9 +580,28 @@ def _run_agent_stage(
         )
         return (advanced_agent, execution_state, progress_state)
     if outcome == ExecutionOutcome.WAYPOINT_REACHED:
-        next_index = (execution_state.patrol_waypoint_index + 1) % len(
-            patrol_routes[agent.agent_id]
-        )
+        if (
+            agent.kind == "UAV"
+            and uav_search_planner == "uav_persistent_multi_region_coverage_planner"
+        ):
+            persistent_state_store = {} if uav_coverage_states is None else uav_coverage_states
+            persistent_coverage_state = persistent_state_store.get(agent.agent_id)
+            if persistent_coverage_state is None:
+                persistent_coverage_state = build_empty_uav_coverage_state(agent.agent_id)
+            persistent_coverage_state = advance_uav_region_waypoint(persistent_coverage_state)
+            persistent_state_store[agent.agent_id] = persistent_coverage_state
+            if persistent_coverage_state.region_route:
+                patrol_routes[agent.agent_id] = persistent_coverage_state.region_route
+                next_index = persistent_coverage_state.region_waypoint_index
+            else:
+                patrol_routes[agent.agent_id] = ()
+                next_index = 0
+        elif agent.kind == "UAV" and uav_search_planner == "uav_multi_region_coverage_planner":
+            next_index = 0
+        else:
+            next_index = (execution_state.patrol_waypoint_index + 1) % len(
+                patrol_routes[agent.agent_id]
+            )
         execution_state = replace(
             execution_state,
             active_plan=None,

@@ -68,6 +68,7 @@ from .simulation_task_runtime import (
     serialize_task_assignment,
     sync_task_statuses,
 )
+from .uav_coverage_runtime import build_initial_uav_coverage_states
 
 
 @dataclass(frozen=True)
@@ -79,7 +80,7 @@ class SimulationFrame:
     valid_cells: tuple[tuple[int, int], ...]
     stale_cells: tuple[tuple[int, int], ...]
     baseline_cells: tuple[tuple[int, int], ...]
-    suspected_cells: tuple[tuple[int, int], ...]
+    uav_checked_cells: tuple[tuple[int, int], ...]
     confirmed_cells: tuple[tuple[int, int], ...]
     false_alarm_cells: tuple[tuple[int, int], ...]
     covered_cells: tuple[tuple[int, int], ...]
@@ -146,7 +147,23 @@ def build_simulation_replay(
 
     agents = build_demo_agent_states()
     initial_agents = agents
-    patrol_routes = build_patrol_routes()
+    uav_coverage_states = (
+        build_initial_uav_coverage_states(
+            agents=agents,
+            grid_map=grid_map,
+            info_map=info_map,
+            step=0,
+        )
+        if effective_config.algorithms.uav_search_planner
+        == "uav_persistent_multi_region_coverage_planner"
+        else {}
+    )
+    patrol_routes = build_patrol_routes(
+        uav_search_planner=effective_config.algorithms.uav_search_planner,
+        agents=agents,
+        info_map=info_map,
+        uav_coverage_states=uav_coverage_states,
+    )
     execution_states = build_initial_execution_states(agents)
     progress_states = build_initial_progress_states(agents)
     task_records: tuple[TaskRecord, ...] = ()
@@ -183,6 +200,7 @@ def build_simulation_replay(
             task_records=task_records,
             execution_states=execution_states,
             progress_states=progress_states,
+            uav_coverage_states=uav_coverage_states,
             planner_metrics=snapshot_planner_metrics(),
         )
     )
@@ -194,10 +212,12 @@ def build_simulation_replay(
         advance_information_age(info_map, step)
         stale_after = set(_collect_stale_cells(info_map))
         newly_stale_cells = tuple(sorted(stale_after - stale_before))
+        spawned = spawn_hotspots(info_map, step, rng)
+        if spawned:
+            events.append(f"Spawned {len(spawned)} hotspot(s)")
         spawned_baselines = spawn_baseline_tasks(info_map, step, rng)
         if spawned_baselines:
             events.append(f"Spawned {len(spawned_baselines)} baseline task point(s)")
-        spawned: tuple[tuple[int, int], ...] = ()
 
         task_records = sync_hotspot_confirmation_tasks(
             info_map,
@@ -216,6 +236,7 @@ def build_simulation_replay(
         )
         task_records, task_assignments = _allocate_task_records(
             task_records,
+            step=step,
             task_allocator=effective_config.algorithms.task_allocator,
             agents=agents,
             execution_states=execution_states,
@@ -232,17 +253,20 @@ def build_simulation_replay(
             agents=agents,
             execution_states=execution_states,
             progress_states=progress_states,
+            uav_coverage_states=uav_coverage_states,
             task_records=task_records,
             patrol_routes=patrol_routes,
             grid_map=grid_map,
+            info_map=info_map,
             obstacle_layout=layout,
             dt_seconds=effective_dt_seconds,
             step=step,
+            uav_search_planner=effective_config.algorithms.uav_search_planner,
         )
         task_records = sync_task_statuses(task_records, execution_states)
 
         observed_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
-        detected_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
+        uav_checked_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
         confirmations_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
         false_alarms_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
         for agent in agents:
@@ -256,9 +280,11 @@ def build_simulation_replay(
                 detected = apply_uav_detection(
                     info_map, agent, observed_indices, step=step, rng=rng
                 )
-                detected_by_agent[agent.agent_id] = detected
+                uav_checked_by_agent[agent.agent_id] = detected
                 if detected:
-                    events.append(f"{agent.agent_id} marked {len(detected)} suspected hotspot(s)")
+                    events.append(
+                        f"{agent.agent_id} completed {len(detected)} hotspot pre-check(s)"
+                    )
             else:
                 confirmation_indices = _confirmation_indices_for_usv(
                     agent_id=agent.agent_id,
@@ -324,7 +350,7 @@ def build_simulation_replay(
                 observed_by_agent=observed_by_agent,
                 spawned_hotspots=spawned,
                 newly_stale_cells=newly_stale_cells,
-                detected_by_agent=detected_by_agent,
+                detected_by_agent=uav_checked_by_agent,
                 confirmations_by_agent=confirmations_by_agent,
                 false_alarms_by_agent=false_alarms_by_agent,
                 task_decisions=task_decisions,
@@ -333,6 +359,7 @@ def build_simulation_replay(
                 task_records=task_records,
                 execution_states=execution_states,
                 progress_states=progress_states,
+                uav_coverage_states=uav_coverage_states,
                 planner_metrics=snapshot_planner_metrics(),
             )
         )
@@ -387,6 +414,7 @@ def _collect_stale_cells(info_map: InformationMap) -> tuple[tuple[int, int], ...
 def _allocate_task_records(
     task_records: tuple[TaskRecord, ...],
     *,
+    step: int,
     task_allocator: str,
     agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
@@ -405,6 +433,7 @@ def _allocate_task_records(
             agents=agents,
             execution_states=execution_states,
             grid_map=grid_map,
+            step=step,
         )
     raise ValueError(f"Unsupported task allocator {task_allocator!r}")
 
@@ -422,7 +451,7 @@ def _capture_frame(
     valid_cells: list[tuple[int, int]] = []
     stale_cells: list[tuple[int, int]] = []
     baseline_cells: list[tuple[int, int]] = []
-    suspected_cells: list[tuple[int, int]] = []
+    uav_checked_cells: list[tuple[int, int]] = []
     covered_cells: list[tuple[int, int]] = []
 
     for cell in info_map.grid_map.flat_cells:
@@ -435,8 +464,8 @@ def _capture_frame(
                 stale_cells.append((cell.row, cell.col))
         if info_state.has_baseline_task:
             baseline_cells.append((cell.row, cell.col))
-        if info_state.known_hotspot_state == HotspotKnowledgeState.SUSPECTED:
-            suspected_cells.append((cell.row, cell.col))
+        if info_state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED:
+            uav_checked_cells.append((cell.row, cell.col))
         if coverage_state.coverage_state == CoverageState.COVERED:
             covered_cells.append((cell.row, cell.col))
 
@@ -455,7 +484,7 @@ def _capture_frame(
         valid_cells=tuple(valid_cells),
         stale_cells=tuple(stale_cells),
         baseline_cells=tuple(baseline_cells),
-        suspected_cells=tuple(suspected_cells),
+        uav_checked_cells=tuple(uav_checked_cells),
         confirmed_cells=(),
         false_alarm_cells=(),
         covered_cells=tuple(covered_cells),

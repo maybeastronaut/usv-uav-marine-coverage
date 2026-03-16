@@ -23,6 +23,7 @@ from .task_types import TaskAssignment, TaskRecord, TaskStatus, TaskType
 HOTSPOT_COST_BIAS = 20.0
 BASELINE_AGE_BONUS_PER_STEP = 0.5
 MAX_BASELINE_AGE_BONUS = 12.0
+UNREACHABLE_TASK_COOLDOWN_STEPS = 12
 
 
 def allocate_tasks_with_cost_aware_policy(
@@ -31,6 +32,7 @@ def allocate_tasks_with_cost_aware_policy(
     agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
     grid_map: GridMap | None = None,
+    step: int | None = None,
 ) -> tuple[tuple[TaskRecord, ...], tuple[TaskAssignment, ...]]:
     """Apply the first cost-aware centralized task-allocation policy."""
 
@@ -104,6 +106,7 @@ def allocate_tasks_with_cost_aware_policy(
             grid_map=grid_map,
             reserved_agent_ids=reserved_agent_ids,
             reachability_cache=reachability_cache,
+            step=step,
         )
         updated_tasks.extend(assigned_tasks)
         decisions.extend(group_decisions)
@@ -120,6 +123,7 @@ def _allocate_one_priority_layer(
     grid_map: GridMap | None,
     reserved_agent_ids: set[str],
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
+    step: int | None,
 ) -> tuple[list[TaskRecord], list[TaskAssignment], set[str]]:
     if not tasks:
         return ([], [], set())
@@ -136,15 +140,19 @@ def _allocate_one_priority_layer(
     decisions: list[TaskAssignment] = []
     layer_reserved: set[str] = set()
     age_bonuses = _baseline_age_bonuses(tasks)
+    current_step = max((task.created_step for task in tasks), default=0) if step is None else step
+    blocked_task_ids: set[str] = set()
 
     while remaining_tasks and available_agents:
-        candidate_pairs = _build_candidate_pairs(
+        candidate_pairs, newly_blocked_task_ids = _build_candidate_pairs(
             tuple(remaining_tasks.values()),
             candidate_agents=tuple(available_agents.values()),
             grid_map=grid_map,
             reachability_cache=reachability_cache,
             age_bonuses=age_bonuses,
+            step=current_step,
         )
+        blocked_task_ids.update(newly_blocked_task_ids)
         if not candidate_pairs:
             break
 
@@ -157,6 +165,7 @@ def _allocate_one_priority_layer(
                 selected_task,
                 status=TaskStatus.ASSIGNED,
                 assigned_agent_id=selected_agent.agent_id,
+                retry_after_step=None,
             )
         )
         decisions.append(
@@ -174,7 +183,13 @@ def _allocate_one_priority_layer(
         available_agents.pop(selected_agent.agent_id)
 
     for task in remaining_tasks.values():
-        assigned_tasks.append(_mark_task_unassigned(task))
+        assigned_tasks.append(
+            _mark_task_unassigned(
+                task,
+                step=current_step,
+                apply_cooldown=task.task_id in blocked_task_ids,
+            )
+        )
 
     return (assigned_tasks, decisions, layer_reserved)
 
@@ -186,14 +201,21 @@ def _build_candidate_pairs(
     grid_map: GridMap | None,
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
     age_bonuses: dict[str, float],
-) -> list[tuple[TaskRecord, AgentState, float]]:
+    step: int,
+) -> tuple[list[tuple[TaskRecord, AgentState, float]], set[str]]:
     pairs: list[tuple[TaskRecord, AgentState, float]] = []
+    blocked_task_ids: set[str] = set()
 
     for task in tasks:
+        if _is_task_in_cooldown(task, step):
+            continue
         preferred_ids = preferred_usv_ids_for_task(task)
+        attempted_agent_ids: set[str] = set()
+        task_has_reachable_candidate = False
         for agent in candidate_agents:
             if agent.agent_id not in preferred_ids:
                 continue
+            attempted_agent_ids.add(agent.agent_id)
             estimated_cost = _reachable_cost(
                 task,
                 agent=agent,
@@ -202,6 +224,7 @@ def _build_candidate_pairs(
             )
             if estimated_cost is None:
                 continue
+            task_has_reachable_candidate = True
             pairs.append(
                 (
                     task,
@@ -213,7 +236,9 @@ def _build_candidate_pairs(
                     ),
                 )
             )
-    return pairs
+        if attempted_agent_ids and not task_has_reachable_candidate:
+            blocked_task_ids.add(task.task_id)
+    return (pairs, blocked_task_ids)
 
 
 def _reachable_cost(
@@ -286,9 +311,27 @@ def _selection_reason_for_task(task: TaskRecord) -> str:
     return "lowest_cost_partition_usv_for_hotspot_confirmation"
 
 
-def _mark_task_unassigned(task: TaskRecord) -> TaskRecord:
+def _is_task_in_cooldown(task: TaskRecord, step: int) -> bool:
+    return task.retry_after_step is not None and step < task.retry_after_step
+
+
+def _mark_task_unassigned(
+    task: TaskRecord,
+    *,
+    step: int,
+    apply_cooldown: bool,
+) -> TaskRecord:
+    retry_after_step = task.retry_after_step
+    if apply_cooldown:
+        retry_after_step = max(
+            step + UNREACHABLE_TASK_COOLDOWN_STEPS,
+            task.retry_after_step or 0,
+        )
+    elif retry_after_step is not None and step >= retry_after_step:
+        retry_after_step = None
     return replace(
         task,
         status=TaskStatus.REQUEUED if task.assigned_agent_id else TaskStatus.PENDING,
         assigned_agent_id=None,
+        retry_after_step=retry_after_step,
     )

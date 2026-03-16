@@ -1,0 +1,70 @@
+[batch]
+name = "uav_planner_offshore_hotspot_pressure_5seed"
+base_config = "../../cost_aware_allocator.toml"
+output_dir = "../../../outputs/experiments/uav_planner/offshore_hotspot_pressure_5seed_1200"
+generate_html = false
+
+[[runs]]
+label = "cost_aware_lawnmower_seed_20260314"
+scenario = "offshore_hotspot_pressure"
+seed = 20260314
+steps = 1200
+
+[[runs]]
+label = "cost_aware_lawnmower_seed_20260315"
+scenario = "offshore_hotspot_pressure"
+seed = 20260315
+steps = 1200
+
+[[runs]]
+label = "cost_aware_lawnmower_seed_20260316"
+scenario = "offshore_hotspot_pressure"
+seed = 20260316
+steps = 1200
+
+[[runs]]
+label = "cost_aware_lawnmower_seed_20260317"
+scenario = "offshore_hotspot_pressure"
+seed = 20260317
+steps = 1200
+
+[[runs]]
+label = "cost_aware_lawnmower_seed_20260319"
+scenario = "offshore_hotspot_pressure"
+seed = 20260319
+steps = 1200
+
+[[runs]]
+label = "cost_aware_persistent_seed_20260314"
+config = "../../cost_aware_uav_persistent_multi_region.toml"
+scenario = "offshore_hotspot_pressure"
+seed = 20260314
+steps = 1200
+
+[[runs]]
+label = "cost_aware_persistent_seed_20260315"
+config = "../../cost_aware_uav_persistent_multi_region.toml"
+scenario = "offshore_hotspot_pressure"
+seed = 20260315
+steps = 1200
+
+[[runs]]
+label = "cost_aware_persistent_seed_20260316"
+config = "../../cost_aware_uav_persistent_multi_region.toml"
+scenario = "offshore_hotspot_pressure"
+seed = 20260316
+steps = 1200
+
+[[runs]]
+label = "cost_aware_persistent_seed_20260317"
+config = "../../cost_aware_uav_persistent_multi_region.toml"
+scenario = "offshore_hotspot_pressure"
+seed = 20260317
+steps = 1200
+
+[[runs]]
+label = "cost_aware_persistent_seed_20260319"
+config = "../../cost_aware_uav_persistent_multi_region.toml"
+scenario = "offshore_hotspot_pressure"
+seed = 20260319
+steps = 1200

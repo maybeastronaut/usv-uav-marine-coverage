@@ -12,8 +12,22 @@ from usv_uav_marine_coverage.agent_model import (
 )
 from usv_uav_marine_coverage.agent_overlay import build_demo_agents
 from usv_uav_marine_coverage.environment import build_default_sea_map
+from usv_uav_marine_coverage.execution.execution_types import UavCoverageState
 from usv_uav_marine_coverage.information_map import HotspotKnowledgeState, InformationMap
 from usv_uav_marine_coverage.planning.uav_lawnmower_planner import build_lawnmower_route
+from usv_uav_marine_coverage.planning.uav_multi_region_coverage_planner import (
+    UAV_MULTI_REGION_LANE_SPACING_M,
+    UAV_MULTI_REGION_MAX_Y,
+    UAV_MULTI_REGION_MIN_Y,
+    UAV_MULTI_REGION_X_MARGIN_LEFT,
+    UAV_MULTI_REGION_X_MARGIN_RIGHT,
+    build_uav_multi_region_route,
+)
+from usv_uav_marine_coverage.planning.uav_persistent_multi_region_coverage_planner import (
+    build_empty_uav_coverage_state,
+    build_uav_persistent_search_regions,
+    select_persistent_uav_region,
+)
 from usv_uav_marine_coverage.planning.usv_patrol_planner import (
     build_default_usv_patrol_routes,
 )
@@ -41,12 +55,60 @@ def build_demo_agent_states() -> tuple[AgentState, ...]:
     return tuple(states)
 
 
-def build_patrol_routes() -> dict[str, tuple[tuple[float, float], ...]]:
+def build_patrol_routes(
+    *,
+    uav_search_planner: str = "uav_lawnmower_planner",
+    agents: tuple[AgentState, ...] | None = None,
+    info_map: InformationMap | None = None,
+    uav_coverage_states: dict[str, UavCoverageState] | None = None,
+) -> dict[str, tuple[tuple[float, float], ...]]:
     """Return the preview patrol routes assembled from planning-layer builders."""
 
     sea_map = build_default_sea_map()
-    offshore_left = sea_map.offshore.x_start + 35.0
-    offshore_right = sea_map.offshore.x_end - 60.0
+    actual_agents = build_demo_agent_states() if agents is None else agents
+    offshore_left = sea_map.offshore.x_start + UAV_MULTI_REGION_X_MARGIN_LEFT
+    offshore_right = sea_map.offshore.x_end - UAV_MULTI_REGION_X_MARGIN_RIGHT
+    patrol_routes = dict(build_default_usv_patrol_routes(sea_map))
+    if uav_search_planner == "uav_persistent_multi_region_coverage_planner":
+        regions = build_uav_persistent_search_regions(
+            min_x=offshore_left,
+            max_x=offshore_right,
+            min_y=UAV_MULTI_REGION_MIN_Y,
+            max_y=UAV_MULTI_REGION_MAX_Y,
+        )
+        coverage_state_store = {} if uav_coverage_states is None else uav_coverage_states
+        for agent in actual_agents:
+            if agent.kind != "UAV":
+                continue
+            coverage_state = coverage_state_store.get(agent.agent_id)
+            if coverage_state is None:
+                coverage_state = build_empty_uav_coverage_state(agent.agent_id)
+            selected_state, _ = select_persistent_uav_region(
+                agent=agent,
+                info_map=info_map,
+                regions=regions,
+                coverage_state=coverage_state,
+                step=0,
+                force_replan=True,
+            )
+            coverage_state_store[agent.agent_id] = selected_state
+            patrol_routes[agent.agent_id] = selected_state.region_route
+        return patrol_routes
+    if uav_search_planner == "uav_multi_region_coverage_planner":
+        for agent in actual_agents:
+            if agent.kind != "UAV":
+                continue
+            patrol_routes[agent.agent_id] = build_uav_multi_region_route(
+                agent,
+                info_map=info_map,
+                min_x=offshore_left,
+                max_x=offshore_right,
+                min_y=UAV_MULTI_REGION_MIN_Y,
+                max_y=UAV_MULTI_REGION_MAX_Y,
+                lane_spacing=UAV_MULTI_REGION_LANE_SPACING_M,
+            )
+        return patrol_routes
+
     upper_route = build_lawnmower_route(
         min_x=offshore_left,
         max_x=offshore_right,
@@ -61,13 +123,7 @@ def build_patrol_routes() -> dict[str, tuple[tuple[float, float], ...]]:
         max_y=880.0,
         lane_spacing=170.0,
     )
-    patrol_routes = dict(build_default_usv_patrol_routes(sea_map))
-    patrol_routes.update(
-        {
-            "UAV-1": upper_route,
-            "UAV-2": lower_route,
-        }
-    )
+    patrol_routes.update({"UAV-1": upper_route, "UAV-2": lower_route})
     return patrol_routes
 
 
@@ -211,7 +267,7 @@ def _suspected_target_points(grid_map, info_map: InformationMap) -> tuple[tuple[
     targets: list[tuple[float, float]] = []
     for cell in grid_map.flat_cells:
         state = info_map.state_at(cell.row, cell.col)
-        if state.known_hotspot_state == HotspotKnowledgeState.SUSPECTED:
+        if state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED:
             targets.append((cell.center_x, cell.center_y))
     return tuple(targets)
 

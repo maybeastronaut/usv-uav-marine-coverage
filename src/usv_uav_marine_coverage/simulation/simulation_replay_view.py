@@ -314,7 +314,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
           <div class="stat"><span>Coverage</span><strong id="coverageRatio">0.0%</strong></div>
           <div class="stat"><span>Valid Cells</span><strong id="validCells">0</strong></div>
           <div class="stat"><span>Stale Cells</span><strong id="staleCells">0</strong></div>
-          <div class="stat"><span>Suspected</span><strong id="suspectedCells">0</strong></div>
+          <div class="stat"><span>UAV Checked</span><strong id="uavCheckedCells">0</strong></div>
           <div class="stat"><span>Confirmed</span><strong id="confirmedCells">0</strong></div>
           <div class="stat"><span>False Alarms</span><strong id="falseAlarmCells">0</strong></div>
           <h2 class="side-title" style="margin-top:14px;">Events</h2>
@@ -679,14 +679,14 @@ def build_simulation_html(replay: SimulationReplay) -> str:
       }}
 
       function renderHotspotLayer(frame) {{
-        const suspectedMarkup = frame.suspected_cells
-          .map((cellId) => renderHotspotMarker(cellId, "#F59E0B", "rgba(245, 158, 11, 0.18)", "Suspected"))
+        const uavCheckedMarkup = frame.uav_checked_cells
+          .map((cellId) => renderHotspotMarker(cellId, "#F59E0B", "rgba(245, 158, 11, 0.18)", "UAV Checked"))
           .join("");
         const confirmedMarkup = frame.confirmed_cells
           .map((cellId) => renderHotspotMarker(cellId, "#DC2626", "rgba(248, 113, 113, 0.18)", "Confirmed"))
           .join("");
         const falseAlarmMarkup = frame.false_alarm_cells.map((cellId) => renderFalseAlarm(cellId)).join("");
-        return `<g aria-label="Hotspot Knowledge Layer">${{suspectedMarkup}}${{confirmedMarkup}}${{falseAlarmMarkup}}</g>`;
+        return `<g aria-label="Hotspot Knowledge Layer">${{uavCheckedMarkup}}${{confirmedMarkup}}${{falseAlarmMarkup}}</g>`;
       }}
 
       function renderPlannedPaths(step) {{
@@ -734,7 +734,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         document.getElementById("coverageRatio").textContent = summary.coverage_ratio;
         document.getElementById("validCells").textContent = String(summary.valid_cells);
         document.getElementById("staleCells").textContent = String(summary.stale_cells);
-        document.getElementById("suspectedCells").textContent = String(summary.suspected_cells);
+        document.getElementById("uavCheckedCells").textContent = String(summary.uav_checked_cells);
         document.getElementById("confirmedCells").textContent = String(summary.confirmed_cells);
         document.getElementById("falseAlarmCells").textContent = String(summary.false_alarm_cells);
 
@@ -801,7 +801,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         document.getElementById("coverageRatio").textContent = summary.coverage_ratio;
         document.getElementById("validCells").textContent = String(summary.valid_cells);
         document.getElementById("staleCells").textContent = String(summary.stale_cells);
-        document.getElementById("suspectedCells").textContent = String(summary.suspected_cells);
+        document.getElementById("uavCheckedCells").textContent = String(summary.uav_checked_cells);
         document.getElementById("confirmedCells").textContent = String(summary.confirmed_cells);
         document.getElementById("falseAlarmCells").textContent = String(summary.false_alarm_cells);
 
@@ -853,7 +853,9 @@ def _build_frame_payloads(replay: SimulationReplay, grid_map) -> str:
                 "stale_cells": _encode_cell_indices(frame.stale_cells, cols=grid_map.cols),
                 "covered_cells": _encode_cell_indices(frame.covered_cells, cols=grid_map.cols),
                 "baseline_cells": _encode_cell_indices(frame.baseline_cells, cols=grid_map.cols),
-                "suspected_cells": _encode_cell_indices(frame.suspected_cells, cols=grid_map.cols),
+                "uav_checked_cells": _encode_cell_indices(
+                    frame.uav_checked_cells, cols=grid_map.cols
+                ),
                 "confirmed_cells": _encode_cell_indices(frame.confirmed_cells, cols=grid_map.cols),
                 "false_alarm_cells": _encode_cell_indices(
                     frame.false_alarm_cells, cols=grid_map.cols
@@ -899,7 +901,7 @@ def _build_frame_summaries(frames: tuple[SimulationFrame, ...]) -> str:
                 "coverage_ratio": f"{frame.coverage_ratio * 100:.1f}%",
                 "valid_cells": len(frame.valid_cells),
                 "stale_cells": len(frame.stale_cells),
-                "suspected_cells": len(frame.suspected_cells),
+                "uav_checked_cells": len(frame.uav_checked_cells),
                 "confirmed_cells": len(frame.confirmed_cells),
                 "false_alarm_cells": len(frame.false_alarm_cells),
                 "events": list(frame.events),

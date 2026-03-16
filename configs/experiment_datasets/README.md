@@ -32,6 +32,14 @@
     - 每个 seed 的 `events.jsonl`
     - 每个 seed 的 `summary.json`
   - 适合突出热点压力下的任务分配差异
+- `task_allocator_offshore_hotspot_pressure_3seed_cooldown/`
+  - 当前“修正 `cost_aware` 不可达任务冷却后”的正式任务层对比数据集目录
+  - 已包含：
+    - `batch.toml`
+    - 聚合对比结果
+    - 每个 seed 的 `events.jsonl`
+    - 每个 seed 的 `summary.json`
+  - 适合观察第一轮任务层对比在修正重复 blocked 噪声后的真实取舍
 
 ## 后续建议的数据集方向
 

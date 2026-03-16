@@ -22,9 +22,9 @@
 
 ### 1.2 明确升级顺序
 
-- 当前下一步优先做：`UAV` 规划层的 `multi-region coverage planner`
-- 原因：当前 `UAV` 仍是固定分区割草机搜索，区域级覆盖规划的提升空间最大
-- `USV` 规划层再做：`hybrid A* + smoother`
+- 当前立即优先做：为 `cost_aware_centralized_allocator` 增加“不可达任务冷却 / backoff”
+- 原因：当前 `offshore_hotspot_pressure` 下已经确认 `blocked` 主要来自 `allocator_reachability`，问题本质是同一批不可达热点被跨步重复做真实路径代价评估
+- 当前下一步优先做：`USV` 规划层的 `hybrid A* + smoother`
 - 原因：当前 `USV` 已经有基础 `A*`，继续往带平滑和更稳定机动的一体化路径规划升级最自然
 - 最后再做：`CBBA / auction allocator`
 - 原因：更适合作为第二种任务层对比算法，用来和当前已落地的集中式代价分配器形成对照
@@ -34,6 +34,8 @@
 - 当前任务层已经具备：
   - 基础责任分区 + 启发式分配
   - 第一版 `cost-aware centralized allocator`
+- 当前最近确认的直接改进点：
+  - 对“已有责任区候选但当前不可达”的任务增加短时冷却，避免同一热点在连续多个 step 里被重复做 `A*` 可达性检查
 - 后续可升级方向包括：
   - 更复杂优先级规则
   - 弱分区与跨区支援
@@ -45,6 +47,8 @@
 
 - 当前规划层已经具备：
   - `UAV` 割草机搜索
+  - `UAV multi-region coverage planner`
+  - `UAV persistent multi-region coverage planner`
   - `USV` 基础非完整约束 `A*`
   - 船体安全余量
   - 局部巡航段接入
@@ -54,6 +58,9 @@
   - 更稳定的回巡航接入策略
   - 更高级 `USV` 规划算法
   - 更复杂 `UAV` 搜索与会合规划
+  - `UAV persistent multi-region coverage planner` 的区域权重与热点感知策略
+  - `UAV persistent multi-region coverage planner` 的双机协同分区与区域内未完成覆盖量建模
+  - `UAV persistent multi-region coverage planner` 的区域切换收益判定，避免只看 freshness debt 而忽略全局周期性覆盖
 
 ### 1.5 执行层与控制器升级方向
 
@@ -107,3 +114,19 @@
   - 升级属于哪一层
   - 相对当前 baseline 改进了什么
   - 是否影响已有实验的可比性
+- `UAV` planner 对比时，优先固定任务层为 `cost_aware_centralized_allocator`，不要再把任务层差异和 `UAV` 搜索差异混在同一轮结论里
+- 当前已知现象是：即使第二版 persistent planner 加入区域承诺、事件触发重排、AOI 去冲突和 sweep 端点接入，它在 `offshore_hotspot_pressure` 下仍可能略弱于固定 lawnmower；后续排查重点应放在“双机协同”和“区域内未完成覆盖量”而不是继续增加单机即时 freshness 贪心
+- 后续新增算法时，优先复用当前已经落地的：
+  - 统一实验配置层
+  - 场景目录
+  - batch 运行入口
+  - 正式实验数据集目录
+- 若某轮实验被认定为“正式合格对比数据集”，应将其关键配置、代表性日志与汇总结果同步固化到 `configs/experiment_datasets/`
+- `outputs/` 仍保留默认运行输出与复现实验落盘职责，不应在文档中被描述成“已不再承载正式数据链路”
+- 后续新增数据集时，优先保持统一结构：
+  - `batch.toml`
+  - `README.md`
+  - `comparison_summary.json`
+  - 每个 seed 的 `events.jsonl`
+  - 每个 seed 的 `summary.json`
+  - 必要时附代表性 `HTML`
