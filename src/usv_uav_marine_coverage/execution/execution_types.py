@@ -45,6 +45,8 @@ class AgentExecutionState:
     return_target_x: float | None = None
     return_target_y: float | None = None
     rejoin_to_segment: bool = False
+    last_return_plan_step: int = -1
+    last_patrol_plan_step: int = -1
 
 
 @dataclass(frozen=True)

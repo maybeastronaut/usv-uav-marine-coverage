@@ -7,8 +7,8 @@ from dataclasses import replace
 from usv_uav_marine_coverage.agent_model import AgentState
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
 from usv_uav_marine_coverage.grid import GridMap
-from usv_uav_marine_coverage.planning.astar_path_planner import build_astar_path_plan
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
+from usv_uav_marine_coverage.planning.usv_path_planner import build_usv_path_plan
 
 from .allocator_common import (
     allocate_uav_resupply_task,
@@ -28,6 +28,7 @@ def allocate_tasks_with_basic_policy(
     agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
     grid_map: GridMap | None = None,
+    usv_path_planner: str = "astar_path_planner",
 ) -> tuple[tuple[TaskRecord, ...], tuple[TaskAssignment, ...]]:
     """Apply the first basic task-allocation policy for the current simulation."""
 
@@ -104,6 +105,7 @@ def allocate_tasks_with_basic_policy(
             candidates=candidates,
             grid_map=grid_map,
             reachability_cache=reachability_cache,
+            usv_path_planner=usv_path_planner,
         )
         if not reachable_candidates:
             updated_tasks.append(_mark_task_unassigned(task))
@@ -144,6 +146,7 @@ def _reachable_usv_candidates(
     candidates: list[AgentState],
     grid_map: GridMap | None,
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
+    usv_path_planner: str,
 ) -> list[tuple[AgentState, float]]:
     if grid_map is None:
         return [(agent, distance_to_task(agent, task)) for agent in candidates]
@@ -162,12 +165,12 @@ def _reachable_usv_candidates(
             if is_reachable:
                 reachable.append((agent, selection_score))
             continue
-        plan = build_astar_path_plan(
+        plan = build_usv_path_plan(
             agent,
             grid_map=grid_map,
             goal_x=task.target_x,
             goal_y=task.target_y,
-            planner_name="astar_path_planner",
+            planner_name=usv_path_planner,
             task_id=task.task_id,
             stats_context="allocator_reachability",
         )

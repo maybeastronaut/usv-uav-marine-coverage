@@ -14,7 +14,9 @@ from usv_uav_marine_coverage.simulation import (
     write_simulation_artifacts,
 )
 from usv_uav_marine_coverage.simulation.simulation_core import _confirmation_indices_for_usv
+from usv_uav_marine_coverage.simulation.simulation_logging import build_event_totals
 from usv_uav_marine_coverage.simulation.simulation_policy import build_demo_agent_states
+from usv_uav_marine_coverage.simulation.simulation_replay_view import _build_frame_summaries
 from usv_uav_marine_coverage.tasking.task_types import (
     TaskRecord,
     TaskSource,
@@ -89,6 +91,23 @@ class SimulationTestCase(unittest.TestCase):
         self.assertIn("Replay Footprints", html)
         self.assertIn('id="staleInfoLayer"', html)
         self.assertIn('id="staleCells"', html)
+        self.assertIn("UAV Checked Marks", html)
+        self.assertIn("Confirmed Hotspots", html)
+
+    def test_replay_frame_summaries_use_cumulative_hotspot_event_totals(self) -> None:
+        replay = build_simulation_replay(seed=20260325, steps=12, dt_seconds=1.0)
+
+        summaries = json.loads(_build_frame_summaries(replay))
+
+        self.assertEqual(len(summaries), len(replay.frames))
+        self.assertEqual(summaries[0]["uav_checked_cells"], 0)
+        self.assertEqual(summaries[0]["confirmed_cells"], 0)
+        self.assertEqual(summaries[0]["false_alarm_cells"], 0)
+
+        final_totals = build_event_totals(replay.step_logs)
+        self.assertEqual(summaries[-1]["uav_checked_cells"], final_totals["uav_checked_marks"])
+        self.assertEqual(summaries[-1]["confirmed_cells"], final_totals["confirmed_hotspots"])
+        self.assertEqual(summaries[-1]["false_alarm_cells"], final_totals["false_alarms"])
 
     def test_simulation_artifacts_include_machine_readable_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -127,6 +146,8 @@ class SimulationTestCase(unittest.TestCase):
             self.assertIn("failure_recovery", step_records[-1])
             self.assertIn("task_decisions", step_records[-1]["task_layer"])
             self.assertIn("tasks", step_records[-1]["task_layer"])
+            self.assertIn("retry_after_step", step_records[-1]["task_layer"]["tasks"][0])
+            self.assertIn("agent_retry_after_steps", step_records[-1]["task_layer"]["tasks"][0])
             self.assertIn("path_plans", step_records[-1]["path_layer"])
             self.assertIn("planner_metrics", step_records[-1]["path_layer"])
             self.assertIn("planner_name", step_records[-1]["path_layer"]["path_plans"][0])
@@ -135,6 +156,14 @@ class SimulationTestCase(unittest.TestCase):
             self.assertIn("by_context", step_records[-1]["path_layer"]["planner_metrics"])
             self.assertIn(
                 "execution_stage", step_records[-1]["execution_layer"]["tracking_updates"][0]
+            )
+            self.assertIn(
+                "last_return_plan_step",
+                step_records[-1]["execution_layer"]["tracking_updates"][0],
+            )
+            self.assertIn(
+                "last_patrol_plan_step",
+                step_records[-1]["execution_layer"]["tracking_updates"][0],
             )
 
             summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
@@ -225,6 +254,38 @@ nearshore_information_timeout_steps = 800
             self.assertEqual(
                 summary["simulation"]["experiment_config"]["algorithms"]["task_allocator"],
                 "cost_aware_centralized_allocator",
+            )
+
+    def test_simulation_artifacts_can_run_with_hybrid_astar_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "simulation_replay.html"
+            artifacts = write_simulation_artifacts(
+                output_path=output_path,
+                generate_html=False,
+                config_path=Path("configs/hybrid_astar_baseline.toml"),
+                steps=5,
+            )
+
+            summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                summary["simulation"]["experiment_config"]["algorithms"]["usv_path_planner"],
+                "hybrid_astar_path_planner",
+            )
+
+    def test_simulation_artifacts_can_run_with_astar_smoother_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "simulation_replay.html"
+            artifacts = write_simulation_artifacts(
+                output_path=output_path,
+                generate_html=False,
+                config_path=Path("configs/astar_smoother_baseline.toml"),
+                steps=5,
+            )
+
+            summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                summary["simulation"]["experiment_config"]["algorithms"]["usv_path_planner"],
+                "astar_smoother_path_planner",
             )
 
     def test_simulation_artifacts_can_run_with_uav_multi_region_config(self) -> None:

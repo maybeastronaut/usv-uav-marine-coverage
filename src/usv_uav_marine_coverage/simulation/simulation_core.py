@@ -238,6 +238,7 @@ def build_simulation_replay(
             task_records,
             step=step,
             task_allocator=effective_config.algorithms.task_allocator,
+            usv_path_planner=effective_config.algorithms.usv_path_planner,
             agents=agents,
             execution_states=execution_states,
             grid_map=grid_map,
@@ -261,6 +262,7 @@ def build_simulation_replay(
             obstacle_layout=layout,
             dt_seconds=effective_dt_seconds,
             step=step,
+            usv_path_planner=effective_config.algorithms.usv_path_planner,
             uav_search_planner=effective_config.algorithms.uav_search_planner,
         )
         task_records = sync_task_statuses(task_records, execution_states)
@@ -416,6 +418,7 @@ def _allocate_task_records(
     *,
     step: int,
     task_allocator: str,
+    usv_path_planner: str,
     agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
     grid_map: GridMap,
@@ -426,6 +429,7 @@ def _allocate_task_records(
             agents=agents,
             execution_states=execution_states,
             grid_map=grid_map,
+            usv_path_planner=usv_path_planner,
         )
     if task_allocator == "cost_aware_centralized_allocator":
         return allocate_tasks_with_cost_aware_policy(
@@ -434,6 +438,7 @@ def _allocate_task_records(
             execution_states=execution_states,
             grid_map=grid_map,
             step=step,
+            usv_path_planner=usv_path_planner,
         )
     raise ValueError(f"Unsupported task allocator {task_allocator!r}")
 
@@ -452,6 +457,8 @@ def _capture_frame(
     stale_cells: list[tuple[int, int]] = []
     baseline_cells: list[tuple[int, int]] = []
     uav_checked_cells: list[tuple[int, int]] = []
+    confirmed_cells: list[tuple[int, int]] = []
+    false_alarm_cells: list[tuple[int, int]] = []
     covered_cells: list[tuple[int, int]] = []
 
     for cell in info_map.grid_map.flat_cells:
@@ -466,6 +473,10 @@ def _capture_frame(
             baseline_cells.append((cell.row, cell.col))
         if info_state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED:
             uav_checked_cells.append((cell.row, cell.col))
+        elif info_state.known_hotspot_state == HotspotKnowledgeState.CONFIRMED:
+            confirmed_cells.append((cell.row, cell.col))
+        elif info_state.known_hotspot_state == HotspotKnowledgeState.FALSE_ALARM:
+            false_alarm_cells.append((cell.row, cell.col))
         if coverage_state.coverage_state == CoverageState.COVERED:
             covered_cells.append((cell.row, cell.col))
 
@@ -485,8 +496,8 @@ def _capture_frame(
         stale_cells=tuple(stale_cells),
         baseline_cells=tuple(baseline_cells),
         uav_checked_cells=tuple(uav_checked_cells),
-        confirmed_cells=(),
-        false_alarm_cells=(),
+        confirmed_cells=tuple(confirmed_cells),
+        false_alarm_cells=tuple(false_alarm_cells),
         covered_cells=tuple(covered_cells),
         coverage_ratio=coverage_map.covered_ratio(),
         events=events,

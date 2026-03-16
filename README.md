@@ -21,9 +21,15 @@ module execution, and future tests.
 |   |-- offshore_hotspot_pressure_basic.toml
 |   |-- offshore_hotspot_pressure_cost_aware.toml
 |   |-- cost_aware_uav_persistent_multi_region.toml
+|   |-- astar_smoother_baseline.toml
+|   |-- hybrid_astar_baseline.toml
 |   |-- experiment_datasets/
 |   |   |-- README.md
 |   |   |-- task_allocator_offshore_hotspot_pressure_3seed_cooldown/
+|   |   |   |-- README.md
+|   |   |   |-- batch.toml
+|   |   |   `-- ...
+|   |   |-- usv_planner_offshore_hotspot_pressure_3seed_800/
 |   |   |   |-- README.md
 |   |   |   |-- batch.toml
 |   |   |   `-- ...
@@ -65,12 +71,15 @@ module execution, and future tests.
 |       |-- planning/
 |       |   |-- __init__.py
 |       |   |-- astar_path_planner.py
+|       |   |-- astar_smoother_path_planner.py
 |       |   |-- direct_line_planner.py
 |       |   |-- fixed_patrol_planner.py
+|       |   |-- hybrid_astar_path_planner.py
 |       |   |-- path_types.py
 |       |   |-- uav_lawnmower_planner.py
 |       |   |-- uav_multi_region_coverage_planner.py
 |       |   |-- uav_persistent_multi_region_coverage_planner.py
+|       |   |-- usv_path_planner.py
 |       |   `-- usv_patrol_planner.py
 |       |-- simulation/
 |       |   |-- __init__.py
@@ -117,12 +126,16 @@ module execution, and future tests.
 - `configs/cost_aware_allocator.toml`: 当前第一版 `cost-aware centralized allocator` 的实验配置样例，用于与 baseline 任务分配器做直接对比。
 - `configs/offshore_hotspot_pressure_basic.toml`: 当前 `offshore_hotspot_pressure` 单种子任务层对比用的基础任务分配配置样例。
 - `configs/offshore_hotspot_pressure_cost_aware.toml`: 当前 `offshore_hotspot_pressure` 单种子任务层对比用的 `cost-aware` 任务分配配置样例。
+- `configs/offshore_hotspot_pressure_cost_aware_astar_smoother.toml`: 当前 `offshore_hotspot_pressure` 下切换 `USV astar + smoother` 的实验配置样例。
 - `configs/cost_aware_uav_persistent_multi_region.toml`: 当前固定 `cost_aware` 任务层、切换第二版 `UAV persistent multi-region` 规划器的组合实验配置样例。
+- `configs/astar_smoother_baseline.toml`: 当前切换 `USV A* + smoother` 规划器的基础实验配置样例，用于和默认 `astar_path_planner` 做单因素对比。
+- `configs/hybrid_astar_baseline.toml`: 当前切换 `USV hybrid A* + smoother` 规划器的基础实验配置样例，用于和默认 `astar_path_planner` 做单因素对比。
 - `configs/uav_multi_region_coverage.toml`: 当前第一版 `UAV multi-region coverage planner` 的实验配置样例，用于与固定割草机搜索 baseline 做直接对比。
 - `configs/uav_persistent_multi_region_coverage.toml`: 当前第二版 `UAV persistent multi-region coverage planner` 的实验配置样例，用于验证事件触发重排与区域承诺式覆盖。
 - `configs/experiment_datasets/README.md`: 实验数据集目录说明，约定如何组织“能突出算法特点”的可复用对比数据集。
 - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_5seed/`: 当前任务层算法对比用的正式数据集目录，固定 `offshore_hotspot_pressure` 场景、`5` 个随机种子和 `1200 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
 - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_3seed_cooldown/`: 当前任务层第一轮对比在修正 `cost_aware` 不可达任务冷却后形成的正式数据集目录，固定 `offshore_hotspot_pressure` 场景、`3` 个随机种子和 `1200 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
+- `configs/experiment_datasets/usv_planner_offshore_hotspot_pressure_3seed_800/`: 当前 `USV` 规划层对比用的正式数据集目录，固定 `offshore_hotspot_pressure` 场景、`3` 个随机种子和 `800 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
 - `configs/phase_one_batch.toml`: 当前批量实验配置样例，用于多随机种子或多运行标签的批量仿真。
 - `configs/scenario_comparison_batch.toml`: 当前按“共享 baseline 算法 + 多个可复用实验场景”做批量对比的样例。
 - `docx/current_system_flow.md`: 基于当前已有代码整理的系统实际流程说明文档。
@@ -147,12 +160,15 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/information_map.py`: 基于栅格的动态信息地图层，负责信息时效、真实热点动态生成、UAV 初检与 USV 精检两阶段热点处理流程；当前近海基础任务生成频率已进一步下调、同时活跃上限收敛为 `1` 且已服务冷却延长，并为热点生成加入区域级障碍/风险区净空判定；当前信息时效阈值已改为“近海 `800 step`、其余区域 `400 step`”。
 - `src/usv_uav_marine_coverage/planning/__init__.py`: 路径规划层子包入口，用于承载巡航规划与任务路径规划相关模块。
 - `src/usv_uav_marine_coverage/planning/astar_path_planner.py`: `USV` 带朝向状态的基础非完整约束 `A*` 路径规划模块，负责在栅格海域中结合初始航向、障碍约束、船体安全余量与风险代价生成可执行任务路径。
+- `src/usv_uav_marine_coverage/planning/astar_smoother_path_planner.py`: `USV A* + smoother` 规划模块，负责在保留 baseline `A*` 状态空间与运动原语的前提下，对搜索结果做轻量后处理平滑，降低锯齿折返但尽量不放大搜索开销。
+- `src/usv_uav_marine_coverage/planning/hybrid_astar_path_planner.py`: 改进版 `USV hybrid A*` 规划模块，负责在更丰富的运动原语和更细采样下生成路径，并通过后处理平滑减少锯齿折返。
 - `src/usv_uav_marine_coverage/planning/direct_line_planner.py`: 直达式路径规划模块，负责当前 `UAV` 的任务前往、会合补能与基础回巡航直线路径生成。
 - `src/usv_uav_marine_coverage/planning/fixed_patrol_planner.py`: 固定巡航规划模块，负责将当前 demo 巡航航点生成最小 patrol path。
 - `src/usv_uav_marine_coverage/planning/path_types.py`: 路径规划层共享数据结构模块，统一路径、航点与规划结果表达。
 - `src/usv_uav_marine_coverage/planning/uav_lawnmower_planner.py`: `UAV` 割草机式搜索规划模块，负责生成远海分区的 boustrophedon 搜索航线，并输出当前巡航段的 patrol path。
 - `src/usv_uav_marine_coverage/planning/uav_multi_region_coverage_planner.py`: `UAV` 第一版多区域覆盖规划模块，负责将远海切分为固定四个 AOI，并按区域信息新鲜度优先顺序拼接区域级搜索航线。
 - `src/usv_uav_marine_coverage/planning/uav_persistent_multi_region_coverage_planner.py`: `UAV` 第二版持续多区域覆盖规划模块，负责以固定四 AOI 为基础，按 freshness debt 做事件触发重排，并通过区域承诺、AOI 去冲突与 sweep 端点接入避免短视切换和区域内覆盖断裂。
+- `src/usv_uav_marine_coverage/planning/usv_path_planner.py`: `USV` 路径规划分发模块，负责在 `astar_path_planner`、`astar_smoother_path_planner` 与 `hybrid_astar_path_planner` 之间按实验配置统一切换，避免任务层和 runtime 各自硬编码 planner。
 - `src/usv_uav_marine_coverage/planning/usv_patrol_planner.py`: `USV` 巡航规划模块，负责生成默认的“`1` 艘近海、`2` 艘远海”分区巡航路线，并作为默认巡航层的路径算法实现；其中 `USV-1` 当前使用近海多航线水平蛇形巡航，并在回巡航时优先接回当前巡航序列的前向航段，以尽可能重访近海各区域。
 - `src/usv_uav_marine_coverage/simulation/__init__.py`: 仿真回放子包的公开门面，保持现有对外接口稳定，并协调核心仿真、日志输出和回放页面生成。
 - `src/usv_uav_marine_coverage/simulation/experiment_config.py`: 统一实验配置层，负责 baseline 配置 dataclass、TOML 加载、CLI 覆盖与配置摘要序列化，为后续算法对比与批量实验提供统一入口。
@@ -164,7 +180,7 @@ module execution, and future tests.
 - 当前 `events.jsonl` 与 `summary.json` 已额外输出 `A*` 规划诊断统计，包括每步总调用次数、成功/blocked 次数，以及按 `allocator / patrol / go_to_task / return_to_patrol` 分组的调用与展开节点数，便于定位长步数仿真中的性能瓶颈。
 - `src/usv_uav_marine_coverage/simulation/simulation_policy.py`: 当前回放预览的兼容辅助层，负责 demo 智能体和默认 patrol 数据装配，并按实验配置调用规划层生成 `USV/UAV` 巡航路线。
 - `src/usv_uav_marine_coverage/simulation/uav_coverage_runtime.py`: 第二版 `UAV persistent multi-region` 巡航辅助模块，负责初始化与解析 `UavCoverageState`，并将 AOI 选择逻辑与大运行时文件解耦。
-- `src/usv_uav_marine_coverage/simulation/simulation_replay_view.py`: 回放 HTML/SVG 视图层，负责页面结构、图层渲染、时间步控件和前端交互脚本；当前 `USV` 回放插值已改为基于船头朝向的样条过渡，并修正了世界坐标航向与 SVG 旋转方向不一致的问题；当前还新增了栅格信息新鲜度图层，可直接显示 `valid/stale` 信息分布，且 `valid/stale` 统计已改为只统计非障碍格；当前回放输出已从“每帧完整 SVG 预渲染”调整为“前端按原始数据即时渲染”，并且页面只展示智能体的当前规划路径虚线，不再直接展示真实历史轨迹。
+- `src/usv_uav_marine_coverage/simulation/simulation_replay_view.py`: 回放 HTML/SVG 视图层，负责页面结构、图层渲染、时间步控件和前端交互脚本；当前 `USV` 回放插值已改为基于船头朝向的样条过渡，并修正了世界坐标航向与 SVG 旋转方向不一致的问题；当前还新增了栅格信息新鲜度图层，可直接显示 `valid/stale` 信息分布，且 `valid/stale` 统计已改为只统计非障碍格；当前回放输出已从“每帧完整 SVG 预渲染”调整为“前端按原始数据即时渲染”，并且页面只展示智能体的当前规划路径虚线，不再直接展示真实历史轨迹；当前右上角 summary 已明确区分“当前帧覆盖/信息状态”和“累计热点事件统计”，避免把瞬时热点存量误读成累计确认结果。
 - `src/usv_uav_marine_coverage/simulation/simulation_task_runtime.py`: 回放式仿真的任务运行时模块，负责任务生命周期同步、任务关闭收尾和任务分配摘要序列化；当前任务完成后的 `USV` 不再接回最近全局 waypoint，而是优先接入最近局部巡航段。
 - `src/usv_uav_marine_coverage/tasking/__init__.py`: 任务层子包入口，用于承载任务类型、任务生成与任务分配相关模块。
 - `src/usv_uav_marine_coverage/tasking/allocator_common.py`: 任务分配器共享 helper，统一责任区过滤、已有 assignment 保留和 `uav_resupply` 专用分配逻辑。

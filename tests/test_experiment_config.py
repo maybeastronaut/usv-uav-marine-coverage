@@ -149,6 +149,16 @@ nearshore_information_timeout_steps = 800
 
         validate_experiment_config(config)
 
+    def test_validate_experiment_config_accepts_hybrid_astar_planner(self) -> None:
+        config = load_experiment_config(Path("configs/hybrid_astar_baseline.toml"))
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_astar_smoother_planner(self) -> None:
+        config = load_experiment_config(Path("configs/astar_smoother_baseline.toml"))
+
+        validate_experiment_config(config)
+
     def test_validate_experiment_config_accepts_uav_multi_region_planner(self) -> None:
         config = load_experiment_config(Path("configs/uav_multi_region_coverage.toml"))
 
@@ -160,9 +170,7 @@ nearshore_information_timeout_steps = 800
         validate_experiment_config(config)
 
     def test_validate_experiment_config_accepts_cost_aware_persistent_combo(self) -> None:
-        config = load_experiment_config(
-            Path("configs/cost_aware_uav_persistent_multi_region.toml")
-        )
+        config = load_experiment_config(Path("configs/cost_aware_uav_persistent_multi_region.toml"))
 
         validate_experiment_config(config)
 

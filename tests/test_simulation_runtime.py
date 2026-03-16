@@ -25,8 +25,12 @@ from usv_uav_marine_coverage.information_map import (
     build_information_map,
 )
 from usv_uav_marine_coverage.planning.astar_path_planner import build_astar_path_plan
+from usv_uav_marine_coverage.planning.path_types import PathPlan, PathPlanStatus, Waypoint
 from usv_uav_marine_coverage.simulation.simulation_agent_runtime import (
     _apply_usv_collision_guard,
+    _evaluate_agent_progress,
+    _should_refresh_patrol_plan,
+    _should_refresh_return_plan,
     advance_agents_one_step,
     build_initial_execution_states,
 )
@@ -77,7 +81,170 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         self.assertNotEqual((usv_before.x, usv_before.y), (usv_after.x, usv_after.y))
         self.assertIsNotNone(usv_state.active_plan)
         assert usv_state.active_plan is not None
-        self.assertEqual(usv_state.active_plan.planner_name, "astar_path_planner")
+
+    def test_should_refresh_return_plan_reuses_recent_planned_path(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-2")
+        execution_state = AgentExecutionState(
+            agent_id="USV-2",
+            stage=ExecutionStage.RETURN_TO_PATROL,
+            active_task_id=None,
+            active_plan=PathPlan(
+                plan_id="return-plan",
+                planner_name="astar_path_planner",
+                agent_id="USV-2",
+                task_id=None,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x + 10.0, y=agent.y),),
+                goal_x=720.0,
+                goal_y=620.0,
+                estimated_cost=30.0,
+            ),
+            current_waypoint_index=0,
+            patrol_route_id="USV-2",
+            patrol_waypoint_index=1,
+            return_target_x=720.0,
+            return_target_y=620.0,
+            last_return_plan_step=10,
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.simulation.simulation_agent_runtime.should_replan_return",
+            return_value=True,
+        ):
+            self.assertFalse(
+                _should_refresh_return_plan(
+                    agent,
+                    execution_state=execution_state,
+                    step=12,
+                    usv_path_planner="astar_path_planner",
+                )
+            )
+            self.assertTrue(
+                _should_refresh_return_plan(
+                    agent,
+                    execution_state=execution_state,
+                    step=14,
+                    usv_path_planner="astar_path_planner",
+                )
+            )
+
+    def test_should_refresh_patrol_plan_honors_minimum_replan_interval(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+        execution_state = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.PATROL,
+            active_task_id=None,
+            active_plan=PathPlan(
+                plan_id="patrol-plan",
+                planner_name="astar_path_planner",
+                agent_id="USV-1",
+                task_id=None,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=120.0, y=500.0), Waypoint(x=180.0, y=500.0)),
+                goal_x=180.0,
+                goal_y=500.0,
+                estimated_cost=18.0,
+            ),
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+            last_patrol_plan_step=20,
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.simulation.simulation_agent_runtime.should_replan_patrol",
+            return_value=True,
+        ):
+            self.assertFalse(
+                _should_refresh_patrol_plan(
+                    agent,
+                    execution_state=execution_state,
+                    goal_x=180.0,
+                    goal_y=500.0,
+                    step=21,
+                    usv_path_planner="astar_path_planner",
+                )
+            )
+            self.assertTrue(
+                _should_refresh_patrol_plan(
+                    agent,
+                    execution_state=execution_state,
+                    goal_x=180.0,
+                    goal_y=500.0,
+                    step=22,
+                    usv_path_planner="astar_path_planner",
+                )
+            )
+
+    def test_evaluate_agent_progress_does_not_enter_recovery_for_idle_patrol_without_plan(
+        self,
+    ) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-3")
+        execution_state = AgentExecutionState(
+            agent_id="USV-3",
+            stage=ExecutionStage.PATROL,
+            active_task_id=None,
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-3",
+            patrol_waypoint_index=2,
+        )
+        progress_state = AgentProgressState(agent_id="USV-3", stalled_steps=2)
+        patrol_route = build_patrol_routes()["USV-3"]
+
+        _, updated_progress_state = _evaluate_agent_progress(
+            agent,
+            updated_agent=agent,
+            execution_state=execution_state,
+            progress_state=progress_state,
+            active_task=None,
+            patrol_routes={"USV-3": patrol_route},
+            step=922,
+        )
+
+        self.assertEqual(updated_progress_state, AgentProgressState(agent_id="USV-3"))
+
+    def test_advance_agents_one_step_can_use_hybrid_astar_for_usv_patrol(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        grid_map = _build_runtime_grid_map()
+
+        _, updated_execution_states, _ = advance_agents_one_step(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            task_records=(),
+            patrol_routes=build_patrol_routes(),
+            grid_map=grid_map,
+            dt_seconds=1.0,
+            usv_path_planner="hybrid_astar_path_planner",
+        )
+
+        usv_state = updated_execution_states["USV-1"]
+        assert usv_state.active_plan is not None
+        self.assertEqual(usv_state.active_plan.planner_name, "hybrid_astar_path_planner")
+
+    def test_advance_agents_one_step_can_use_astar_smoother_for_usv_patrol(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        grid_map = _build_runtime_grid_map()
+
+        _, updated_execution_states, _ = advance_agents_one_step(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            task_records=(),
+            patrol_routes=build_patrol_routes(),
+            grid_map=grid_map,
+            dt_seconds=1.0,
+            usv_path_planner="astar_smoother_path_planner",
+        )
+
+        usv_state = updated_execution_states["USV-1"]
+        assert usv_state.active_plan is not None
+        self.assertEqual(usv_state.active_plan.planner_name, "astar_smoother_path_planner")
 
     def test_apply_usv_collision_guard_clamps_motion_before_polygon_obstacle(self) -> None:
         sea_map = build_default_sea_map()

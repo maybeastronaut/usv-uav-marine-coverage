@@ -555,6 +555,12 @@ def build_execution_updates(
                 "blocked_goal_signature": None
                 if progress_state is None
                 else progress_state.blocked_goal_signature,
+                "last_return_plan_step": None
+                if execution_state is None
+                else execution_state.last_return_plan_step,
+                "last_patrol_plan_step": None
+                if execution_state is None
+                else execution_state.last_patrol_plan_step,
                 "patrol_region_id": None
                 if coverage_state is None
                 else coverage_state.current_region_id,
@@ -622,6 +628,11 @@ def serialize_task_record(task: TaskRecord) -> dict[str, object]:
         "assigned_agent_id": task.assigned_agent_id,
         "support_agent_id": task.support_agent_id,
         "completed_step": task.completed_step,
+        "retry_after_step": task.retry_after_step,
+        "agent_retry_after_steps": [
+            {"agent_id": agent_id, "retry_after_step": retry_after_step}
+            for agent_id, retry_after_step in task.agent_retry_after_steps
+        ],
     }
 
 

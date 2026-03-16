@@ -14,8 +14,14 @@ from usv_uav_marine_coverage.information_map import (
     build_information_map,
 )
 from usv_uav_marine_coverage.planning.astar_path_planner import build_astar_path_plan
+from usv_uav_marine_coverage.planning.astar_smoother_path_planner import (
+    build_astar_smoother_path_plan,
+)
 from usv_uav_marine_coverage.planning.direct_line_planner import build_direct_line_plan
 from usv_uav_marine_coverage.planning.fixed_patrol_planner import build_fixed_patrol_plan
+from usv_uav_marine_coverage.planning.hybrid_astar_path_planner import (
+    build_hybrid_astar_path_plan,
+)
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
 from usv_uav_marine_coverage.planning.uav_lawnmower_planner import (
     build_lawnmower_route,
@@ -638,6 +644,89 @@ class PlanningTestCase(unittest.TestCase):
         )
 
         self.assertEqual(plan.status, PathPlanStatus.BLOCKED)
+
+    def test_hybrid_astar_path_planner_builds_smoothed_usv_route(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+
+        astar_plan = build_astar_path_plan(
+            agent,
+            grid_map=grid_map,
+            goal_x=587.5,
+            goal_y=537.5,
+            planner_name="astar_path_planner",
+            task_id="compare-task",
+        )
+        hybrid_plan = build_hybrid_astar_path_plan(
+            agent,
+            grid_map=grid_map,
+            goal_x=587.5,
+            goal_y=537.5,
+            planner_name="hybrid_astar_path_planner",
+            task_id="compare-task",
+        )
+
+        self.assertEqual(hybrid_plan.planner_name, "hybrid_astar_path_planner")
+        self.assertEqual(hybrid_plan.status, PathPlanStatus.PLANNED)
+        self.assertGreater(len(hybrid_plan.waypoints), 2)
+        self.assertLessEqual(len(hybrid_plan.waypoints), len(astar_plan.waypoints))
+        self.assertGreater(hybrid_plan.estimated_cost, 0.0)
+
+    def test_astar_smoother_path_planner_builds_smoothed_usv_route(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+
+        astar_plan = build_astar_path_plan(
+            agent,
+            grid_map=grid_map,
+            goal_x=587.5,
+            goal_y=537.5,
+            planner_name="astar_path_planner",
+            task_id="compare-task",
+        )
+        smoother_plan = build_astar_smoother_path_plan(
+            agent,
+            grid_map=grid_map,
+            goal_x=587.5,
+            goal_y=537.5,
+            planner_name="astar_smoother_path_planner",
+            task_id="compare-task",
+        )
+
+        self.assertEqual(smoother_plan.planner_name, "astar_smoother_path_planner")
+        self.assertEqual(smoother_plan.status, PathPlanStatus.PLANNED)
+        self.assertGreater(len(smoother_plan.waypoints), 2)
+        self.assertLessEqual(len(smoother_plan.waypoints), len(astar_plan.waypoints))
+        self.assertGreater(smoother_plan.estimated_cost, 0.0)
+
+    def test_hybrid_astar_can_plan_out_from_tight_start_pose(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260327)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-2")
+        agent = replace(
+            agent,
+            x=304.793,
+            y=289.764,
+            heading_deg=-30.321,
+            task=AgentTaskState(),
+        )
+
+        plan = build_hybrid_astar_path_plan(
+            agent,
+            grid_map=grid_map,
+            goal_x=520.0,
+            goal_y=420.0,
+            planner_name="hybrid_astar_path_planner",
+            task_id="tight-start-hybrid",
+        )
+
+        self.assertEqual(plan.status, PathPlanStatus.PLANNED)
+        self.assertGreater(len(plan.waypoints), 2)
 
 
 def _distance_point_to_cell(x: float, y: float, cell) -> float:

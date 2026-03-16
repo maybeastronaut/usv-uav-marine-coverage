@@ -53,6 +53,7 @@ class TaskRecord:
     support_agent_id: str | None = None
     completed_step: int | None = None
     retry_after_step: int | None = None
+    agent_retry_after_steps: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)

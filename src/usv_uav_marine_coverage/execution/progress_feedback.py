@@ -172,6 +172,7 @@ def should_replan_task(
     *,
     execution_state: AgentExecutionState,
     active_task: TaskRecord,
+    usv_path_planner: str = "astar_path_planner",
 ) -> bool:
     """Return whether the current task path should be replanned."""
 
@@ -182,7 +183,7 @@ def should_replan_task(
         return True
     if plan.task_id != active_task.task_id:
         return True
-    expected_planner = "astar_path_planner" if agent.kind == "USV" else "direct_line_planner"
+    expected_planner = usv_path_planner if agent.kind == "USV" else "direct_line_planner"
     if plan.planner_name != expected_planner:
         return True
     if execution_state.current_waypoint_index >= len(plan.waypoints):
@@ -207,6 +208,7 @@ def should_replan_patrol(
     execution_state: AgentExecutionState,
     goal_x: float,
     goal_y: float,
+    usv_path_planner: str = "astar_path_planner",
 ) -> bool:
     """Return whether the current patrol path should be replanned."""
 
@@ -215,7 +217,7 @@ def should_replan_patrol(
         return True
     if plan.status != PathPlanStatus.PLANNED:
         return True
-    if plan.planner_name != "astar_path_planner":
+    if plan.planner_name != usv_path_planner:
         return True
     if execution_state.current_waypoint_index >= len(plan.waypoints):
         return True
@@ -237,6 +239,7 @@ def should_replan_return(
     agent: AgentState,
     *,
     execution_state: AgentExecutionState,
+    usv_path_planner: str = "astar_path_planner",
 ) -> bool:
     """Return whether the current return-to-patrol path should be replanned."""
 
@@ -247,7 +250,7 @@ def should_replan_return(
         return True
     if plan.status != PathPlanStatus.PLANNED:
         return True
-    expected_planner = "astar_path_planner" if agent.kind == "USV" else "direct_line_planner"
+    expected_planner = usv_path_planner if agent.kind == "USV" else "direct_line_planner"
     if plan.planner_name != expected_planner:
         return True
     if execution_state.current_waypoint_index >= len(plan.waypoints):

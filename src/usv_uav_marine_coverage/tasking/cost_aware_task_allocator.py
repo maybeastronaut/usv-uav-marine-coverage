@@ -7,8 +7,8 @@ from dataclasses import replace
 from usv_uav_marine_coverage.agent_model import AgentState
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
 from usv_uav_marine_coverage.grid import GridMap
-from usv_uav_marine_coverage.planning.astar_path_planner import build_astar_path_plan
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
+from usv_uav_marine_coverage.planning.usv_path_planner import build_usv_path_plan
 
 from .allocator_common import (
     allocate_uav_resupply_task,
@@ -23,7 +23,8 @@ from .task_types import TaskAssignment, TaskRecord, TaskStatus, TaskType
 HOTSPOT_COST_BIAS = 20.0
 BASELINE_AGE_BONUS_PER_STEP = 0.5
 MAX_BASELINE_AGE_BONUS = 12.0
-UNREACHABLE_TASK_COOLDOWN_STEPS = 12
+AGENT_TASK_BLOCKED_COOLDOWN_STEPS = 12
+UNREACHABLE_TASK_COOLDOWN_STEPS = AGENT_TASK_BLOCKED_COOLDOWN_STEPS
 
 
 def allocate_tasks_with_cost_aware_policy(
@@ -33,6 +34,7 @@ def allocate_tasks_with_cost_aware_policy(
     execution_states: dict[str, AgentExecutionState],
     grid_map: GridMap | None = None,
     step: int | None = None,
+    usv_path_planner: str = "astar_path_planner",
 ) -> tuple[tuple[TaskRecord, ...], tuple[TaskAssignment, ...]]:
     """Apply the first cost-aware centralized task-allocation policy."""
 
@@ -47,6 +49,7 @@ def allocate_tasks_with_cost_aware_policy(
     pending_baselines: list[TaskRecord] = []
 
     for task in scheduled_tasks:
+        task = _prune_expired_agent_retries(task, step)
         if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
             updated_tasks.append(task)
             continue
@@ -107,6 +110,7 @@ def allocate_tasks_with_cost_aware_policy(
             reserved_agent_ids=reserved_agent_ids,
             reachability_cache=reachability_cache,
             step=step,
+            usv_path_planner=usv_path_planner,
         )
         updated_tasks.extend(assigned_tasks)
         decisions.extend(group_decisions)
@@ -124,6 +128,7 @@ def _allocate_one_priority_layer(
     reserved_agent_ids: set[str],
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
     step: int | None,
+    usv_path_planner: str,
 ) -> tuple[list[TaskRecord], list[TaskAssignment], set[str]]:
     if not tasks:
         return ([], [], set())
@@ -141,18 +146,20 @@ def _allocate_one_priority_layer(
     layer_reserved: set[str] = set()
     age_bonuses = _baseline_age_bonuses(tasks)
     current_step = max((task.created_step for task in tasks), default=0) if step is None else step
-    blocked_task_ids: set[str] = set()
+    blocked_agent_ids_by_task: dict[str, set[str]] = {}
 
     while remaining_tasks and available_agents:
-        candidate_pairs, newly_blocked_task_ids = _build_candidate_pairs(
+        candidate_pairs, newly_blocked_agent_ids_by_task = _build_candidate_pairs(
             tuple(remaining_tasks.values()),
             candidate_agents=tuple(available_agents.values()),
             grid_map=grid_map,
             reachability_cache=reachability_cache,
             age_bonuses=age_bonuses,
             step=current_step,
+            usv_path_planner=usv_path_planner,
         )
-        blocked_task_ids.update(newly_blocked_task_ids)
+        for task_id, agent_ids in newly_blocked_agent_ids_by_task.items():
+            blocked_agent_ids_by_task.setdefault(task_id, set()).update(agent_ids)
         if not candidate_pairs:
             break
 
@@ -161,12 +168,7 @@ def _allocate_one_priority_layer(
             key=lambda item: (item[2], item[0].created_step, item[0].task_id, item[1].agent_id),
         )
         assigned_tasks.append(
-            replace(
-                selected_task,
-                status=TaskStatus.ASSIGNED,
-                assigned_agent_id=selected_agent.agent_id,
-                retry_after_step=None,
-            )
+            _mark_task_assigned(selected_task, selected_agent_id=selected_agent.agent_id)
         )
         decisions.append(
             TaskAssignment(
@@ -187,7 +189,7 @@ def _allocate_one_priority_layer(
             _mark_task_unassigned(
                 task,
                 step=current_step,
-                apply_cooldown=task.task_id in blocked_task_ids,
+                blocked_agent_ids=blocked_agent_ids_by_task.get(task.task_id, set()),
             )
         )
 
@@ -202,29 +204,28 @@ def _build_candidate_pairs(
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
     age_bonuses: dict[str, float],
     step: int,
-) -> tuple[list[tuple[TaskRecord, AgentState, float]], set[str]]:
+    usv_path_planner: str,
+) -> tuple[list[tuple[TaskRecord, AgentState, float]], dict[str, set[str]]]:
     pairs: list[tuple[TaskRecord, AgentState, float]] = []
-    blocked_task_ids: set[str] = set()
+    blocked_agent_ids_by_task: dict[str, set[str]] = {}
 
     for task in tasks:
-        if _is_task_in_cooldown(task, step):
-            continue
         preferred_ids = preferred_usv_ids_for_task(task)
-        attempted_agent_ids: set[str] = set()
-        task_has_reachable_candidate = False
         for agent in candidate_agents:
             if agent.agent_id not in preferred_ids:
                 continue
-            attempted_agent_ids.add(agent.agent_id)
+            if _is_agent_task_in_cooldown(task, agent_id=agent.agent_id, step=step):
+                continue
             estimated_cost = _reachable_cost(
                 task,
                 agent=agent,
                 grid_map=grid_map,
                 reachability_cache=reachability_cache,
+                usv_path_planner=usv_path_planner,
             )
             if estimated_cost is None:
+                blocked_agent_ids_by_task.setdefault(task.task_id, set()).add(agent.agent_id)
                 continue
-            task_has_reachable_candidate = True
             pairs.append(
                 (
                     task,
@@ -236,9 +237,7 @@ def _build_candidate_pairs(
                     ),
                 )
             )
-        if attempted_agent_ids and not task_has_reachable_candidate:
-            blocked_task_ids.add(task.task_id)
-    return (pairs, blocked_task_ids)
+    return (pairs, blocked_agent_ids_by_task)
 
 
 def _reachable_cost(
@@ -247,6 +246,7 @@ def _reachable_cost(
     agent: AgentState,
     grid_map: GridMap | None,
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
+    usv_path_planner: str = "astar_path_planner",
 ) -> float | None:
     if grid_map is None:
         return round(((agent.x - task.target_x) ** 2 + (agent.y - task.target_y) ** 2) ** 0.5, 3)
@@ -262,12 +262,12 @@ def _reachable_cost(
         is_reachable, cost = cached
         return cost if is_reachable else None
 
-    plan = build_astar_path_plan(
+    plan = build_usv_path_plan(
         agent,
         grid_map=grid_map,
         goal_x=task.target_x,
         goal_y=task.target_y,
-        planner_name="astar_path_planner",
+        planner_name=usv_path_planner,
         task_id=task.task_id,
         stats_context="allocator_reachability",
     )
@@ -311,27 +311,73 @@ def _selection_reason_for_task(task: TaskRecord) -> str:
     return "lowest_cost_partition_usv_for_hotspot_confirmation"
 
 
-def _is_task_in_cooldown(task: TaskRecord, step: int) -> bool:
-    return task.retry_after_step is not None and step < task.retry_after_step
+def _is_agent_task_in_cooldown(task: TaskRecord, *, agent_id: str, step: int) -> bool:
+    return any(
+        candidate_agent_id == agent_id and step < retry_after_step
+        for candidate_agent_id, retry_after_step in task.agent_retry_after_steps
+    )
+
+
+def _prune_expired_agent_retries(task: TaskRecord, step: int | None) -> TaskRecord:
+    if step is None or not task.agent_retry_after_steps:
+        return task
+    active_retries = tuple(
+        (agent_id, retry_after_step)
+        for agent_id, retry_after_step in task.agent_retry_after_steps
+        if step < retry_after_step
+    )
+    if active_retries == task.agent_retry_after_steps:
+        return task
+    return replace(
+        task,
+        retry_after_step=max(
+            (retry_after_step for _, retry_after_step in active_retries),
+            default=None,
+        ),
+        agent_retry_after_steps=active_retries,
+    )
+
+
+def _mark_task_assigned(task: TaskRecord, *, selected_agent_id: str) -> TaskRecord:
+    retained_retries = tuple(
+        (agent_id, retry_after_step)
+        for agent_id, retry_after_step in task.agent_retry_after_steps
+        if agent_id != selected_agent_id
+    )
+    return replace(
+        task,
+        status=TaskStatus.ASSIGNED,
+        assigned_agent_id=selected_agent_id,
+        retry_after_step=max(
+            (retry_after_step for _, retry_after_step in retained_retries),
+            default=None,
+        ),
+        agent_retry_after_steps=retained_retries,
+    )
 
 
 def _mark_task_unassigned(
     task: TaskRecord,
     *,
     step: int,
-    apply_cooldown: bool,
+    blocked_agent_ids: set[str],
 ) -> TaskRecord:
-    retry_after_step = task.retry_after_step
-    if apply_cooldown:
-        retry_after_step = max(
-            step + UNREACHABLE_TASK_COOLDOWN_STEPS,
-            task.retry_after_step or 0,
+    retry_by_agent = {
+        agent_id: retry_after for agent_id, retry_after in task.agent_retry_after_steps
+    }
+    for agent_id in blocked_agent_ids:
+        retry_by_agent[agent_id] = max(
+            step + AGENT_TASK_BLOCKED_COOLDOWN_STEPS,
+            retry_by_agent.get(agent_id, 0),
         )
-    elif retry_after_step is not None and step >= retry_after_step:
-        retry_after_step = None
+    agent_retry_after_steps = tuple(sorted(retry_by_agent.items()))
     return replace(
         task,
         status=TaskStatus.REQUEUED if task.assigned_agent_id else TaskStatus.PENDING,
         assigned_agent_id=None,
-        retry_after_step=retry_after_step,
+        retry_after_step=max(
+            (retry_after for _, retry_after in agent_retry_after_steps),
+            default=None,
+        ),
+        agent_retry_after_steps=agent_retry_after_steps,
     )

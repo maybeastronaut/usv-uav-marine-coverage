@@ -43,7 +43,6 @@ from usv_uav_marine_coverage.execution.progress_feedback import (
 )
 from usv_uav_marine_coverage.grid import GridMap
 from usv_uav_marine_coverage.information_map import InformationMap
-from usv_uav_marine_coverage.planning.astar_path_planner import build_astar_path_plan
 from usv_uav_marine_coverage.planning.direct_line_planner import build_direct_line_plan
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus, Waypoint
 from usv_uav_marine_coverage.planning.uav_lawnmower_planner import (
@@ -64,6 +63,7 @@ from usv_uav_marine_coverage.planning.uav_persistent_multi_region_coverage_plann
     build_empty_uav_coverage_state,
     build_uav_persistent_multi_region_plan,
 )
+from usv_uav_marine_coverage.planning.usv_path_planner import build_usv_path_plan
 from usv_uav_marine_coverage.planning.usv_patrol_planner import (
     PatrolSegmentAccess,
     find_local_patrol_segment_access,
@@ -79,6 +79,8 @@ USV_MAX_RECOVERY_ATTEMPTS = 2
 USV_RECOVERY_REVERSE_DISTANCE_M = 18.0
 USV_RECOVERY_FORWARD_DISTANCE_M = 26.0
 USV_RECOVERY_CLEARANCE_IMPROVEMENT_M = 0.5
+RETURN_PLAN_REUSE_WINDOW_STEPS = 3
+PATROL_MIN_REPLAN_INTERVAL_STEPS = 2
 
 
 def build_initial_execution_states(
@@ -112,6 +114,7 @@ def advance_agents_one_step(
     obstacle_layout: ObstacleLayout | None = None,
     dt_seconds: float,
     step: int = 0,
+    usv_path_planner: str = "astar_path_planner",
     uav_search_planner: str = "uav_lawnmower_planner",
     uav_coverage_states: dict[str, UavCoverageState] | None = None,
 ) -> tuple[
@@ -154,6 +157,7 @@ def advance_agents_one_step(
             obstacle_layout=obstacle_layout,
             dt_seconds=dt_seconds,
             step=step,
+            usv_path_planner=usv_path_planner,
             uav_search_planner=uav_search_planner,
             uav_coverage_states=uav_coverage_states,
         )
@@ -244,6 +248,7 @@ def _run_agent_stage(
     obstacle_layout: ObstacleLayout | None,
     dt_seconds: float,
     step: int,
+    usv_path_planner: str,
     uav_search_planner: str,
     uav_coverage_states: dict[str, UavCoverageState] | None,
 ) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
@@ -279,14 +284,15 @@ def _run_agent_stage(
             agent,
             execution_state=execution_state,
             active_task=active_task,
+            usv_path_planner=usv_path_planner,
         ):
             if agent.kind == "USV":
-                plan = build_astar_path_plan(
+                plan = build_usv_path_plan(
                     agent,
                     grid_map=grid_map,
                     goal_x=active_task.target_x,
                     goal_y=active_task.target_y,
-                    planner_name="astar_path_planner",
+                    planner_name=usv_path_planner,
                     task_id=active_task.task_id,
                     stats_context="runtime_go_to_task",
                 )
@@ -387,7 +393,12 @@ def _run_agent_stage(
             execution_state.return_target_x is not None
             and execution_state.return_target_y is not None
         )
-        if should_replan_return(agent, execution_state=execution_state):
+        if _should_refresh_return_plan(
+            agent,
+            execution_state=execution_state,
+            step=step,
+            usv_path_planner=usv_path_planner,
+        ):
             # runtime decides when to call the planner; feedback owns the predicate.
             execution_state = _plan_return_to_patrol_path(
                 agent,
@@ -397,6 +408,7 @@ def _run_agent_stage(
                 grid_map=grid_map,
                 allow_patrol_index_advance=False,
                 step=step,
+                usv_path_planner=usv_path_planner,
             )
         plan = execution_state.active_plan
         if plan is None:
@@ -410,6 +422,7 @@ def _run_agent_stage(
                 grid_map=grid_map,
                 allow_patrol_index_advance=True,
                 step=step,
+                usv_path_planner=usv_path_planner,
             )
             plan = execution_state.active_plan
             if plan is None or plan.status != PathPlanStatus.PLANNED:
@@ -439,6 +452,7 @@ def _run_agent_stage(
                 grid_map=grid_map,
                 allow_patrol_index_advance=True,
                 step=step,
+                usv_path_planner=usv_path_planner,
             )
         if outcome == ExecutionOutcome.PATROL_REJOINED:
             next_index = execution_state.patrol_waypoint_index
@@ -516,11 +530,13 @@ def _run_agent_stage(
     else:
         patrol_route = patrol_routes[execution_state.patrol_route_id or agent.agent_id]
         patrol_goal_x, patrol_goal_y = patrol_route[execution_state.patrol_waypoint_index]
-        if should_replan_patrol(
+        if _should_refresh_patrol_plan(
             agent,
             execution_state=execution_state,
             goal_x=patrol_goal_x,
             goal_y=patrol_goal_y,
+            step=step,
+            usv_path_planner=usv_path_planner,
         ):
             execution_state = _plan_patrol_path(
                 agent,
@@ -528,6 +544,8 @@ def _run_agent_stage(
                 patrol_route=patrol_route,
                 grid_map=grid_map,
                 allow_patrol_index_advance=False,
+                usv_path_planner=usv_path_planner,
+                step=step,
             )
         plan = execution_state.active_plan
         if plan is None or plan.status != PathPlanStatus.PLANNED:
@@ -542,6 +560,8 @@ def _run_agent_stage(
                 patrol_route=patrol_route,
                 grid_map=grid_map,
                 allow_patrol_index_advance=True,
+                usv_path_planner=usv_path_planner,
+                step=step,
             )
             plan = execution_state.active_plan
             if plan is None or plan.status != PathPlanStatus.PLANNED:
@@ -577,6 +597,8 @@ def _run_agent_stage(
             patrol_route=patrol_routes[agent.agent_id],
             grid_map=grid_map,
             allow_patrol_index_advance=True,
+            usv_path_planner=usv_path_planner,
+            step=step,
         )
         return (advanced_agent, execution_state, progress_state)
     if outcome == ExecutionOutcome.WAYPOINT_REACHED:
@@ -746,6 +768,69 @@ def _release_blocked_usv_task(
     )
 
 
+def _should_refresh_return_plan(
+    agent: AgentState,
+    *,
+    execution_state: AgentExecutionState,
+    step: int,
+    usv_path_planner: str,
+) -> bool:
+    if not should_replan_return(
+        agent,
+        execution_state=execution_state,
+        usv_path_planner=usv_path_planner,
+    ):
+        return False
+    plan = execution_state.active_plan
+    if plan is None or plan.status != PathPlanStatus.PLANNED:
+        return True
+    if plan.planner_name != usv_path_planner:
+        return True
+    if execution_state.current_waypoint_index >= len(plan.waypoints):
+        return True
+    if execution_state.return_target_x is None or execution_state.return_target_y is None:
+        return True
+    if (
+        abs(plan.goal_x - execution_state.return_target_x) > 1.0
+        or abs(plan.goal_y - execution_state.return_target_y) > 1.0
+    ):
+        return True
+    if step - execution_state.last_return_plan_step > RETURN_PLAN_REUSE_WINDOW_STEPS:
+        return True
+    return False
+
+
+def _should_refresh_patrol_plan(
+    agent: AgentState,
+    *,
+    execution_state: AgentExecutionState,
+    goal_x: float,
+    goal_y: float,
+    step: int,
+    usv_path_planner: str,
+) -> bool:
+    if not should_replan_patrol(
+        agent,
+        execution_state=execution_state,
+        goal_x=goal_x,
+        goal_y=goal_y,
+        usv_path_planner=usv_path_planner,
+    ):
+        return False
+    plan = execution_state.active_plan
+    if plan is None or plan.status != PathPlanStatus.PLANNED:
+        return True
+    if plan.planner_name != usv_path_planner:
+        return True
+    if execution_state.current_waypoint_index >= len(plan.waypoints):
+        return True
+    if abs(plan.goal_x - goal_x) > 1.0 or abs(plan.goal_y - goal_y) > 1.0:
+        return True
+    if step - execution_state.last_patrol_plan_step >= PATROL_MIN_REPLAN_INTERVAL_STEPS:
+        return True
+    return False
+
+
 def _plan_patrol_path(
     agent: AgentState,
     *,
@@ -753,6 +838,8 @@ def _plan_patrol_path(
     patrol_route: tuple[tuple[float, float], ...],
     grid_map: GridMap,
     allow_patrol_index_advance: bool,
+    usv_path_planner: str,
+    step: int,
 ) -> AgentExecutionState:
     route_length = len(patrol_route)
     if route_length == 0:
@@ -766,12 +853,12 @@ def _plan_patrol_path(
     for offset in range(route_length):
         patrol_index = (start_index + offset) % route_length
         goal_x, goal_y = patrol_route[patrol_index]
-        plan = build_astar_path_plan(
+        plan = build_usv_path_plan(
             agent,
             grid_map=grid_map,
             goal_x=goal_x,
             goal_y=goal_y,
-            planner_name="astar_path_planner",
+            planner_name=usv_path_planner,
             task_id=None,
             stats_context="runtime_patrol",
         )
@@ -780,6 +867,7 @@ def _plan_patrol_path(
             active_plan=plan,
             current_waypoint_index=0,
             patrol_waypoint_index=patrol_index,
+            last_patrol_plan_step=step,
         )
         if plan.status == PathPlanStatus.PLANNED:
             return candidate_state
@@ -798,6 +886,7 @@ def _plan_return_to_patrol_path(
     grid_map: GridMap,
     allow_patrol_index_advance: bool,
     step: int,
+    usv_path_planner: str,
 ) -> AgentExecutionState:
     if agent.kind != "USV":
         assert (
@@ -851,12 +940,12 @@ def _plan_return_to_patrol_path(
         and execution_state.return_target_x is not None
         and execution_state.return_target_y is not None
     ):
-        current_target_plan = build_astar_path_plan(
+        current_target_plan = build_usv_path_plan(
             agent,
             grid_map=grid_map,
             goal_x=execution_state.return_target_x,
             goal_y=execution_state.return_target_y,
-            planner_name="astar_path_planner",
+            planner_name=usv_path_planner,
             task_id=None,
             stats_context="runtime_return_to_patrol",
         )
@@ -865,6 +954,7 @@ def _plan_return_to_patrol_path(
                 execution_state,
                 active_plan=current_target_plan,
                 current_waypoint_index=0,
+                last_return_plan_step=step,
             )
 
     start_index = execution_state.patrol_waypoint_index % route_length
@@ -875,12 +965,12 @@ def _plan_return_to_patrol_path(
     for offset in range(route_length):
         patrol_index = (start_index + offset) % route_length
         goal_x, goal_y = patrol_route[patrol_index]
-        plan = build_astar_path_plan(
+        plan = build_usv_path_plan(
             agent,
             grid_map=grid_map,
             goal_x=goal_x,
             goal_y=goal_y,
-            planner_name="astar_path_planner",
+            planner_name=usv_path_planner,
             task_id=None,
             stats_context="runtime_return_to_patrol",
         )
@@ -891,6 +981,7 @@ def _plan_return_to_patrol_path(
             patrol_waypoint_index=patrol_index,
             return_target_x=goal_x,
             return_target_y=goal_y,
+            last_return_plan_step=step,
         )
         if plan.status == PathPlanStatus.PLANNED:
             return candidate_state
@@ -905,12 +996,12 @@ def _plan_return_to_patrol_path(
         skip_blocked_goal=allow_patrol_index_advance,
     )
     if access is not None:
-        plan = build_astar_path_plan(
+        plan = build_usv_path_plan(
             agent,
             grid_map=grid_map,
             goal_x=access.access_x,
             goal_y=access.access_y,
-            planner_name="astar_path_planner",
+            planner_name=usv_path_planner,
             task_id=None,
             stats_context="runtime_return_to_patrol",
         )
@@ -922,6 +1013,7 @@ def _plan_return_to_patrol_path(
             return_target_x=access.access_x,
             return_target_y=access.access_y,
             rejoin_to_segment=True,
+            last_return_plan_step=step,
         )
         if plan.status == PathPlanStatus.PLANNED:
             return candidate_state
@@ -959,6 +1051,13 @@ def _evaluate_agent_progress(
         return (execution_state, progress_state)
     if execution_state.stage == ExecutionStage.RECOVERY:
         return (execution_state, progress_state)
+    if (
+        execution_state.stage == ExecutionStage.PATROL
+        and execution_state.active_plan is None
+        and active_task is None
+    ):
+        # Let idle patrol recover its local plan before classifying the agent as stalled.
+        return (execution_state, reset_progress_state(progress_state))
     if execution_state.stage not in {
         ExecutionStage.PATROL,
         ExecutionStage.GO_TO_TASK,

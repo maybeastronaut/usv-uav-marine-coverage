@@ -16,7 +16,7 @@ from usv_uav_marine_coverage.tasking.basic_task_allocator import (
     allocate_tasks_with_basic_policy,
 )
 from usv_uav_marine_coverage.tasking.cost_aware_task_allocator import (
-    UNREACHABLE_TASK_COOLDOWN_STEPS,
+    AGENT_TASK_BLOCKED_COOLDOWN_STEPS,
     _reachable_cost,
     allocate_tasks_with_cost_aware_policy,
 )
@@ -719,11 +719,15 @@ class TaskingTestCase(unittest.TestCase):
         self.assertIsNone(updated_tasks[0].assigned_agent_id)
         self.assertEqual(
             updated_tasks[0].retry_after_step,
-            20 + UNREACHABLE_TASK_COOLDOWN_STEPS,
+            20 + AGENT_TASK_BLOCKED_COOLDOWN_STEPS,
+        )
+        self.assertEqual(
+            updated_tasks[0].agent_retry_after_steps,
+            (("USV-2", 20 + AGENT_TASK_BLOCKED_COOLDOWN_STEPS),),
         )
         self.assertEqual(decisions, ())
 
-    def test_cost_aware_allocator_skips_reachability_during_task_cooldown(self) -> None:
+    def test_cost_aware_allocator_skips_reachability_during_agent_task_cooldown(self) -> None:
         task = TaskRecord(
             task_id="hotspot-confirmation-cooldown",
             task_type=TaskType.HOTSPOT_CONFIRMATION,
@@ -736,10 +740,11 @@ class TaskingTestCase(unittest.TestCase):
             target_col=28,
             created_step=5,
             retry_after_step=40,
+            agent_retry_after_steps=(("USV-2", 40),),
         )
 
         with patch(
-            "usv_uav_marine_coverage.tasking.cost_aware_task_allocator.build_astar_path_plan"
+            "usv_uav_marine_coverage.tasking.cost_aware_task_allocator.build_usv_path_plan"
         ) as planner:
             updated_tasks, decisions = allocate_tasks_with_cost_aware_policy(
                 (task,),
@@ -751,10 +756,11 @@ class TaskingTestCase(unittest.TestCase):
 
         self.assertEqual(planner.call_count, 0)
         self.assertEqual(updated_tasks[0].retry_after_step, 40)
+        self.assertEqual(updated_tasks[0].agent_retry_after_steps, (("USV-2", 40),))
         self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
         self.assertEqual(decisions, ())
 
-    def test_cost_aware_allocator_retries_after_cooldown_expires(self) -> None:
+    def test_cost_aware_allocator_retries_after_agent_task_cooldown_expires(self) -> None:
         task = TaskRecord(
             task_id="hotspot-confirmation-retry",
             task_type=TaskType.HOTSPOT_CONFIRMATION,
@@ -767,12 +773,13 @@ class TaskingTestCase(unittest.TestCase):
             target_col=28,
             created_step=5,
             retry_after_step=30,
+            agent_retry_after_steps=(("USV-2", 30),),
         )
         agents = build_demo_agent_states()
         grid_map = self._build_runtime_grid_map()
 
         with patch(
-            "usv_uav_marine_coverage.tasking.cost_aware_task_allocator.build_astar_path_plan"
+            "usv_uav_marine_coverage.tasking.cost_aware_task_allocator.build_usv_path_plan"
         ) as planner:
             planner.return_value = PathPlan(
                 plan_id="mock-plan",
@@ -799,7 +806,56 @@ class TaskingTestCase(unittest.TestCase):
         self.assertEqual(planner.call_count, 1)
         self.assertEqual(updated_tasks[0].assigned_agent_id, "USV-2")
         self.assertIsNone(updated_tasks[0].retry_after_step)
+        self.assertEqual(updated_tasks[0].agent_retry_after_steps, ())
         self.assertEqual(decisions[0].agent_id, "USV-2")
+
+    def test_cost_aware_allocator_can_still_try_other_usv_while_one_agent_is_in_cooldown(
+        self,
+    ) -> None:
+        agents = build_demo_agent_states()
+        task = TaskRecord(
+            task_id="hotspot-confirmation-partial-cooldown",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=800.0,
+            target_y=760.0,
+            target_row=30,
+            target_col=32,
+            created_step=5,
+            retry_after_step=40,
+            agent_retry_after_steps=(("USV-2", 40),),
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.cost_aware_task_allocator.build_usv_path_plan"
+        ) as planner:
+            planner.return_value = PathPlan(
+                plan_id="mock-plan-usv3",
+                planner_name="astar_path_planner",
+                agent_id="USV-3",
+                task_id=task.task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(
+                    Waypoint(x=agents[2].x, y=agents[2].y),
+                    Waypoint(x=task.target_x, y=task.target_y),
+                ),
+                goal_x=task.target_x,
+                goal_y=task.target_y,
+                estimated_cost=55.0,
+            )
+            updated_tasks, decisions = allocate_tasks_with_cost_aware_policy(
+                (task,),
+                agents=agents,
+                execution_states=self._build_idle_execution_states(agents),
+                grid_map=self._build_runtime_grid_map(),
+                step=30,
+            )
+
+        self.assertEqual(planner.call_count, 1)
+        self.assertEqual(updated_tasks[0].assigned_agent_id, "USV-3")
+        self.assertEqual(decisions[0].agent_id, "USV-3")
 
     def test_cost_aware_allocator_preserves_uav_resupply_logic(self) -> None:
         agents = tuple(
@@ -850,7 +906,7 @@ class TaskingTestCase(unittest.TestCase):
         cache: dict[tuple[str, str, float, float], tuple[bool, float]] = {}
 
         with patch(
-            "usv_uav_marine_coverage.tasking.cost_aware_task_allocator.build_astar_path_plan"
+            "usv_uav_marine_coverage.tasking.cost_aware_task_allocator.build_usv_path_plan"
         ) as planner:
             planner.return_value = PathPlan(
                 plan_id="mock-plan",

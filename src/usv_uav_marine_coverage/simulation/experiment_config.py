@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 from usv_uav_marine_coverage.information_map import InformationMapConfig
+from usv_uav_marine_coverage.planning.usv_path_planner import SUPPORTED_USV_PATH_PLANNERS
 
 from .scenario_catalog import get_scenario_preset, list_scenario_names
 
@@ -155,7 +156,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
         "basic_task_allocator",
         "cost_aware_centralized_allocator",
     }
-    supported_usv_planners = {"astar_path_planner"}
+    supported_usv_planners = set(SUPPORTED_USV_PATH_PLANNERS)
     supported_uav_planners = {
         "uav_lawnmower_planner",
         "uav_multi_region_coverage_planner",

@@ -18,7 +18,7 @@ from usv_uav_marine_coverage.viewer import (
     _build_obstacle_markup,
 )
 
-from .simulation_core import SimulationFrame, SimulationReplay
+from .simulation_core import SimulationReplay
 
 
 def build_simulation_html(replay: SimulationReplay) -> str:
@@ -67,7 +67,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         )
 
     frame_payloads = _build_frame_payloads(replay, grid_map)
-    frame_summaries = _build_frame_summaries(replay.frames)
+    frame_summaries = _build_frame_summaries(replay)
     planned_path_payloads = _build_planned_path_payloads(replay)
     max_step = replay.frames[-1].step
 
@@ -314,8 +314,8 @@ def build_simulation_html(replay: SimulationReplay) -> str:
           <div class="stat"><span>Coverage</span><strong id="coverageRatio">0.0%</strong></div>
           <div class="stat"><span>Valid Cells</span><strong id="validCells">0</strong></div>
           <div class="stat"><span>Stale Cells</span><strong id="staleCells">0</strong></div>
-          <div class="stat"><span>UAV Checked</span><strong id="uavCheckedCells">0</strong></div>
-          <div class="stat"><span>Confirmed</span><strong id="confirmedCells">0</strong></div>
+          <div class="stat"><span>UAV Checked Marks</span><strong id="uavCheckedCells">0</strong></div>
+          <div class="stat"><span>Confirmed Hotspots</span><strong id="confirmedCells">0</strong></div>
           <div class="stat"><span>False Alarms</span><strong id="falseAlarmCells">0</strong></div>
           <h2 class="side-title" style="margin-top:14px;">Events</h2>
           <ul class="events" id="eventList"></ul>
@@ -892,18 +892,33 @@ def _encode_cell_indices(indices: tuple[tuple[int, int], ...], *, cols: int) -> 
     return [row * cols + col for row, col in indices]
 
 
-def _build_frame_summaries(frames: tuple[SimulationFrame, ...]) -> str:
+def _build_frame_summaries(replay: SimulationReplay) -> str:
     summary_items = []
-    for frame in frames:
+    running_totals = {
+        "uav_checked_marks": 0,
+        "confirmed_hotspots": 0,
+        "false_alarms": 0,
+    }
+    for frame, step_log in zip(replay.frames, replay.step_logs, strict=True):
+        task_layer = step_log["task_layer"]
+        running_totals["uav_checked_marks"] += sum(
+            len(indices) for indices in task_layer["newly_uav_checked_by_agent"].values()
+        )
+        running_totals["confirmed_hotspots"] += sum(
+            len(indices) for indices in task_layer["confirmed_by_agent"].values()
+        )
+        running_totals["false_alarms"] += sum(
+            len(indices) for indices in task_layer["false_alarms_by_agent"].values()
+        )
         summary_items.append(
             {
                 "step": frame.step,
                 "coverage_ratio": f"{frame.coverage_ratio * 100:.1f}%",
                 "valid_cells": len(frame.valid_cells),
                 "stale_cells": len(frame.stale_cells),
-                "uav_checked_cells": len(frame.uav_checked_cells),
-                "confirmed_cells": len(frame.confirmed_cells),
-                "false_alarm_cells": len(frame.false_alarm_cells),
+                "uav_checked_cells": running_totals["uav_checked_marks"],
+                "confirmed_cells": running_totals["confirmed_hotspots"],
+                "false_alarm_cells": running_totals["false_alarms"],
                 "events": list(frame.events),
             }
         )

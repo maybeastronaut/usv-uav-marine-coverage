@@ -45,6 +45,7 @@
 - 批量实验入口与统一实验汇总输出
 - 两套可切换的任务分配算法
 - 三套可切换的 `UAV` 搜索规划算法
+- 三套可切换的 `USV` 路径规划算法
 - 基础巡检与热点确认双任务源最小闭环
 - 覆盖映射静态可视化测试
 - 正式圆形 `footprint` 展示
@@ -337,16 +338,27 @@
     - 用于较早阶段的 `basic_task_allocator` 与 `cost_aware_centralized_allocator` 对比
   - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_3seed_cooldown/`
     - 用于修正 `cost_aware` 不可达任务冷却后，重新对比 `basic_task_allocator` 与 `cost_aware_centralized_allocator`
-  - 固定随机种子：`20260314 / 20260315 / 20260316 / 20260317 / 20260319`
-  - 固定步数：`1200`
-  - 当前目录内已同时保存：
-    - `batch.toml`
-    - `comparison_summary.json`
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
+  - `configs/experiment_datasets/usv_planner_offshore_hotspot_pressure_3seed_800/`
+    - 用于在固定 `cost_aware_centralized_allocator + uav_lawnmower_planner` 下，对比 `astar_path_planner` 与 `astar_smoother_path_planner`
+- 当前已固化的正式数据集固定随机种子包括：
+  - `20260314 / 20260315 / 20260316 / 20260317 / 20260319`
+  - `20260324 / 20260325 / 20260326`
+- 当前已固化的正式数据集固定步数包括：
+  - `1200`
+  - `800`
+- 当前正式数据集目录内已同时保存：
+  - `batch.toml`
+  - `comparison_summary.json`
+  - 每个 seed 的 `events.jsonl`
+  - 每个 seed 的 `summary.json`
 - 当前实验配置中的 `[scenario]` 段会先选定一个场景预设，再允许 `[information_map]` 对该场景做局部覆盖，从而避免为不同算法重复复制整套场景参数
 - 当前这套场景机制已经可以在“同一场景下切换不同算法”与“同一算法下切换不同场景”两种实验方式中复用，避免把场景参数和算法配置绑定在一起
 - 当前实验配置层已支持选择 `basic_task_allocator` 或 `cost_aware_centralized_allocator` 作为任务层算法
+- 当前实验配置层已支持选择：
+  - `astar_path_planner`
+  - `astar_smoother_path_planner`
+  - `hybrid_astar_path_planner`
+  作为 `USV` 路径规划算法
 - 当前实验配置层已支持选择：
   - `uav_lawnmower_planner`
   - `uav_multi_region_coverage_planner`
@@ -360,7 +372,11 @@
 - `simulation/simulation_core.py` 负责回放仿真的顶层时间步编排，并组织帧采集与日志采集
 - `simulation/simulation_agent_runtime.py` 负责智能体单步推进、路径执行、恢复动作执行与巡航回接点计算
 - `execution/progress_feedback.py` 负责 `USV` 的执行反馈判定，包括无进展检测、坏目标冷却以及是否进入 `RECOVERY` / 是否允许重规划
-- `simulation/simulation_policy.py` 负责当前 demo 智能体与默认 patrol 数据装配；`USV` 巡航环由 `planning/usv_patrol_planner.py` 生成，`UAV` 搜索航线可按实验配置在：
+- `simulation/simulation_policy.py` 负责当前 demo 智能体与默认 patrol 数据装配；`USV` 巡航环由 `planning/usv_patrol_planner.py` 生成，`USV` 任务/巡航路径规划可按实验配置在：
+  - `planning/astar_path_planner.py`
+  - `planning/astar_smoother_path_planner.py`
+  - `planning/hybrid_astar_path_planner.py`
+  之间切换；`UAV` 搜索航线可按实验配置在：
   - `planning/uav_lawnmower_planner.py`
   - `planning/uav_multi_region_coverage_planner.py`
   - `planning/uav_persistent_multi_region_coverage_planner.py`
@@ -380,6 +396,11 @@
   - `uav_lawnmower_planner`：固定上下分区割草机搜索 baseline
   - `uav_multi_region_coverage_planner`：远海固定四 AOI、多区域新鲜度优先排序、区域内割草机覆盖的第一版升级 planner
   - `uav_persistent_multi_region_coverage_planner`：远海固定四 AOI、freshness debt 优先、事件触发 AOI 重排、区域承诺覆盖的第二版升级 planner
+- 当前 `USV` 路径规划已具备三套可切换实现：
+  - `astar_path_planner`：当前 baseline，带朝向状态的风险加权网格 `A*`
+  - `astar_smoother_path_planner`：轻量升级版，保留 baseline `A*` 的状态空间和运动原语，只对 waypoint 链做后处理平滑，目标是在不显著增加搜索成本的前提下减少锯齿折返
+  - `hybrid_astar_path_planner`：改进版，使用更丰富的转向原语、更细的碰撞采样和后处理平滑，目标是降低锯齿折返和局部保守 blocked
+- 当前 `USV` planner 切换已通过 `planning/usv_path_planner.py` 统一分发，任务层和 runtime 不再各自硬编码单一 `A*`
 - 当前第一版 `uav_multi_region_coverage_planner` 不新增新的 UAV 执行状态，而是继续复用 `patrol_route_id + patrol_waypoint_index` 执行链；规划层会按当前信息地图动态重建跨 AOI 的 patrol route，并输出当前区域级航点段
 - 当前第二版 `uav_persistent_multi_region_coverage_planner` 已新增并行 `UavCoverageState`，用来记录当前 AOI、区域内 route、承诺剩余航点和最近重排原因；它不改 `AgentExecutionState`，而是通过 `simulation/uav_coverage_runtime.py` 与 runtime 协同工作
 - 当前第二版 `uav_persistent_multi_region_coverage_planner` 已进一步加入：
@@ -425,12 +446,17 @@
 - 当前航点推进已加入“越点推进”判定；当前视跟踪让 `USV` 实际越过中间航点时，会沿路径段投影自动推进索引，避免拿着旧航点慢慢减速至停死
 - 当前 `USV` 巡航层已从跨区稀疏全局点改成近海局部安全巡航环，避免巡航 waypoint 直接落在风险障碍内部
 - 当前 `USV` 的 `A*` 在局部姿态导致不可展开时，会回退到起始栅格中心并尝试更合适的起始航向，避免“全局可达但局部起步失败”被直接记成 `blocked`
+- 当前 `USV` 在空闲 `PATROL` 且暂时没有有效巡航 plan 时，不会立即被无进展反馈误判进 `RECOVERY`；runtime 会优先继续补巡航 plan，再恢复正常巡航推进
+- 当前 `cost_aware` 已从“任务级不可达冷却”升级为“`agent-task` 级 blocked 冷却”，避免同一热点在连续多个 step 内被同一艘 `USV` 反复做可达性检查
+- 当前 `USV` 的 `RETURN_TO_PATROL` 已加入短窗口 plan 复用；在回巡航目标不变且当前路径仍有效时，不会连续多个 step 对同一目标重复重规划
+- 当前 `USV` 的 `PATROL` 已加入最小重规划间隔；刚补过巡航 plan 的短暂衔接期不会立刻再次触发全量 `A*`
 - 当前若 `USV` 在 `RETURN_TO_PATROL` 阶段被障碍边界连续截断并清空路径，运行时会自动切换到下一个可达巡航接入点，避免三个 `USV` 长时间一起冻结在障碍附近
 - 当前 HTML 回放已新增独立的信息新鲜度图层，能够直接显示 `valid cells` 与 `stale cells`，而不再只能从日志里间接判断栅格信息时效
 - 当前 HTML 回放的帧数据已从“每帧完整 SVG 图层字符串”改成“每帧原始 cell/agent 数据 + 单独轨迹数据，由前端即时渲染当前帧”，以避免长步数回放文件膨胀到数百 MB
 - 当前 HTML 回放对 `USV` 已不再使用纯直线位置插值，而是使用与起终朝向一致的样条过渡，以更接近“沿船头推进并转弯”的视觉效果
 - 当前回放渲染已修正世界坐标航向与 SVG 旋转方向相反的问题，避免 `USV` 出现“位移方向与船头朝向不一致”的视觉错误
 - 当前 HTML 回放已不再直接展示智能体的真实历史轨迹，而是只展示每一帧当前 `active_plan` 对应的规划路径，并统一以虚线方式表达计划层
+- 当前 HTML 回放右上角 summary 已改为混合口径展示：`Coverage / Valid Cells / Stale Cells` 表示当前帧状态，`UAV Checked Marks / Confirmed Hotspots / False Alarms` 表示截至当前步的累计热点事件总量
 - 当前 `USV` 执行层已增加真实障碍穿越防护：若一步运动会进入多边形障碍或离岸孤岛，会在最后安全位置截断并清空路径，下一步重新规划
 - 当前 `USV` 的速度控制已从过于保守的对准减速中放宽，使实际速度更接近建模时的船速基线
 
@@ -492,6 +518,8 @@
    - 低电量 `UAV` 生成 `uav_resupply`，前往最近 `USV` 会合补能
    - 任务层生成/排序/分配 `baseline_service + hotspot_confirmation + uav_resupply`
    - 路径层为 `USV/UAV` 生成巡航、任务前往、会合或回巡航路径
+     - 当前 `USV` 可按实验配置切换 `astar_path_planner / astar_smoother_path_planner / hybrid_astar_path_planner`
+     - 当前 `USV` 主线对比重点已转为 `astar` 与 `astar + smoother`
    - 执行层跟踪当前路径，并在需要时触发局部避障、局部恢复与条件重规划
    - 更新覆盖映射、热点状态、信息地图与任务关闭结果
    - 采集逐步日志、规划统计和回放帧数据

@@ -40,6 +40,14 @@
     - 每个 seed 的 `events.jsonl`
     - 每个 seed 的 `summary.json`
   - 适合观察第一轮任务层对比在修正重复 blocked 噪声后的真实取舍
+- `usv_planner_offshore_hotspot_pressure_3seed_800/`
+  - 当前正式 `USV` 规划层对比数据集目录
+  - 已包含：
+    - `batch.toml`
+    - 聚合对比结果
+    - 每个 seed 的 `events.jsonl`
+    - 每个 seed 的 `summary.json`
+  - 适合观察 `astar` 与 `astar + smoother` 在高远海热点压力下的效果/成本取舍
 
 ## 后续建议的数据集方向
 

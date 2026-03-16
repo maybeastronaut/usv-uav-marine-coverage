@@ -22,10 +22,9 @@
 
 ### 1.2 明确升级顺序
 
-- 当前立即优先做：为 `cost_aware_centralized_allocator` 增加“不可达任务冷却 / backoff”
-- 原因：当前 `offshore_hotspot_pressure` 下已经确认 `blocked` 主要来自 `allocator_reachability`，问题本质是同一批不可达热点被跨步重复做真实路径代价评估
-- 当前下一步优先做：`USV` 规划层的 `hybrid A* + smoother`
-- 原因：当前 `USV` 已经有基础 `A*`，继续往带平滑和更稳定机动的一体化路径规划升级最自然
+- 当前下一步优先做：在固定任务层和 `UAV lawnmower` 基线下，正式比较 `astar_path_planner` 与 `astar_smoother_path_planner`
+- 原因：当前更需要一个“比 baseline 更平滑、但不显著放大状态空间和仿真开销”的 `USV` planner，中间版 `A* + smoother` 更适合作为下一轮主线对照
+- `hybrid_astar_path_planner` 继续保留，但暂时降级为探索型 planner；只有在 `A* + smoother` 证明收益不足时，再继续集中调优 hybrid 参数
 - 最后再做：`CBBA / auction allocator`
 - 原因：更适合作为第二种任务层对比算法，用来和当前已落地的集中式代价分配器形成对照
 
@@ -50,17 +49,20 @@
   - `UAV multi-region coverage planner`
   - `UAV persistent multi-region coverage planner`
   - `USV` 基础非完整约束 `A*`
+  - `USV A* + smoother`
+  - `USV hybrid A* + smoother`
   - 船体安全余量
   - 局部巡航段接入
 - 后续可升级方向包括：
   - 更细致风险代价模型
-  - 路径平滑
   - 更稳定的回巡航接入策略
   - 更高级 `USV` 规划算法
   - 更复杂 `UAV` 搜索与会合规划
   - `UAV persistent multi-region coverage planner` 的区域权重与热点感知策略
   - `UAV persistent multi-region coverage planner` 的双机协同分区与区域内未完成覆盖量建模
   - `UAV persistent multi-region coverage planner` 的区域切换收益判定，避免只看 freshness debt 而忽略全局周期性覆盖
+  - `USV A* + smoother` 的平滑容差、路径长度收益与 `blocked` 开销权衡
+  - `USV hybrid A* + smoother` 的状态空间收敛与 fallback 使用边界，避免在全局接管时拖垮仿真性能
 
 ### 1.5 执行层与控制器升级方向
 
