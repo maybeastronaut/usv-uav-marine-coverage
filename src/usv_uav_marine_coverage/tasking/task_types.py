@@ -54,6 +54,7 @@ class TaskRecord:
     completed_step: int | None = None
     retry_after_step: int | None = None
     agent_retry_after_steps: tuple[tuple[str, int], ...] = ()
+    distributed_winner_memories: tuple[tuple[str, str | None, int], ...] = ()
 
 
 @dataclass(frozen=True)

@@ -108,6 +108,91 @@ class ExperimentConfigTestCase(unittest.TestCase):
             "rho_task_allocator",
         )
 
+    def test_load_distributed_cbba_experiment_config_reads_new_allocator_name(self) -> None:
+        config = load_experiment_config(
+            Path("configs/distributed_cbba_allocator.toml"),
+        )
+
+        self.assertEqual(
+            config.algorithms.task_allocator,
+            "distributed_cbba_allocator",
+        )
+        self.assertEqual(
+            config.algorithms.zone_partition_policy,
+            "weighted_voronoi_partition_policy",
+        )
+        self.assertEqual(config.algorithms.distributed_sync_interval_steps, 1)
+
+    def test_load_distributed_cbba_sync5_config_reads_sync_interval(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync5.toml"),
+        )
+
+        self.assertEqual(
+            config.algorithms.task_allocator,
+            "distributed_cbba_allocator",
+        )
+        self.assertEqual(config.algorithms.distributed_sync_interval_steps, 5)
+
+    def test_load_distributed_cbba_range_config_reads_broadcast_range(self) -> None:
+        config = load_experiment_config(
+            Path(
+                "configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_range350.toml"
+            ),
+        )
+
+        self.assertEqual(
+            config.algorithms.task_allocator,
+            "distributed_cbba_allocator",
+        )
+        self.assertEqual(config.algorithms.distributed_broadcast_range_m, 350.0)
+
+    def test_load_experiment_config_reads_distributed_winner_memory_ttl(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "cbba_memory.toml"
+            path.write_text(
+                """
+[simulation]
+seed = 1
+steps = 10
+dt_seconds = 1.0
+
+[scenario]
+name = "offshore_hotspot_pressure"
+
+[algorithms]
+task_allocator = "distributed_cbba_allocator"
+zone_partition_policy = "weighted_voronoi_partition_policy"
+distributed_sync_interval_steps = 1
+distributed_broadcast_range_m = 0.0
+distributed_winner_memory_ttl_steps = 6
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(path)
+
+        self.assertEqual(config.algorithms.distributed_winner_memory_ttl_steps, 6)
+
+    def test_load_experiment_config_reads_distributed_bundle_length(self) -> None:
+        config = load_experiment_config(
+            Path(
+                "configs/distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2.toml"
+            ),
+        )
+
+        self.assertEqual(config.algorithms.task_allocator, "distributed_cbba_allocator")
+        self.assertEqual(config.algorithms.distributed_bundle_length, 2)
+
+    def test_load_experiment_config_reads_local_mpc_execution_policy(self) -> None:
+        config = load_experiment_config(
+            Path("configs/local_mpc_execution.toml"),
+        )
+
+        self.assertEqual(config.algorithms.execution_policy, "local_mpc_execution")
+
     def test_load_experiment_config_can_apply_scenario_preset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "experiment.toml"
@@ -209,6 +294,24 @@ execution_policy = "phase_one_execution"
         self.assertEqual(config.information_map.max_active_baseline_tasks, 2)
         self.assertEqual(config.information_map.nearshore_baseline_spawn_probability, 0.00018)
         self.assertEqual(config.information_map.offshore_hotspot_spawn_probability, 0.05)
+
+    def test_load_experiment_config_can_apply_distributed_overlap_pressure_scenario(
+        self,
+    ) -> None:
+        config = load_experiment_config(
+            Path("configs/distributed_overlap_pressure_distributed_cbba_weighted_voronoi.toml"),
+        )
+
+        self.assertEqual(config.scenario.name, "distributed_overlap_pressure")
+        self.assertEqual(config.algorithms.task_allocator, "distributed_cbba_allocator")
+        self.assertEqual(config.information_map.information_timeout_steps, 340)
+        self.assertEqual(config.information_map.nearshore_information_timeout_steps, 560)
+        self.assertEqual(config.information_map.max_active_baseline_tasks, 2)
+        self.assertEqual(config.information_map.max_active_hotspots, 14)
+        self.assertEqual(config.information_map.nearshore_baseline_spawn_probability, 0.00035)
+        self.assertEqual(config.information_map.nearshore_hotspot_spawn_probability, 0.008)
+        self.assertEqual(config.information_map.offshore_hotspot_spawn_probability, 0.075)
+        self.assertEqual(config.information_map.hotspot_clearance_cells, 0)
 
     def test_load_experiment_config_overlays_information_map_on_scenario(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -343,6 +446,133 @@ execution_policy = "phase_one_execution"
         config = load_experiment_config(Path("configs/rho_task_allocator.toml"))
 
         validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_distributed_cbba_allocator(self) -> None:
+        config = load_experiment_config(Path("configs/distributed_cbba_allocator.toml"))
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_rejects_non_positive_distributed_sync_interval(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invalid_cbba.toml"
+            path.write_text(
+                """
+[simulation]
+seed = 1
+steps = 10
+dt_seconds = 1.0
+
+[scenario]
+name = "offshore_hotspot_pressure"
+
+[algorithms]
+task_allocator = "distributed_cbba_allocator"
+zone_partition_policy = "weighted_voronoi_partition_policy"
+distributed_sync_interval_steps = 0
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "distributed_sync_interval_steps must be >= 1"):
+                load_experiment_config(path)
+
+    def test_validate_experiment_config_rejects_negative_broadcast_range(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invalid_cbba_range.toml"
+            path.write_text(
+                """
+[simulation]
+seed = 1
+steps = 10
+dt_seconds = 1.0
+
+[scenario]
+name = "offshore_hotspot_pressure"
+
+[algorithms]
+task_allocator = "distributed_cbba_allocator"
+zone_partition_policy = "weighted_voronoi_partition_policy"
+distributed_sync_interval_steps = 1
+distributed_broadcast_range_m = -1.0
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "distributed_broadcast_range_m must be >= 0.0"):
+                load_experiment_config(path)
+
+    def test_validate_experiment_config_rejects_negative_winner_memory_ttl(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invalid_cbba_memory.toml"
+            path.write_text(
+                """
+[simulation]
+seed = 1
+steps = 10
+dt_seconds = 1.0
+
+[scenario]
+name = "offshore_hotspot_pressure"
+
+[algorithms]
+task_allocator = "distributed_cbba_allocator"
+zone_partition_policy = "weighted_voronoi_partition_policy"
+distributed_sync_interval_steps = 1
+distributed_broadcast_range_m = 0.0
+distributed_winner_memory_ttl_steps = -1
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "distributed_winner_memory_ttl_steps must be >= 0",
+            ):
+                load_experiment_config(path)
+
+    def test_validate_experiment_config_rejects_unsupported_distributed_bundle_length(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invalid_cbba_bundle.toml"
+            path.write_text(
+                """
+[simulation]
+seed = 1
+steps = 10
+dt_seconds = 1.0
+
+[scenario]
+name = "distributed_overlap_pressure"
+
+[algorithms]
+task_allocator = "distributed_cbba_allocator"
+zone_partition_policy = "weighted_voronoi_partition_policy"
+distributed_bundle_length = 3
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(path)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "Unsupported distributed CBBA bundle length 3; supported: \\[1, 2\\]",
+        ):
+            validate_experiment_config(config)
 
     def test_validate_experiment_config_accepts_hybrid_astar_planner(self) -> None:
         config = load_experiment_config(Path("configs/hybrid_astar_baseline.toml"))

@@ -79,6 +79,25 @@ SCENARIO_CATALOG: dict[str, ScenarioPreset] = {
             nearshore_baseline_spawn_probability=0.0001,
         ),
     ),
+    "distributed_overlap_pressure": ScenarioPreset(
+        name="distributed_overlap_pressure",
+        description=(
+            "分布式协商放大场景，同时提高近海基础任务、近海热点和远海热点活跃度，并缩短信息超时，"
+            "适合放大 weighted Voronoi 下的多艇候选重叠、跨区重分配与局部通信约束影响。"
+        ),
+        information_map=replace(
+            _BASELINE_INFORMATION_MAP,
+            information_timeout_steps=340,
+            nearshore_information_timeout_steps=560,
+            max_active_baseline_tasks=2,
+            max_active_hotspots=14,
+            nearshore_baseline_spawn_probability=0.00035,
+            baseline_respawn_cooldown_steps=180,
+            nearshore_hotspot_spawn_probability=0.008,
+            offshore_hotspot_spawn_probability=0.075,
+            hotspot_clearance_cells=0,
+        ),
+    ),
     "nearshore_baseline_pressure": ScenarioPreset(
         name="nearshore_baseline_pressure",
         description="近海基础巡检压力场景，提升近海基础任务密度，适合放大驻区巡航与基础任务调度差异。",

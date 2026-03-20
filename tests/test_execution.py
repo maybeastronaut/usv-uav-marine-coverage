@@ -18,7 +18,10 @@ from usv_uav_marine_coverage.execution.execution_types import (
     ExecutionOutcome,
     ExecutionStage,
 )
-from usv_uav_marine_coverage.execution.path_follower import follow_path_step
+from usv_uav_marine_coverage.execution.path_follower import (
+    follow_path_step,
+    follow_path_step_with_local_mpc,
+)
 from usv_uav_marine_coverage.planning.path_types import PathPlan, PathPlanStatus, Waypoint
 from usv_uav_marine_coverage.simulation.simulation_policy import build_demo_agent_states
 
@@ -312,6 +315,141 @@ class ExecutionTestCase(unittest.TestCase):
         self.assertEqual(outcome, ExecutionOutcome.ADVANCING)
         assert advanced_agent.task.target_y is not None
         self.assertNotEqual(advanced_agent.task.target_y, 180.0)
+
+    def test_local_mpc_path_follower_slows_for_nearby_usv_conflict(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+        neighbor = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-2")
+        agent = replace(agent, x=120.0, y=220.0, heading_deg=0.0, speed_mps=3.0)
+        neighbor = replace(neighbor, x=165.0, y=220.0, heading_deg=180.0, speed_mps=0.0)
+        state = AgentExecutionState(
+            agent_id=agent.agent_id,
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="task-mpc-agent",
+            active_plan=PathPlan(
+                plan_id="plan-mpc-agent",
+                planner_name="astar_path_planner",
+                agent_id=agent.agent_id,
+                task_id="task-mpc-agent",
+                status=PathPlanStatus.PLANNED,
+                waypoints=(
+                    Waypoint(x=agent.x, y=agent.y),
+                    Waypoint(x=240.0, y=220.0),
+                ),
+                goal_x=240.0,
+                goal_y=220.0,
+                estimated_cost=120.0,
+            ),
+            current_waypoint_index=1,
+            patrol_route_id=agent.agent_id,
+            patrol_waypoint_index=0,
+        )
+
+        advanced_agent, _, outcome = follow_path_step_with_local_mpc(
+            agent,
+            state,
+            dt_seconds=1.0,
+            neighboring_agents=(neighbor,),
+        )
+
+        self.assertEqual(outcome, ExecutionOutcome.ADVANCING)
+        self.assertLess(advanced_agent.speed_mps, agent.speed_mps)
+        self.assertLess(advanced_agent.x, agent.x + agent.cruise_speed_mps)
+
+    def test_local_mpc_path_follower_matches_default_when_no_local_conflict(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+        agent = replace(agent, x=120.0, y=220.0, heading_deg=0.0, speed_mps=3.0)
+        state = AgentExecutionState(
+            agent_id=agent.agent_id,
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="task-mpc-clear",
+            active_plan=PathPlan(
+                plan_id="plan-mpc-clear",
+                planner_name="astar_path_planner",
+                agent_id=agent.agent_id,
+                task_id="task-mpc-clear",
+                status=PathPlanStatus.PLANNED,
+                waypoints=(
+                    Waypoint(x=agent.x, y=agent.y),
+                    Waypoint(x=220.0, y=220.0),
+                ),
+                goal_x=220.0,
+                goal_y=220.0,
+                estimated_cost=100.0,
+            ),
+            current_waypoint_index=1,
+            patrol_route_id=agent.agent_id,
+            patrol_waypoint_index=0,
+        )
+
+        default_agent, default_state, default_outcome = follow_path_step(
+            agent,
+            state,
+            dt_seconds=1.0,
+        )
+        mpc_agent, mpc_state, mpc_outcome = follow_path_step_with_local_mpc(
+            agent,
+            state,
+            dt_seconds=1.0,
+            neighboring_agents=(),
+        )
+
+        self.assertEqual(mpc_outcome, default_outcome)
+        self.assertEqual(mpc_state.current_waypoint_index, default_state.current_waypoint_index)
+        self.assertAlmostEqual(mpc_agent.x, default_agent.x, places=6)
+        self.assertAlmostEqual(mpc_agent.y, default_agent.y, places=6)
+
+    def test_local_mpc_path_follower_treats_offshore_risk_area_as_slowdown_hazard(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+        agent = replace(agent, x=520.0, y=420.0, heading_deg=0.0, speed_mps=3.0)
+        state = AgentExecutionState(
+            agent_id=agent.agent_id,
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="task-mpc-risk",
+            active_plan=PathPlan(
+                plan_id="plan-mpc-risk",
+                planner_name="astar_path_planner",
+                agent_id=agent.agent_id,
+                task_id="task-mpc-risk",
+                status=PathPlanStatus.PLANNED,
+                waypoints=(
+                    Waypoint(x=agent.x, y=agent.y),
+                    Waypoint(x=650.0, y=420.0),
+                ),
+                goal_x=650.0,
+                goal_y=420.0,
+                estimated_cost=130.0,
+            ),
+            current_waypoint_index=1,
+            patrol_route_id=agent.agent_id,
+            patrol_waypoint_index=0,
+        )
+        obstacle_layout = ObstacleLayout(
+            seed=2,
+            traversable_corridors=(),
+            risk_zone_obstacles=(),
+            offshore_features=(
+                CircularFeature(
+                    name="Dynamic Risk",
+                    feature_type="risk_area",
+                    x=580.0,
+                    y=420.0,
+                    radius=24.0,
+                ),
+            ),
+            nearshore_monitor_points=(),
+            offshore_hotspots=(),
+        )
+
+        advanced_agent, _, outcome = follow_path_step_with_local_mpc(
+            agent,
+            state,
+            dt_seconds=1.0,
+            obstacle_layout=obstacle_layout,
+        )
+
+        self.assertEqual(outcome, ExecutionOutcome.ADVANCING)
+        self.assertLess(advanced_agent.speed_mps, agent.speed_mps)
+        self.assertLess(advanced_agent.x, agent.x + agent.cruise_speed_mps)
 
 
 if __name__ == "__main__":

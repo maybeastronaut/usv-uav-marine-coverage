@@ -19,6 +19,11 @@ module execution, and future tests.
 |-- configs/
 |   |-- cost_aware_allocator.toml
 |   |-- aoi_energy_auction_allocator.toml
+|   |-- distributed_cbba_allocator.toml
+|   |-- distributed_overlap_pressure_cost_aware_weighted_voronoi.toml
+|   |-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi.toml
+|   |-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2.toml
+|   |-- distributed_overlap_pressure_rho_weighted_voronoi.toml
 |   |-- rho_task_allocator.toml
 |   |-- return_to_patrol_stress_cost_aware.toml
 |   |-- return_to_patrol_stress_cost_aware_astar_smoother.toml
@@ -26,18 +31,35 @@ module execution, and future tests.
 |   |-- offshore_hotspot_pressure_cost_aware_soft_partition.toml
 |   |-- offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml
 |   |-- offshore_hotspot_pressure_aoi_energy_weighted_voronoi.toml
+|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi.toml
+|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync5.toml
+|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync10.toml
+|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_range350.toml
 |   |-- offshore_hotspot_pressure_rho_weighted_voronoi.toml
 |   |-- offshore_hotspot_pressure_cost_aware_astar_smoother.toml
 |   |-- cost_aware_uav_persistent_multi_region.toml
 |   |-- astar_smoother_baseline.toml
 |   |-- hybrid_astar_baseline.toml
+|   |-- local_mpc_execution.toml
 |   |-- experiment_datasets/
 |   |   |-- README.md
 |   |   |-- partition_policy_offshore_hotspot_pressure_3seed_1200/
 |   |   |   |-- README.md
 |   |   |   |-- batch.toml
 |   |   |   `-- ...
+|   |   |-- distributed_cbba_bundle2_memory_compare_distributed_overlap_pressure_3seed_1200/
+|   |   |   |-- README.md
+|   |   |   |-- batch.toml
+|   |   |   `-- ...
+|   |   |-- distributed_cbba_bundle_compare_distributed_overlap_pressure_3seed_1200/
+|   |   |   |-- README.md
+|   |   |   |-- batch.toml
+|   |   |   `-- ...
 |   |   |-- task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/
+|   |   |   |-- README.md
+|   |   |   |-- batch.toml
+|   |   |   `-- ...
+|   |   |-- task_allocator_offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_1200/
 |   |   |   |-- README.md
 |   |   |   |-- batch.toml
 |   |   |   `-- ...
@@ -73,6 +95,7 @@ module execution, and future tests.
 |       |   |-- __init__.py
 |       |   |-- basic_state_machine.py
 |       |   |-- execution_types.py
+|       |   |-- local_mpc.py
 |       |   |-- path_follower.py
 |       |   `-- progress_feedback.py
 |       |-- environment.py
@@ -109,13 +132,15 @@ module execution, and future tests.
 |       |   |-- baseline_task_generator.py
 |       |   |-- basic_task_allocator.py
 |       |   |-- cost_aware_task_allocator.py
+|       |   |-- distributed_cbba_allocator.py
 |       |   |-- hotspot_task_generator.py
 |       |   |-- partitioning/
 |       |   |   |-- __init__.py
 |       |   |   |-- backlog_aware.py
 |       |   |   |-- baseline_fixed.py
 |       |   |   |-- partition_types.py
-|       |   |   `-- soft_partition.py
+|       |   |   |-- soft_partition.py
+|       |   |   `-- weighted_voronoi.py
 |       |   |-- rho_task_allocator.py
 |       |   |-- task_types.py
 |       |   |-- zone_partition_layer.py
@@ -144,11 +169,20 @@ module execution, and future tests.
 - `configs/phase_one_baseline.toml`: 当前第一阶段 baseline 的统一实验配置样例，集中定义仿真步数、随机种子、算法选择和信息地图参数。
 - `configs/cost_aware_allocator.toml`: 当前第一版 `cost-aware centralized allocator` 的实验配置样例，用于与 baseline 任务分配器做直接对比。
 - `configs/aoi_energy_auction_allocator.toml`: 当前第一版 `AoI-Energy Auction allocator` 的实验配置样例，用于在固定 `UAV/USV` planner 下与现有任务层算法做单因素对比。
+- `configs/distributed_cbba_allocator.toml`: 当前第一版分布式 `CBBA-lite allocator` 的实验配置样例，用于在固定 `weighted_voronoi` 分区基线下验证分布式任务分配主路径。
+- `configs/distributed_overlap_pressure_cost_aware_weighted_voronoi.toml`: 当前 `distributed_overlap_pressure` 下固定 `cost_aware`、切换 `weighted_voronoi_partition_policy` 的分布式协商放大场景配置样例。
+- `configs/distributed_overlap_pressure_distributed_cbba_weighted_voronoi.toml`: 当前 `distributed_overlap_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy` 的分布式协商放大场景配置样例。
+- `configs/distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2.toml`: 当前 `distributed_overlap_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy`，并将分布式 CBBA greedy bundle 长度显式切到 `2` 的配置样例。
+- `configs/distributed_overlap_pressure_rho_weighted_voronoi.toml`: 当前 `distributed_overlap_pressure` 下固定 `RHO`、切换 `weighted_voronoi_partition_policy` 的分布式协商放大场景配置样例。
 - `configs/rho_task_allocator.toml`: 当前第一版 `RHO (Rolling Horizon Optimization) allocator` 的实验配置样例，用于在固定 `UAV/USV` planner 下验证滚动任务价值分配主路径。
 - `configs/offshore_hotspot_pressure_cost_aware.toml`: 当前 `offshore_hotspot_pressure` 单种子任务层对比用的 `cost-aware` 任务分配配置样例。
 - `configs/offshore_hotspot_pressure_cost_aware_soft_partition.toml`: 当前 `offshore_hotspot_pressure` 下固定 `cost_aware`、切换 `soft_partition_policy` 的分区层对比配置样例。
 - `configs/offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml`: 当前 `offshore_hotspot_pressure` 下固定 `cost_aware`、切换 `weighted_voronoi_partition_policy` 的分区层对比配置样例。
 - `configs/offshore_hotspot_pressure_aoi_energy_weighted_voronoi.toml`: 当前 `offshore_hotspot_pressure` 下固定 `AEA`、切换 `weighted_voronoi_partition_policy` 的分区层测试配置样例。
+- `configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi.toml`: 当前 `offshore_hotspot_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy` 的分布式任务层测试配置样例。
+- `configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync5.toml`: 当前 `offshore_hotspot_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy`，并把 winner/bid 同步频率限制为每 `5` 步一次的通信约束配置样例。
+- `configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync10.toml`: 当前 `offshore_hotspot_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy`，并把 winner/bid 同步频率限制为每 `10` 步一次的通信约束配置样例。
+- `configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_range350.toml`: 当前 `offshore_hotspot_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy`，并把 `USV` 间广播范围限制为 `350m` 的有限广播范围配置样例。
 - `configs/offshore_hotspot_pressure_rho_weighted_voronoi.toml`: 当前 `offshore_hotspot_pressure` 下固定 `RHO`、切换 `weighted_voronoi_partition_policy` 的分区层测试配置样例。
 - `configs/offshore_hotspot_pressure_cost_aware_astar_smoother.toml`: 当前 `offshore_hotspot_pressure` 下切换 `USV astar + smoother` 的实验配置样例。
 - `configs/return_to_patrol_stress_cost_aware.toml`: 当前 `return_to_patrol_stress` 单种子 `USV planner` 对比用的 `cost-aware + astar` 配置样例。
@@ -156,6 +190,7 @@ module execution, and future tests.
 - `configs/cost_aware_uav_persistent_multi_region.toml`: 当前固定 `cost_aware` 任务层、切换第二版 `UAV persistent multi-region` 规划器的组合实验配置样例。
 - `configs/astar_smoother_baseline.toml`: 当前切换 `USV A* + smoother` 规划器的基础实验配置样例，用于和默认 `astar_path_planner` 做单因素对比。
 - `configs/hybrid_astar_baseline.toml`: 当前切换 `USV hybrid A* + smoother` 规划器的基础实验配置样例，用于和默认 `astar_path_planner` 做单因素对比。
+- `configs/local_mpc_execution.toml`: 当前第一版局部 `MPC` 执行策略配置样例，用于在不改任务层和全局规划层的前提下验证 `USV` 的局部实时避障。
 - `configs/uav_multi_region_coverage.toml`: 当前第一版 `UAV multi-region coverage planner` 的实验配置样例，用于与固定割草机搜索 baseline 做直接对比。
 - `configs/uav_persistent_multi_region_coverage.toml`: 当前第二版 `UAV persistent multi-region coverage planner` 的实验配置样例，用于验证事件触发重排与区域承诺式覆盖。
 - `configs/experiment_datasets/README.md`: 实验数据集目录说明，约定如何组织“能突出算法特点”的可复用对比数据集。
@@ -163,6 +198,9 @@ module execution, and future tests.
 - `configs/experiment_datasets/usv_planner_return_to_patrol_stress_3seed_1200/`: 当前 `USV` 规划层在 `return_to_patrol_stress` 场景下的最新正式数据集目录，固定最新 `3` 个随机种子和 `1200 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
 - `configs/experiment_datasets/partition_policy_offshore_hotspot_pressure_3seed_1200/`: 当前正式分区层对比数据集目录，固定 `offshore_hotspot_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `baseline_fixed / soft / weighted_voronoi`。
 - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/`: 当前正式任务层对比数据集目录，固定 `weighted_voronoi` 分区基线、`offshore_hotspot_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `cost_aware / AEA / RHO`。
+- `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_1200/`: 当前正式“中心化 vs 分布式任务分配”对比数据集目录，固定 `weighted_voronoi` 分区基线、`offshore_hotspot_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `cost_aware / RHO / distributed_CBBA(bundle=2)`。
+- `configs/experiment_datasets/distributed_cbba_bundle_compare_distributed_overlap_pressure_3seed_1200/`: 当前正式分布式 `CBBA-lite` 内部结构对比数据集目录，固定 `distributed_overlap_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `bundle = 1 / 2`。
+- `configs/experiment_datasets/distributed_cbba_bundle2_memory_compare_distributed_overlap_pressure_3seed_1200/`: 当前正式 `distributed_CBBA(bundle=2)` 局部 winner 记忆滞后验证数据集目录，固定 `distributed_overlap_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `winner_memory_ttl = 0 / 5 / 10`。
 - `docx/current_system_flow.md`: 基于当前已有代码整理的系统实际流程说明文档。
 - `docx/discussion_notes.md`: 讨论阶段确认的建模方案、状态标记和后续实现依据。
 - `docx/generated/sea_map.html`: 当前默认生成的 HTML 海图产物，可直接用于查看 `clean` 模式结果。
@@ -178,7 +216,8 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/execution/__init__.py`: 执行层子包入口，用于承载状态机与路径执行相关模块。
 - `src/usv_uav_marine_coverage/execution/basic_state_machine.py`: 基础执行状态机模块，负责 `PATROL / GO_TO_TASK / ON_TASK / RETURN_TO_PATROL` 的第一版状态切换。
 - `src/usv_uav_marine_coverage/execution/execution_types.py`: 执行层共享数据结构模块，统一执行状态、执行阶段与执行结果表达。
-- `src/usv_uav_marine_coverage/execution/path_follower.py`: 路径执行层模块，负责将路径段转换为前视跟踪目标，并逐步推进路径段跟踪、航点切换与 `USV` 的局部反应式避障修正。
+- `src/usv_uav_marine_coverage/execution/local_mpc.py`: 第一版局部 `MPC` 安全控制器，当前采用短时域候选控制采样，在执行层同时考虑路径跟踪、静态风险区/障碍和邻近 `USV` 的安全间距。
+- `src/usv_uav_marine_coverage/execution/path_follower.py`: 路径执行层模块，负责将路径段转换为前视跟踪目标，并逐步推进路径段跟踪、航点切换；当前已同时支持默认反应式局部避障与 `local_mpc_execution` 两种执行策略。
 - `src/usv_uav_marine_coverage/execution/progress_feedback.py`: 执行反馈层模块，专门负责 `USV` 无进展检测、坏目标冷却与重规划/进入 `RECOVERY` 的判定，不直接调用 planner。
 - `src/usv_uav_marine_coverage/environment.py`: 海域环境、三区带结构、障碍布局与伪随机环境生成逻辑；当前障碍环境已改为“确定性自动重采样直到合法”，避免部分 `seed` 因航道或重叠约束失败；初始状态不再预放基础监测点或任务热点。
 - `src/usv_uav_marine_coverage/grid.py`: 将连续海域环境映射为 `25m` 规则矩形栅格网络，并提供基于智能体 `footprint` 的动态覆盖状态更新。
@@ -198,7 +237,7 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/simulation/__init__.py`: 仿真回放子包的公开门面，保持现有对外接口稳定，并协调核心仿真、日志输出和回放页面生成。
 - `src/usv_uav_marine_coverage/simulation/experiment_config.py`: 统一实验配置层，负责 baseline 配置 dataclass、TOML 加载、CLI 覆盖与配置摘要序列化，为后续算法对比与批量实验提供统一入口。
 - `src/usv_uav_marine_coverage/simulation/experiment_batch.py`: 批量实验入口，负责加载 batch TOML、顺序运行多组配置，并输出统一的 `batch_results.jsonl` 与 `batch_summary.json`；当前每次 batch 运行都会在配置指定目录名后自动追加时间戳，写入一个全新的输出目录，避免旧结果与新结果混杂。
-- `src/usv_uav_marine_coverage/simulation/scenario_catalog.py`: 可复用实验场景目录，统一维护 `baseline_patrol / planner_path_stress / return_to_patrol_stress / offshore_hotspot_pressure / nearshore_baseline_pressure / mixed_task_pressure` 等场景预设；实验配置与 batch 运行通过场景名复用这些预设，而不是重复拷贝整套参数。
+- `src/usv_uav_marine_coverage/simulation/scenario_catalog.py`: 可复用实验场景目录，统一维护 `baseline_patrol / planner_path_stress / return_to_patrol_stress / offshore_hotspot_pressure / distributed_overlap_pressure / nearshore_baseline_pressure / mixed_task_pressure` 等场景预设；实验配置与 batch 运行通过场景名复用这些预设，而不是重复拷贝整套参数。
 - `src/usv_uav_marine_coverage/simulation/simulation_agent_runtime.py`: 回放式仿真的智能体运行时编排模块，负责按执行阶段调度 planner、follower、反馈层与恢复逻辑；当前 `RECOVERY` 机制、局部巡航段接入和碰撞防护保留在这里，但“是否重规划 / 是否进入恢复 / 是否对坏目标冷却”的判定已下沉到 `execution/progress_feedback.py`。
 - `src/usv_uav_marine_coverage/simulation/simulation_core.py`: 回放式仿真的顶层编排流程，负责按时间步组织任务层、规划层、执行层、覆盖更新、信息刷新和回放帧采集。
 - `src/usv_uav_marine_coverage/simulation/simulation_logging.py`: 回放式仿真的结构化日志层，负责 `events.jsonl`、`summary.json`、任务决策摘要、路径摘要、执行偏差、热点处理链以及实验配置摘要记录。
@@ -213,6 +252,7 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/tasking/baseline_task_generator.py`: 基础监测任务生成模块，负责从近海动态基础监测需求同步生成 `baseline_service` 任务。
 - `src/usv_uav_marine_coverage/tasking/basic_task_allocator.py`: 第一版基础任务分配算法，负责按“热点优先、同类按创建时间”排序后，在责任分区内选择可达 `USV` 中规划代价最低的执行体；当前默认规则为 `USV-1` 负责近海任务、`USV-2/USV-3` 分别负责远海上/下半区任务，同一步内的 agent-task 可达性筛选已加短期缓存，避免重复触发相同 `A*`。
 - `src/usv_uav_marine_coverage/tasking/cost_aware_task_allocator.py`: 第一版代价感知集中式任务分配算法，负责在严格责任区约束下对 `baseline_service` 和 `hotspot_confirmation` 构建代价矩阵，并以“优先级分层 + 集中式贪心”方式选择总代价最低的 `USV-task` 组合；当前已加入“不可达任务冷却”机制，避免同一热点在连续多个 step 内重复触发相同的 `A*` 可达性检查；`uav_resupply` 仍保持专门分配逻辑。
+- `src/usv_uav_marine_coverage/tasking/distributed_cbba_allocator.py`: 第一版分布式 `CBBA-lite` 任务分配算法，负责让每艘空闲 `USV` 在当前候选任务集上本地出价、通过同步 winner 轮次解决冲突，并已支持 `bundle = 1/2` 的贪心有序任务 bundle；当前还支持通过 `distributed_sync_interval_steps` 配置“每隔 N 步同步一次”的有限通信频率，通过 `distributed_broadcast_range_m` 配置有限广播范围，并通过 `distributed_winner_memory_ttl_steps` 模拟局部 winner 记忆滞后/信息过期。
 - `src/usv_uav_marine_coverage/tasking/hotspot_task_generator.py`: 热点任务生成模块，负责从当前已完成 `UAV` 初检的热点状态同步生成 `hotspot_confirmation` 精检任务。
 - `src/usv_uav_marine_coverage/tasking/rho_task_allocator.py`: 第一版 `RHO (Rolling Horizon Optimization)` 任务分配算法，负责在固定短窗口近似下为 `baseline_service` 和 `hotspot_confirmation` 计算 “任务基础价值 + AoI 回报 - 路径代价 - 延迟惩罚 - 低电量 UAV 支援保护惩罚” 的滚动分数，并按当前分区层提供的候选集合做集中式贪心分配。
 - `src/usv_uav_marine_coverage/tasking/task_types.py`: 任务数据结构模块，统一任务类型、来源、生命周期与分配结果表达。
@@ -277,11 +317,12 @@ hotspot is confirmed and then removed from the ground-truth layer. In replay HTM
 render as yellow before UAV pre-check and red after UAV pre-check; once USV fine inspection
 finishes, the hotspot disappears.
 
-The task layer currently supports three switchable allocators:
+The task layer currently supports five switchable allocators:
 
 - `basic_task_allocator`
 - `cost_aware_centralized_allocator`
 - `aoi_energy_auction_allocator`
+- `distributed_cbba_allocator`
 - `rho_task_allocator`
 
 In the current replay baseline, UAV patrol is no longer driven by a few fixed waypoints.

@@ -27,6 +27,10 @@ class AlgorithmSelection:
 
     task_allocator: str = "basic_task_allocator"
     zone_partition_policy: str = "baseline_fixed_partition"
+    distributed_sync_interval_steps: int = 1
+    distributed_broadcast_range_m: float = 0.0
+    distributed_winner_memory_ttl_steps: int = 0
+    distributed_bundle_length: int = 1
     usv_path_planner: str = "astar_path_planner"
     uav_search_planner: str = "uav_lawnmower_planner"
     execution_policy: str = "phase_one_execution"
@@ -105,6 +109,30 @@ def load_experiment_config(
                 "zone_partition_policy",
                 default=AlgorithmSelection().zone_partition_policy,
             ),
+            distributed_sync_interval_steps=_read_optional_int(
+                algorithms_raw,
+                "distributed_sync_interval_steps",
+                default=AlgorithmSelection().distributed_sync_interval_steps,
+                minimum=1,
+            ),
+            distributed_broadcast_range_m=_read_optional_float(
+                algorithms_raw,
+                "distributed_broadcast_range_m",
+                default=AlgorithmSelection().distributed_broadcast_range_m,
+                minimum=0.0,
+            ),
+            distributed_winner_memory_ttl_steps=_read_optional_int(
+                algorithms_raw,
+                "distributed_winner_memory_ttl_steps",
+                default=AlgorithmSelection().distributed_winner_memory_ttl_steps,
+                minimum=0,
+            ),
+            distributed_bundle_length=_read_optional_int(
+                algorithms_raw,
+                "distributed_bundle_length",
+                default=AlgorithmSelection().distributed_bundle_length,
+                minimum=1,
+            ),
             usv_path_planner=_read_str(algorithms_raw, "usv_path_planner"),
             uav_search_planner=_read_str(algorithms_raw, "uav_search_planner"),
             execution_policy=_read_str(algorithms_raw, "execution_policy"),
@@ -163,6 +191,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
         "cost_aware_centralized_allocator",
         "aoi_energy_auction_allocator",
         "rho_task_allocator",
+        "distributed_cbba_allocator",
     }
     supported_partition_policies = {
         "baseline_fixed_partition",
@@ -176,7 +205,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
         "uav_multi_region_coverage_planner",
         "uav_persistent_multi_region_coverage_planner",
     }
-    supported_execution = {"phase_one_execution"}
+    supported_execution = {"phase_one_execution", "local_mpc_execution"}
     supported_scenarios = set(list_scenario_names())
 
     if config.scenario.name not in supported_scenarios:
@@ -195,6 +224,11 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
             "Unsupported zone partition policy "
             f"{config.algorithms.zone_partition_policy!r}; "
             f"supported: {sorted(supported_partition_policies)}"
+        )
+    if config.algorithms.distributed_bundle_length not in {1, 2}:
+        raise ValueError(
+            "Unsupported distributed CBBA bundle length "
+            f"{config.algorithms.distributed_bundle_length!r}; supported: [1, 2]"
         )
     if config.algorithms.usv_path_planner not in supported_usv_planners:
         raise ValueError(
@@ -279,13 +313,39 @@ def _read_optional_str(raw: dict[str, object], key: str, *, default: str) -> str
     return value
 
 
-def _read_optional_int(raw: dict[str, object], key: str) -> int | None:
+def _read_optional_int(
+    raw: dict[str, object],
+    key: str,
+    *,
+    default: int | None = None,
+    minimum: int | None = None,
+) -> int | None:
     value = raw.get(key)
     if value is None:
-        return None
+        return default
     if not isinstance(value, int):
         raise ValueError(f"{key} must be an integer or null")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{key} must be >= {minimum}")
     return value
+
+
+def _read_optional_float(
+    raw: dict[str, object],
+    key: str,
+    *,
+    default: float,
+    minimum: float,
+) -> float:
+    value = raw.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"{key} must be a float when provided")
+    float_value = float(value)
+    if float_value < minimum:
+        raise ValueError(f"{key} must be >= {minimum}")
+    return float_value
 
 
 def _read_int(raw: dict[str, object], key: str, *, minimum: int) -> int:

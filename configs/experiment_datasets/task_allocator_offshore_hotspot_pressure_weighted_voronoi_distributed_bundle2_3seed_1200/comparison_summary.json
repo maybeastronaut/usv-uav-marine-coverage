@@ -1,0 +1,761 @@
+{
+  "batch": {
+    "name": "offshore_hotspot_pressure_task_allocator_compare_weighted_voronoi_distributed_bundle2_3seed",
+    "requested_output_dir": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed",
+    "output_dir": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954",
+    "run_count": 9,
+    "successful_runs": 9,
+    "failed_runs": 0,
+    "generate_html": false
+  },
+  "runs": [
+    {
+      "label": "cost_aware_seed_20260324",
+      "config_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/configs/offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml",
+      "scenario_override": null,
+      "experiment_config": {
+        "simulation": {
+          "seed": 20260324,
+          "steps": 1200,
+          "dt_seconds": 1.0
+        },
+        "scenario": {
+          "name": "offshore_hotspot_pressure"
+        },
+        "algorithms": {
+          "task_allocator": "cost_aware_centralized_allocator",
+          "zone_partition_policy": "weighted_voronoi_partition_policy",
+          "distributed_sync_interval_steps": 1,
+          "distributed_broadcast_range_m": 0.0,
+          "distributed_winner_memory_ttl_steps": 0,
+          "distributed_bundle_length": 1,
+          "usv_path_planner": "astar_path_planner",
+          "uav_search_planner": "uav_lawnmower_planner",
+          "execution_policy": "phase_one_execution"
+        },
+        "information_map": {
+          "information_timeout_steps": 400,
+          "nearshore_information_timeout_steps": 800,
+          "max_active_baseline_tasks": 1,
+          "max_active_hotspots": 12,
+          "max_suspected_hotspots": 12,
+          "nearshore_baseline_spawn_probability": 0.0001,
+          "baseline_respawn_cooldown_steps": 240,
+          "uav_false_alarm_probability": 0.08,
+          "uav_hotspot_inspection_steps": 1,
+          "usv_true_hotspot_probability": 1.0,
+          "usv_confirmation_steps": 5,
+          "baseline_service_steps": 5,
+          "nearshore_hotspot_spawn_probability": 0.0,
+          "offshore_hotspot_spawn_probability": 0.08,
+          "hotspot_clearance_cells": 1
+        }
+      },
+      "status": "completed",
+      "error_type": null,
+      "error_message": null,
+      "html_path": null,
+      "events_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/cost_aware_seed_20260324_events.jsonl",
+      "summary_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/cost_aware_seed_20260324_summary.json",
+      "final_metrics": {
+        "coverage_ratio": 0.947291,
+        "covered_cells": 1294,
+        "total_coverable_cells": 1366,
+        "valid_cells": 1130,
+        "stale_cells": 236,
+        "active_hotspot_cells": 12,
+        "uav_checked_cells": 6,
+        "active_ground_truth_hotspots": 12,
+        "path_lengths_by_agent": {
+          "UAV-1": 10428.678,
+          "UAV-2": 10498.691,
+          "USV-1": 5343.233,
+          "USV-2": 4596.106,
+          "USV-3": 4853.273
+        },
+        "event_totals": {
+          "spawned_hotspots": 30,
+          "uav_checked_marks": 24,
+          "confirmed_hotspots": 18,
+          "astar_total_calls": 148,
+          "astar_planned_calls": 148,
+          "astar_blocked_calls": 0,
+          "astar_expanded_nodes": 68108,
+          "astar_max_expanded_nodes": 6133
+        },
+        "last_step_events": [
+          "Low-energy UAV rendezvous task active"
+        ]
+      }
+    },
+    {
+      "label": "cost_aware_seed_20260325",
+      "config_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/configs/offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml",
+      "scenario_override": null,
+      "experiment_config": {
+        "simulation": {
+          "seed": 20260325,
+          "steps": 1200,
+          "dt_seconds": 1.0
+        },
+        "scenario": {
+          "name": "offshore_hotspot_pressure"
+        },
+        "algorithms": {
+          "task_allocator": "cost_aware_centralized_allocator",
+          "zone_partition_policy": "weighted_voronoi_partition_policy",
+          "distributed_sync_interval_steps": 1,
+          "distributed_broadcast_range_m": 0.0,
+          "distributed_winner_memory_ttl_steps": 0,
+          "distributed_bundle_length": 1,
+          "usv_path_planner": "astar_path_planner",
+          "uav_search_planner": "uav_lawnmower_planner",
+          "execution_policy": "phase_one_execution"
+        },
+        "information_map": {
+          "information_timeout_steps": 400,
+          "nearshore_information_timeout_steps": 800,
+          "max_active_baseline_tasks": 1,
+          "max_active_hotspots": 12,
+          "max_suspected_hotspots": 12,
+          "nearshore_baseline_spawn_probability": 0.0001,
+          "baseline_respawn_cooldown_steps": 240,
+          "uav_false_alarm_probability": 0.08,
+          "uav_hotspot_inspection_steps": 1,
+          "usv_true_hotspot_probability": 1.0,
+          "usv_confirmation_steps": 5,
+          "baseline_service_steps": 5,
+          "nearshore_hotspot_spawn_probability": 0.0,
+          "offshore_hotspot_spawn_probability": 0.08,
+          "hotspot_clearance_cells": 1
+        }
+      },
+      "status": "completed",
+      "error_type": null,
+      "error_message": null,
+      "html_path": null,
+      "events_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/cost_aware_seed_20260325_events.jsonl",
+      "summary_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/cost_aware_seed_20260325_summary.json",
+      "final_metrics": {
+        "coverage_ratio": 0.866764,
+        "covered_cells": 1184,
+        "total_coverable_cells": 1366,
+        "valid_cells": 960,
+        "stale_cells": 406,
+        "active_hotspot_cells": 12,
+        "uav_checked_cells": 4,
+        "active_ground_truth_hotspots": 12,
+        "path_lengths_by_agent": {
+          "UAV-1": 10497.827,
+          "UAV-2": 10374.307,
+          "USV-1": 5545.542,
+          "USV-2": 4568.06,
+          "USV-3": 4615.356
+        },
+        "event_totals": {
+          "spawned_hotspots": 36,
+          "uav_checked_marks": 28,
+          "confirmed_hotspots": 24,
+          "astar_total_calls": 199,
+          "astar_planned_calls": 192,
+          "astar_blocked_calls": 7,
+          "astar_expanded_nodes": 96679,
+          "astar_max_expanded_nodes": 9662
+        },
+        "last_step_events": [
+          "Low-energy UAV rendezvous task active"
+        ]
+      }
+    },
+    {
+      "label": "cost_aware_seed_20260326",
+      "config_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/configs/offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml",
+      "scenario_override": null,
+      "experiment_config": {
+        "simulation": {
+          "seed": 20260326,
+          "steps": 1200,
+          "dt_seconds": 1.0
+        },
+        "scenario": {
+          "name": "offshore_hotspot_pressure"
+        },
+        "algorithms": {
+          "task_allocator": "cost_aware_centralized_allocator",
+          "zone_partition_policy": "weighted_voronoi_partition_policy",
+          "distributed_sync_interval_steps": 1,
+          "distributed_broadcast_range_m": 0.0,
+          "distributed_winner_memory_ttl_steps": 0,
+          "distributed_bundle_length": 1,
+          "usv_path_planner": "astar_path_planner",
+          "uav_search_planner": "uav_lawnmower_planner",
+          "execution_policy": "phase_one_execution"
+        },
+        "information_map": {
+          "information_timeout_steps": 400,
+          "nearshore_information_timeout_steps": 800,
+          "max_active_baseline_tasks": 1,
+          "max_active_hotspots": 12,
+          "max_suspected_hotspots": 12,
+          "nearshore_baseline_spawn_probability": 0.0001,
+          "baseline_respawn_cooldown_steps": 240,
+          "uav_false_alarm_probability": 0.08,
+          "uav_hotspot_inspection_steps": 1,
+          "usv_true_hotspot_probability": 1.0,
+          "usv_confirmation_steps": 5,
+          "baseline_service_steps": 5,
+          "nearshore_hotspot_spawn_probability": 0.0,
+          "offshore_hotspot_spawn_probability": 0.08,
+          "hotspot_clearance_cells": 1
+        }
+      },
+      "status": "completed",
+      "error_type": null,
+      "error_message": null,
+      "html_path": null,
+      "events_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/cost_aware_seed_20260326_events.jsonl",
+      "summary_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/cost_aware_seed_20260326_summary.json",
+      "final_metrics": {
+        "coverage_ratio": 0.839767,
+        "covered_cells": 1153,
+        "total_coverable_cells": 1373,
+        "valid_cells": 950,
+        "stale_cells": 423,
+        "active_hotspot_cells": 12,
+        "uav_checked_cells": 7,
+        "active_ground_truth_hotspots": 12,
+        "path_lengths_by_agent": {
+          "UAV-1": 10409.742,
+          "UAV-2": 10382.448,
+          "USV-1": 5001.914,
+          "USV-2": 4230.616,
+          "USV-3": 4159.618
+        },
+        "event_totals": {
+          "spawned_hotspots": 42,
+          "uav_checked_marks": 37,
+          "confirmed_hotspots": 30,
+          "astar_total_calls": 209,
+          "astar_planned_calls": 209,
+          "astar_blocked_calls": 0,
+          "astar_expanded_nodes": 47810,
+          "astar_max_expanded_nodes": 5057
+        },
+        "last_step_events": [
+          "Low-energy UAV rendezvous task active"
+        ]
+      }
+    },
+    {
+      "label": "rho_seed_20260324",
+      "config_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/configs/offshore_hotspot_pressure_rho_weighted_voronoi.toml",
+      "scenario_override": null,
+      "experiment_config": {
+        "simulation": {
+          "seed": 20260324,
+          "steps": 1200,
+          "dt_seconds": 1.0
+        },
+        "scenario": {
+          "name": "offshore_hotspot_pressure"
+        },
+        "algorithms": {
+          "task_allocator": "rho_task_allocator",
+          "zone_partition_policy": "weighted_voronoi_partition_policy",
+          "distributed_sync_interval_steps": 1,
+          "distributed_broadcast_range_m": 0.0,
+          "distributed_winner_memory_ttl_steps": 0,
+          "distributed_bundle_length": 1,
+          "usv_path_planner": "astar_path_planner",
+          "uav_search_planner": "uav_lawnmower_planner",
+          "execution_policy": "phase_one_execution"
+        },
+        "information_map": {
+          "information_timeout_steps": 400,
+          "nearshore_information_timeout_steps": 800,
+          "max_active_baseline_tasks": 1,
+          "max_active_hotspots": 12,
+          "max_suspected_hotspots": 12,
+          "nearshore_baseline_spawn_probability": 0.0001,
+          "baseline_respawn_cooldown_steps": 240,
+          "uav_false_alarm_probability": 0.08,
+          "uav_hotspot_inspection_steps": 1,
+          "usv_true_hotspot_probability": 1.0,
+          "usv_confirmation_steps": 5,
+          "baseline_service_steps": 5,
+          "nearshore_hotspot_spawn_probability": 0.0,
+          "offshore_hotspot_spawn_probability": 0.08,
+          "hotspot_clearance_cells": 1
+        }
+      },
+      "status": "completed",
+      "error_type": null,
+      "error_message": null,
+      "html_path": null,
+      "events_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/rho_seed_20260324_events.jsonl",
+      "summary_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/rho_seed_20260324_summary.json",
+      "final_metrics": {
+        "coverage_ratio": 0.931186,
+        "covered_cells": 1272,
+        "total_coverable_cells": 1366,
+        "valid_cells": 1150,
+        "stale_cells": 216,
+        "active_hotspot_cells": 12,
+        "uav_checked_cells": 5,
+        "active_ground_truth_hotspots": 12,
+        "path_lengths_by_agent": {
+          "UAV-1": 10441.775,
+          "UAV-2": 10492.404,
+          "USV-1": 5341.791,
+          "USV-2": 4596.106,
+          "USV-3": 4902.201
+        },
+        "event_totals": {
+          "spawned_hotspots": 31,
+          "uav_checked_marks": 24,
+          "confirmed_hotspots": 19,
+          "astar_total_calls": 143,
+          "astar_planned_calls": 143,
+          "astar_blocked_calls": 0,
+          "astar_expanded_nodes": 66025,
+          "astar_max_expanded_nodes": 6133
+        },
+        "last_step_events": [
+          "Low-energy UAV rendezvous task active"
+        ]
+      }
+    },
+    {
+      "label": "rho_seed_20260325",
+      "config_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/configs/offshore_hotspot_pressure_rho_weighted_voronoi.toml",
+      "scenario_override": null,
+      "experiment_config": {
+        "simulation": {
+          "seed": 20260325,
+          "steps": 1200,
+          "dt_seconds": 1.0
+        },
+        "scenario": {
+          "name": "offshore_hotspot_pressure"
+        },
+        "algorithms": {
+          "task_allocator": "rho_task_allocator",
+          "zone_partition_policy": "weighted_voronoi_partition_policy",
+          "distributed_sync_interval_steps": 1,
+          "distributed_broadcast_range_m": 0.0,
+          "distributed_winner_memory_ttl_steps": 0,
+          "distributed_bundle_length": 1,
+          "usv_path_planner": "astar_path_planner",
+          "uav_search_planner": "uav_lawnmower_planner",
+          "execution_policy": "phase_one_execution"
+        },
+        "information_map": {
+          "information_timeout_steps": 400,
+          "nearshore_information_timeout_steps": 800,
+          "max_active_baseline_tasks": 1,
+          "max_active_hotspots": 12,
+          "max_suspected_hotspots": 12,
+          "nearshore_baseline_spawn_probability": 0.0001,
+          "baseline_respawn_cooldown_steps": 240,
+          "uav_false_alarm_probability": 0.08,
+          "uav_hotspot_inspection_steps": 1,
+          "usv_true_hotspot_probability": 1.0,
+          "usv_confirmation_steps": 5,
+          "baseline_service_steps": 5,
+          "nearshore_hotspot_spawn_probability": 0.0,
+          "offshore_hotspot_spawn_probability": 0.08,
+          "hotspot_clearance_cells": 1
+        }
+      },
+      "status": "completed",
+      "error_type": null,
+      "error_message": null,
+      "html_path": null,
+      "events_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/rho_seed_20260325_events.jsonl",
+      "summary_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/rho_seed_20260325_summary.json",
+      "final_metrics": {
+        "coverage_ratio": 0.833821,
+        "covered_cells": 1139,
+        "total_coverable_cells": 1366,
+        "valid_cells": 937,
+        "stale_cells": 429,
+        "active_hotspot_cells": 12,
+        "uav_checked_cells": 5,
+        "active_ground_truth_hotspots": 12,
+        "path_lengths_by_agent": {
+          "UAV-1": 10480.98,
+          "UAV-2": 10389.834,
+          "USV-1": 5496.036,
+          "USV-2": 4688.716,
+          "USV-3": 4254.849
+        },
+        "event_totals": {
+          "spawned_hotspots": 39,
+          "uav_checked_marks": 32,
+          "confirmed_hotspots": 27,
+          "astar_total_calls": 202,
+          "astar_planned_calls": 202,
+          "astar_blocked_calls": 0,
+          "astar_expanded_nodes": 139356,
+          "astar_max_expanded_nodes": 7868
+        },
+        "last_step_events": [
+          "Low-energy UAV rendezvous task active"
+        ]
+      }
+    },
+    {
+      "label": "rho_seed_20260326",
+      "config_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/configs/offshore_hotspot_pressure_rho_weighted_voronoi.toml",
+      "scenario_override": null,
+      "experiment_config": {
+        "simulation": {
+          "seed": 20260326,
+          "steps": 1200,
+          "dt_seconds": 1.0
+        },
+        "scenario": {
+          "name": "offshore_hotspot_pressure"
+        },
+        "algorithms": {
+          "task_allocator": "rho_task_allocator",
+          "zone_partition_policy": "weighted_voronoi_partition_policy",
+          "distributed_sync_interval_steps": 1,
+          "distributed_broadcast_range_m": 0.0,
+          "distributed_winner_memory_ttl_steps": 0,
+          "distributed_bundle_length": 1,
+          "usv_path_planner": "astar_path_planner",
+          "uav_search_planner": "uav_lawnmower_planner",
+          "execution_policy": "phase_one_execution"
+        },
+        "information_map": {
+          "information_timeout_steps": 400,
+          "nearshore_information_timeout_steps": 800,
+          "max_active_baseline_tasks": 1,
+          "max_active_hotspots": 12,
+          "max_suspected_hotspots": 12,
+          "nearshore_baseline_spawn_probability": 0.0001,
+          "baseline_respawn_cooldown_steps": 240,
+          "uav_false_alarm_probability": 0.08,
+          "uav_hotspot_inspection_steps": 1,
+          "usv_true_hotspot_probability": 1.0,
+          "usv_confirmation_steps": 5,
+          "baseline_service_steps": 5,
+          "nearshore_hotspot_spawn_probability": 0.0,
+          "offshore_hotspot_spawn_probability": 0.08,
+          "hotspot_clearance_cells": 1
+        }
+      },
+      "status": "completed",
+      "error_type": null,
+      "error_message": null,
+      "html_path": null,
+      "events_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/rho_seed_20260326_events.jsonl",
+      "summary_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/rho_seed_20260326_summary.json",
+      "final_metrics": {
+        "coverage_ratio": 0.863802,
+        "covered_cells": 1186,
+        "total_coverable_cells": 1373,
+        "valid_cells": 1103,
+        "stale_cells": 270,
+        "active_hotspot_cells": 12,
+        "uav_checked_cells": 7,
+        "active_ground_truth_hotspots": 12,
+        "path_lengths_by_agent": {
+          "UAV-1": 10438.32,
+          "UAV-2": 10404.577,
+          "USV-1": 5076.988,
+          "USV-2": 4301.194,
+          "USV-3": 4303.153
+        },
+        "event_totals": {
+          "spawned_hotspots": 39,
+          "uav_checked_marks": 34,
+          "confirmed_hotspots": 27,
+          "astar_total_calls": 190,
+          "astar_planned_calls": 190,
+          "astar_blocked_calls": 0,
+          "astar_expanded_nodes": 44577,
+          "astar_max_expanded_nodes": 5057
+        },
+        "last_step_events": [
+          "Low-energy UAV rendezvous task active"
+        ]
+      }
+    },
+    {
+      "label": "distributed_cbba_bundle2_seed_20260324",
+      "config_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_bundle2.toml",
+      "scenario_override": null,
+      "experiment_config": {
+        "simulation": {
+          "seed": 20260324,
+          "steps": 1200,
+          "dt_seconds": 1.0
+        },
+        "scenario": {
+          "name": "offshore_hotspot_pressure"
+        },
+        "algorithms": {
+          "task_allocator": "distributed_cbba_allocator",
+          "zone_partition_policy": "weighted_voronoi_partition_policy",
+          "distributed_sync_interval_steps": 1,
+          "distributed_broadcast_range_m": 0.0,
+          "distributed_winner_memory_ttl_steps": 0,
+          "distributed_bundle_length": 2,
+          "usv_path_planner": "astar_path_planner",
+          "uav_search_planner": "uav_lawnmower_planner",
+          "execution_policy": "phase_one_execution"
+        },
+        "information_map": {
+          "information_timeout_steps": 400,
+          "nearshore_information_timeout_steps": 800,
+          "max_active_baseline_tasks": 1,
+          "max_active_hotspots": 12,
+          "max_suspected_hotspots": 12,
+          "nearshore_baseline_spawn_probability": 0.0001,
+          "baseline_respawn_cooldown_steps": 240,
+          "uav_false_alarm_probability": 0.08,
+          "uav_hotspot_inspection_steps": 1,
+          "usv_true_hotspot_probability": 1.0,
+          "usv_confirmation_steps": 5,
+          "baseline_service_steps": 5,
+          "nearshore_hotspot_spawn_probability": 0.0,
+          "offshore_hotspot_spawn_probability": 0.08,
+          "hotspot_clearance_cells": 1
+        }
+      },
+      "status": "completed",
+      "error_type": null,
+      "error_message": null,
+      "html_path": null,
+      "events_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/distributed_cbba_bundle2_seed_20260324_events.jsonl",
+      "summary_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/distributed_cbba_bundle2_seed_20260324_summary.json",
+      "final_metrics": {
+        "coverage_ratio": 0.860908,
+        "covered_cells": 1176,
+        "total_coverable_cells": 1366,
+        "valid_cells": 974,
+        "stale_cells": 392,
+        "active_hotspot_cells": 12,
+        "uav_checked_cells": 8,
+        "active_ground_truth_hotspots": 12,
+        "path_lengths_by_agent": {
+          "UAV-1": 10414.993,
+          "UAV-2": 10382.531,
+          "USV-1": 5426.048,
+          "USV-2": 4826.252,
+          "USV-3": 5122.091
+        },
+        "event_totals": {
+          "spawned_hotspots": 27,
+          "uav_checked_marks": 23,
+          "confirmed_hotspots": 15,
+          "astar_total_calls": 167,
+          "astar_planned_calls": 166,
+          "astar_blocked_calls": 1,
+          "astar_expanded_nodes": 81491,
+          "astar_max_expanded_nodes": 6590
+        },
+        "last_step_events": [
+          "Low-energy UAV rendezvous task active"
+        ]
+      }
+    },
+    {
+      "label": "distributed_cbba_bundle2_seed_20260325",
+      "config_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_bundle2.toml",
+      "scenario_override": null,
+      "experiment_config": {
+        "simulation": {
+          "seed": 20260325,
+          "steps": 1200,
+          "dt_seconds": 1.0
+        },
+        "scenario": {
+          "name": "offshore_hotspot_pressure"
+        },
+        "algorithms": {
+          "task_allocator": "distributed_cbba_allocator",
+          "zone_partition_policy": "weighted_voronoi_partition_policy",
+          "distributed_sync_interval_steps": 1,
+          "distributed_broadcast_range_m": 0.0,
+          "distributed_winner_memory_ttl_steps": 0,
+          "distributed_bundle_length": 2,
+          "usv_path_planner": "astar_path_planner",
+          "uav_search_planner": "uav_lawnmower_planner",
+          "execution_policy": "phase_one_execution"
+        },
+        "information_map": {
+          "information_timeout_steps": 400,
+          "nearshore_information_timeout_steps": 800,
+          "max_active_baseline_tasks": 1,
+          "max_active_hotspots": 12,
+          "max_suspected_hotspots": 12,
+          "nearshore_baseline_spawn_probability": 0.0001,
+          "baseline_respawn_cooldown_steps": 240,
+          "uav_false_alarm_probability": 0.08,
+          "uav_hotspot_inspection_steps": 1,
+          "usv_true_hotspot_probability": 1.0,
+          "usv_confirmation_steps": 5,
+          "baseline_service_steps": 5,
+          "nearshore_hotspot_spawn_probability": 0.0,
+          "offshore_hotspot_spawn_probability": 0.08,
+          "hotspot_clearance_cells": 1
+        }
+      },
+      "status": "completed",
+      "error_type": null,
+      "error_message": null,
+      "html_path": null,
+      "events_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/distributed_cbba_bundle2_seed_20260325_events.jsonl",
+      "summary_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/distributed_cbba_bundle2_seed_20260325_summary.json",
+      "final_metrics": {
+        "coverage_ratio": 0.841874,
+        "covered_cells": 1150,
+        "total_coverable_cells": 1366,
+        "valid_cells": 1032,
+        "stale_cells": 334,
+        "active_hotspot_cells": 12,
+        "uav_checked_cells": 7,
+        "active_ground_truth_hotspots": 12,
+        "path_lengths_by_agent": {
+          "UAV-1": 10413.009,
+          "UAV-2": 10415.135,
+          "USV-1": 5529.844,
+          "USV-2": 4513.281,
+          "USV-3": 4760.677
+        },
+        "event_totals": {
+          "spawned_hotspots": 33,
+          "uav_checked_marks": 28,
+          "confirmed_hotspots": 21,
+          "astar_total_calls": 176,
+          "astar_planned_calls": 176,
+          "astar_blocked_calls": 0,
+          "astar_expanded_nodes": 130361,
+          "astar_max_expanded_nodes": 9773
+        },
+        "last_step_events": [
+          "Low-energy UAV rendezvous task active"
+        ]
+      }
+    },
+    {
+      "label": "distributed_cbba_bundle2_seed_20260326",
+      "config_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_bundle2.toml",
+      "scenario_override": null,
+      "experiment_config": {
+        "simulation": {
+          "seed": 20260326,
+          "steps": 1200,
+          "dt_seconds": 1.0
+        },
+        "scenario": {
+          "name": "offshore_hotspot_pressure"
+        },
+        "algorithms": {
+          "task_allocator": "distributed_cbba_allocator",
+          "zone_partition_policy": "weighted_voronoi_partition_policy",
+          "distributed_sync_interval_steps": 1,
+          "distributed_broadcast_range_m": 0.0,
+          "distributed_winner_memory_ttl_steps": 0,
+          "distributed_bundle_length": 2,
+          "usv_path_planner": "astar_path_planner",
+          "uav_search_planner": "uav_lawnmower_planner",
+          "execution_policy": "phase_one_execution"
+        },
+        "information_map": {
+          "information_timeout_steps": 400,
+          "nearshore_information_timeout_steps": 800,
+          "max_active_baseline_tasks": 1,
+          "max_active_hotspots": 12,
+          "max_suspected_hotspots": 12,
+          "nearshore_baseline_spawn_probability": 0.0001,
+          "baseline_respawn_cooldown_steps": 240,
+          "uav_false_alarm_probability": 0.08,
+          "uav_hotspot_inspection_steps": 1,
+          "usv_true_hotspot_probability": 1.0,
+          "usv_confirmation_steps": 5,
+          "baseline_service_steps": 5,
+          "nearshore_hotspot_spawn_probability": 0.0,
+          "offshore_hotspot_spawn_probability": 0.08,
+          "hotspot_clearance_cells": 1
+        }
+      },
+      "status": "completed",
+      "error_type": null,
+      "error_message": null,
+      "html_path": null,
+      "events_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/distributed_cbba_bundle2_seed_20260326_events.jsonl",
+      "summary_path": "/Users/tom/CodeSpace/usv-uav-marine-coverage/outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_20260320_183954/distributed_cbba_bundle2_seed_20260326_summary.json",
+      "final_metrics": {
+        "coverage_ratio": 0.835397,
+        "covered_cells": 1147,
+        "total_coverable_cells": 1373,
+        "valid_cells": 968,
+        "stale_cells": 405,
+        "active_hotspot_cells": 12,
+        "uav_checked_cells": 6,
+        "active_ground_truth_hotspots": 12,
+        "path_lengths_by_agent": {
+          "UAV-1": 10419.315,
+          "UAV-2": 10437.989,
+          "USV-1": 5298.784,
+          "USV-2": 4867.956,
+          "USV-3": 4742.817
+        },
+        "event_totals": {
+          "spawned_hotspots": 31,
+          "uav_checked_marks": 25,
+          "confirmed_hotspots": 19,
+          "astar_total_calls": 142,
+          "astar_planned_calls": 141,
+          "astar_blocked_calls": 1,
+          "astar_expanded_nodes": 52741,
+          "astar_max_expanded_nodes": 5184
+        },
+        "last_step_events": [
+          "Low-energy UAV rendezvous task active"
+        ]
+      }
+    }
+  ],
+  "aggregates": {
+    "coverage_ratio": {
+      "mean": 0.868979,
+      "min": 0.833821,
+      "max": 0.947291
+    },
+    "valid_cells": {
+      "mean": 1022.666667,
+      "min": 937.0,
+      "max": 1150.0
+    },
+    "stale_cells": {
+      "mean": 345.666667,
+      "min": 216.0,
+      "max": 429.0
+    },
+    "active_hotspot_cells": {
+      "mean": 12.0,
+      "min": 12.0,
+      "max": 12.0
+    },
+    "uav_checked_cells": {
+      "mean": 6.111111,
+      "min": 4.0,
+      "max": 8.0
+    },
+    "confirmed_hotspots": {
+      "mean": 22.222222,
+      "min": 15.0,
+      "max": 30.0
+    },
+    "event_totals": {
+      "spawned_hotspots_mean": 34.222222,
+      "confirmed_hotspots_mean": 22.222222,
+      "astar_expanded_nodes_mean": 80794.222222
+    }
+  }
+}

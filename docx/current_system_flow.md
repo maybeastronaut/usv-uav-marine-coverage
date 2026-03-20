@@ -43,7 +43,7 @@
 - 可复用实验场景目录
 - 正式实验数据集目录
 - 批量实验入口与统一实验汇总输出
-- 三套可切换的任务分配算法
+- 五套可切换的任务分配算法
 - 三套可切换的 `UAV` 搜索规划算法
 - 三套可切换的 `USV` 路径规划算法
 - 基础巡检与热点确认双任务源最小闭环
@@ -63,6 +63,7 @@
 - 已经实现基础版任务层、路径层、执行层和回放分析链
 - 已经实现第一阶段闭环动力学、基础任务分配、`UAV/USV` 分工、会合补能与局部恢复机制
 - 已经进入更高级任务算法与规划算法对比阶段
+- 已经接入第一版执行层局部 `MPC`
 - 更高保真控制器与动力学建模当前仍未实现
 
 ## 2. 当前项目结构是什么意思
@@ -209,6 +210,33 @@
 - 当前这套模型已经接入仿真主循环、任务层、路径层与执行层
 - 第二阶段和第三阶段的增强动力学与控制器研究当前暂缓，尚未实现
 
+### 2.5.1 执行层局部 MPC
+
+当前执行层已经支持两种可切换执行策略：
+
+- `phase_one_execution`
+- `local_mpc_execution`
+
+当前第一版 `local_mpc_execution` 的真实实现边界是：
+
+- 当前只对 `USV` 生效，`UAV` 继续沿用原有路径跟踪
+- 不改任务层和全局规划层，只在执行层对一步控制量做局部修正
+- 当前采用短时域候选控制采样，而不是外部数值求解器
+- 当前同时考虑：
+  - 路径跟踪目标
+  - 静态多边形风险障碍
+  - 远海圆形障碍与风险区
+  - 邻近 `USV` 的安全间距
+- 当前已修正第一版“每一步都强制 MPC 接管”带来的 `USV` 低速原地抽动问题：
+  - 现在只有在检测到局部风险时才启用 `MPC`
+  - 无局部冲突时会退回原有路径跟踪
+- 当前 `risk_area` 也已经纳入局部 `MPC` 接管判定，不再只对多边形障碍和圆形孤立障碍生效
+
+这部分的作用是：
+
+- 为 `USV` 增加第一版实时避障能力
+- 给后续动态海浪区、临时危险区和事件触发局部重规划预留执行层入口
+
 ### 2.6 离散栅格网络
 
 当前系统已经能把连续海域环境映射为规则矩形栅格网络。
@@ -303,21 +331,23 @@
 - `PATROL -> GO_TO_TASK -> ON_TASK -> GO_TO_RENDEZVOUS -> ON_RECHARGE -> RETURN_TO_PATROL` 的基础执行状态机
 - `baseline_service + hotspot_confirmation` 任务生成、分配、`USV` 风险加权 `A*` 路径执行与任务关闭
 - `uav_resupply` 低电量补能任务生成、最近 `USV` 会合、附着跟随充电与回巡航
-- 当前任务层已支持三套可切换的任务分配算法：
+- 当前任务层已支持五套可切换的任务分配算法：
   - `basic_task_allocator`
   - `cost_aware_centralized_allocator`
   - `aoi_energy_auction_allocator`
+  - `distributed_cbba_allocator`
   - `rho_task_allocator`
 - 当前 `basic_task_allocator` 负责“热点优先、同类按创建时间、责任分区内最低代价 `USV` 分配”的基础任务算法
 - 当前 `cost_aware_centralized_allocator` 负责在严格责任区约束下，对 `baseline_service` 和 `hotspot_confirmation` 建立代价矩阵，并以“优先级分层 + 集中式贪心”方式做集中分配
 - 当前 `cost_aware_centralized_allocator` 已额外加入“不可达任务冷却”机制：若某个任务对责任区内当前可用 `USV` 都不可达，则该任务会进入短时 backoff，避免在连续多个 step 内重复触发同一组 `A*` 可达性检查
 - 当前 `aoi_energy_auction_allocator` 负责对 `baseline_service` 和 `hotspot_confirmation` 计算 “任务基础价值 + 目标格 AoI 收益 - 真实路径代价 - 低电量 UAV 支援保护惩罚” 的竞价分数，并在同一优先级层内按“主责任区 `USV` 优先，主候选不可用或不可达时再启用 1 个次优候选 `USV`”的轻量兜底机制做集中式贪心分配
 - 当前 `rho_task_allocator` 负责在固定短窗口近似下，对 `baseline_service` 和 `hotspot_confirmation` 计算 “任务基础价值 + AoI 回报 - 路径代价 - 延迟惩罚 - 低电量 UAV 支援保护惩罚” 的滚动分数，并在严格责任区内按最高窗口分数做集中式贪心分配
+- 当前 `distributed_cbba_allocator` 负责在当前分区层候选集合上，让每艘空闲 `USV` 本地计算 bid 并通过同步 winner 轮次解决冲突；当前第一版已支持 `bundle = 1/2` 的贪心有序任务 bundle，只处理 `baseline_service` 和 `hotspot_confirmation`，`uav_resupply` 继续走现有专门逻辑，并已支持通过 `distributed_sync_interval_steps` 配置“每隔 N 步同步一次”的有限通信频率，通过 `distributed_broadcast_range_m` 按 `USV` 通信连通簇拆分局部协商市场，以及通过 `distributed_winner_memory_ttl_steps` 模拟局部 winner 记忆滞后/信息过期
 - 当前已将分区层正式拆到 `tasking/partitioning/` 子目录，并保留 `zone_partition_layer.py` 作为兼容包装入口；当前提供四套分区策略：
   - `baseline_fixed_partition`：与原硬责任区完全等价，近海任务主责任 `USV-1`、远海上半区主责任 `USV-2`、远海下半区主责任 `USV-3`、`uav_resupply` 对全部 `USV` 开放
-  - `soft_partition_policy`：当前只先接入 `cost_aware_centralized_allocator`，在保持主责任区不变的前提下，按“主责任 `USV` 不可用 / 次候选明显更近 / 任务已老化”三个条件为任务开放 1 个次候选 `USV`
+  - `soft_partition_policy`：在保持主责任区不变的前提下，按“主责任 `USV` 不可用 / 次候选明显更近 / 任务已老化”三个条件为任务开放 1 个次候选 `USV`
   - `backlog_aware_partition_policy`：当前在 `soft_partition_policy` 基础上进一步读取同一轮 pending 任务集合；当 aged `baseline_service` backlog 过高时，会更积极地给 baseline 开放次候选并收紧 hotspot 的次候选开放；当 hotspot backlog 较高且 baseline backlog 不高时，再恢复对热点的次候选开放
-  - `weighted_voronoi_partition_policy`：当前第一版只先接到 `cost_aware_centralized_allocator`，用 “任务点到 `USV` 的几何距离 + 忙碌惩罚 + 低电量 UAV 最近支援保护惩罚” 计算轻量加权分区代价，并按固定 margin 受控开放 1 个次候选 `USV`
+  - `weighted_voronoi_partition_policy`：当前第一版用“任务点到 `USV` 的几何距离 + 忙碌惩罚 + 低电量 UAV 最近支援保护惩罚”计算轻量加权分区代价，并按固定 margin 受控开放 1 个次候选 `USV`
 - 当前 `cost_aware + soft_partition_policy` 在 `offshore_hotspot_pressure / 3-seed / 1200-step` 下已经出现清晰分区层信号：
   - 相比 `baseline_fixed_partition`，`soft_partition_policy` 的 `coverage_ratio / valid_cells` 更高，`stale_cells / astar_blocked_calls / astar_total_calls` 更低
   - 但 `confirmed_hotspots` 下降，说明这版 soft 分区更偏整体 freshness 与稳定性，而不是更激进地追热点确认
@@ -332,29 +362,12 @@
   - `baseline_fixed_partition`：更偏热点确认，但 blocked 与规划负担高
   - `soft_partition_policy`：更偏整体 freshness 与稳定性
   - `weighted_voronoi_partition_policy`：当前最有潜力成为新的主推分区基线，因为它在热点确认、freshness 和 blocked 控制之间给出了更平衡的结果
-- 当前已将 `soft_partition_policy` 的配置与接口同时接到 `aoi_energy_auction_allocator` 和 `rho_task_allocator`
 - 当前 `aoi_energy_auction_allocator` 已从“`hotspot_confirmation` 与 `baseline_service` 分层顺序分配”调整为“统一竞价池排序”：
   - 除 `uav_resupply` 外，其余任务现在会进入同一个 AoI-energy 市场统一比较
   - 这保证了 stale baseline 任务在结构上已经拥有和热点任务直接竞争的机会
 - 当前 `aoi_energy_auction_allocator` 还已补入两项针对热点偏热的分数修正：
   - `baseline stale bonus`
   - `hotspot backlog penalty`
-- 当前首轮 `offshore_hotspot_pressure / seed=20260324 / 800-step / soft_partition_policy` 快速复核表明：
-  - `rho_task_allocator` 与 `cost_aware_centralized_allocator` 仍跑出完全相同的结果，说明在这轮单 seed 下，软分区尚未让 `RHO` 的窗口分数改变关键任务排序
-  - `aoi_energy_auction_allocator` 已开始与 `cost_aware` 拉开行为差异：`valid_cells` 更高、`stale_cells` 更低、`blocked_calls` 更低，但 `coverage_ratio` 与 `confirmed_hotspots` 略低
-  - 因此当前更合理的判断是：软分区已经先给 `AEA` 打开了一部分差异空间，而 `RHO` 仍需要进一步诊断其排序为何没有被真正翻动
-- 当前 `offshore_hotspot_pressure / 3-seed / 1200-step / soft_partition_policy` 的正式复核进一步说明：
-  - `AEA + soft_partition_policy` 相比 `cost_aware + soft_partition_policy` 已能稳定做出不同选择：`confirmed_hotspots` 更高，`valid_cells` 略高，`stale_cells` 略低
-  - 但当前代价仍然明显：`coverage_ratio` 更低，`astar_blocked_calls` 更高，`astar_expanded_nodes` 也更高
-  - 因此现阶段对 `AEA + soft_partition_policy` 的更准确定位应是：已经开始体现“更会追重要热点”的任务层倾向，但稳定性与整体覆盖仍弱于 `cost_aware + soft_partition_policy`
-- 当前针对 `offshore_hotspot_pressure / seed=20260325 / 1200-step` 的坏 seed 复核表明：
-  - 即使将 `AEA` 改成统一竞价池，这条 seed 的结果仍与旧版完全一致
-  - 即使进一步加入 `baseline stale bonus` 与 `hotspot backlog penalty`，这条 seed 的结果仍与旧版完全一致
-  - 即使再进一步加入显式的 `baseline backlog guard penalty`，这条 seed 的结果仍与旧版完全一致
-  - 说明这条坏 seed 的热点偏置并不是由“热点层先分、baseline 层后分”或“轻量 backlog/stale 修正”单独造成，而是当前 `bid` 尺度、路径代价与候选约束共同主导了结果
-  - 因而当前 `AEA` 的下一步不应继续围绕小幅常量调参，而应优先去扩大真实候选竞争空间，或在分区层上引入更强的 backlog-aware 候选开放/保留机制
-- 当前 `AEA` 单因素任务层对比已在固定 `uav_lawnmower_planner + astar_path_planner` 下完成两轮试跑：
-  - `offshore_hotspot_pressure / 3-seed / 1200-step`：`AEA` 相比 `cost_aware_centralized_allocator` 仍能把整体 freshness 略微往回拉，但热点确认数没有继续拉开
 - 当前在更强的 `weighted_voronoi_partition_policy` 分区层下重新比较 `cost_aware / AEA / RHO`（`offshore_hotspot_pressure / 3-seed / 1200-step`）后，任务层画像已经明显分叉：
   - `cost_aware + weighted_voronoi`：当前最均衡，`confirmed_hotspots = 24.0`，`valid_cells = 1013.3`，`stale_cells = 355.0`，`astar_blocked_calls = 2.3`
   - `AEA + weighted_voronoi`：当前更保守，`blocked` 最低（`1.0`），总调用数也最低，但 `confirmed_hotspots = 21.0`，`valid_cells / stale_cells` 都弱于 `cost_aware`
@@ -364,12 +377,15 @@
   - 若强调整体稳健和平衡：`cost_aware + weighted_voronoi`
   - 若强调 freshness / stale 控制：`RHO + weighted_voronoi`
   - `AEA` 在新分区层下暂时仍未成为最优解
-  - `planner_path_stress / 3-seed / 1200-step`：`AEA` 当前未能跑赢 `cost_aware_centralized_allocator`，说明第一版 `AoI / path / energy` 权重尚未稳定
-  - `aoi_revisit_pressure / 3-seed / 1200-step`：当前 `AEA` 仍未跑赢 `cost_aware_centralized_allocator`，且相比 `cost_aware` 的 `valid_cells` 更少、`stale_cells` 更多，说明这版权重还没有把 AoI 冲突场景转化成稳定优势
-- 当前已开始 `AEA` 第一轮小范围调参：先提高 `AoI` 收益权重并下调热点基础价值，目标是在 `aoi_revisit_pressure` 下优先把 `valid_cells / stale_cells` 拉向优于 `cost_aware` 的方向
-  - 因此当前对 `AEA` 的判断应为：已经具备研究价值，但还处在“需要继续调参与放大 AoI 冲突环境”的阶段
-- 当前已补充 `AEA` 的 bid 分解日志，并确认第一版优势不稳定的主因之一是“严格责任区下很多任务只有单一候选 `USV`”；因此现阶段已将 `AEA` 调整为“主责任区优先 + 次优候选兜底”模式，以便在不推翻分区机制的前提下引入有限竞争，同时避免跨区长路径在所有任务上被无差别评估
 - 当前已经实现第一版 `RHO` 任务层，用于替代“只调 AEA 权重”的单一路线；该版本先固定 `uav_lawnmower_planner + astar_path_planner`，保持中心化和单任务滚动决策，目标是验证“短窗口任务价值优化”本身是否优于 `cost_aware`
+- 当前“中心化 vs 分布式任务分配”的正式主对比已经完成（`offshore_hotspot_pressure / weighted_voronoi / 3-seed / 1200-step`）：
+  - `cost_aware + weighted_voronoi`：当前最均衡，`confirmed_hotspots = 24.0`，`valid_cells = 1013.3`，`stale_cells = 355.0`
+  - `RHO + weighted_voronoi`：当前仍是 freshness-first 主线，`valid_cells = 1063.3` 最高，`stale_cells = 305.0` 最低，`confirmed_hotspots = 24.3`
+  - `distributed_CBBA(bundle=2) + weighted_voronoi`：当前已经能形成有效分布式协商结果，`astar_blocked_calls = 0.7` 较低、总调用更少，但 `confirmed_hotspots = 18.3`，`valid_cells = 991.3`，`stale_cells = 377.0`
+- 当前分布式任务分配的最新阶段性判断已经收口为：
+  - `distributed_CBBA(bundle=2)` 已经可以作为正式分布式任务层进入对比实验
+  - 但在当前主场景下，整体表现仍弱于 `cost_aware / RHO` 两种中心化方案
+  - 当前分布式研究价值更偏向“去中心化可行性与架构对比”，而不是已达到性能最优
 - 当前任务层会将 `uav_resupply` 作为最高优先级紧急任务处理，并为低电量 `UAV` 选择最近 `USV` 作为会合补能对象
 - 当前 `uav_resupply` 触发阈值采用“到最近 `USV` 的预计可达能耗 + 45 单位安全余量”
 - 当前 `uav_resupply` 释放阈值采用“充到 `90%` 电量后脱离 `USV` 回到巡航”
@@ -391,6 +407,7 @@
   - `planner_path_stress`：`USV` 路径规划对比场景，保持中等远海热点压力并进一步压低近海基础任务干扰，适合观察跨风险区往返、任务接入与回巡航路径差异
   - `return_to_patrol_stress`：`USV` 回巡航接入压力场景，保持中等远海热点负载并进一步降低近海任务噪声，适合观察任务完成后长距离回巡航、跨风险区往返与路径折返差异
   - `offshore_hotspot_pressure`：远海热点压力场景，提高远海热点生成压力，适合观察热点响应与确认链路
+  - `distributed_overlap_pressure`：分布式协商放大场景，同时提高近海基础任务、近海热点和远海热点活跃度，并缩短信息超时，适合放大 weighted Voronoi 下的多艇候选重叠、跨区重分配与局部通信约束影响
   - `nearshore_baseline_pressure`：近海基础任务压力场景，提高近海基础巡检任务密度，适合观察驻区巡航与基础任务处理能力
   - `mixed_task_pressure`：混合任务压力场景，同时提高近海基础任务与远海热点压力，适合观察多任务竞争下的整体调度表现
 - `configs/experiment_datasets/` 已提供实验数据集配置目录，当前用于集中维护“固定场景 + 固定随机种子集合 + 固定步数 + 固定统计口径”的正式对比数据集
@@ -400,22 +417,24 @@
   - 每个 seed 的 `events.jsonl`
   - 每个 seed 的 `summary.json`
   - 代表性回放 `HTML`
-- 当前已固化的正式任务层对比数据集包括：
-  - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_5seed/`
-    - 用于较早阶段的 `basic_task_allocator` 与 `cost_aware_centralized_allocator` 对比
-  - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_3seed_cooldown/`
-    - 用于修正 `cost_aware` 不可达任务冷却后，重新对比 `basic_task_allocator` 与 `cost_aware_centralized_allocator`
+- 当前已固化并保留的正式实验数据集包括：
   - `configs/experiment_datasets/usv_planner_offshore_hotspot_pressure_3seed_800/`
     - 用于在固定 `cost_aware_centralized_allocator + uav_lawnmower_planner` 下，对比 `astar_path_planner` 与 `astar_smoother_path_planner`
   - `configs/experiment_datasets/usv_planner_return_to_patrol_stress_3seed_1200/`
     - 用于在 `return_to_patrol_stress` 场景下，对比 `astar_path_planner` 与 `astar_smoother_path_planner` 在热点完成与回巡航链上的差异
-- 当前已固化的正式数据集固定随机种子包括：
-  - `20260314 / 20260315 / 20260316 / 20260317 / 20260319`
-  - `20260324 / 20260325 / 20260326`
-  - `20260334 / 20260335 / 20260336`
-- 当前已固化的正式数据集固定步数包括：
-  - `1200`
-  - `800`
+  - `configs/experiment_datasets/partition_policy_offshore_hotspot_pressure_3seed_1200/`
+    - 用于在固定 `cost_aware_centralized_allocator` 下，对比 `baseline_fixed_partition / soft_partition_policy / weighted_voronoi_partition_policy`
+  - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/`
+    - 用于在固定 `weighted_voronoi_partition_policy` 下，对比 `cost_aware / AEA / RHO`
+  - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_1200/`
+    - 用于在固定 `weighted_voronoi_partition_policy` 下，对比 `cost_aware / RHO / distributed_CBBA(bundle=2)`
+  - `configs/experiment_datasets/distributed_cbba_bundle_compare_distributed_overlap_pressure_3seed_1200/`
+    - 用于在 `distributed_overlap_pressure` 下，对比 `distributed_CBBA` 的 `bundle = 1 / 2`
+  - `configs/experiment_datasets/distributed_cbba_bundle2_memory_compare_distributed_overlap_pressure_3seed_1200/`
+    - 用于在 `distributed_overlap_pressure` 下，对比 `distributed_CBBA(bundle=2)` 的 `winner_memory_ttl = 0 / 5 / 10`
+- 当前分布式内部机制的已落地结论也已经收口：
+  - `bundle = 1 -> bundle = 2` 会改变 `distributed_CBBA` 的最终行为，说明分布式协商不再对内部结构完全不敏感
+  - 但在当前 `bundle = 2` 版本下，`winner_memory_ttl = 0 / 5 / 10` 的三组正式结果仍完全一致，说明局部 winner 记忆滞后尚未进一步改变最终协商轨迹
 - 当前 `USV` 规划层的已落地对比结论也开始分场景收口：
   - `planner_path_stress`
     - 更适合观察 `astar_smoother_path_planner` 在整体 coverage / freshness 维持上的潜在优势
@@ -433,23 +452,11 @@
   - `cost_aware_centralized_allocator`
   - `aoi_energy_auction_allocator`
   作为任务层算法
-- 当前 `offshore_hotspot_pressure` 已经可以直接用于三套任务层算法的单因素对比：
-  - `basic_task_allocator`
-  - `cost_aware_centralized_allocator`
-  - `aoi_energy_auction_allocator`
 - 当前 `aoi_energy_auction_allocator` 已具备基础可运行版本，并已接入统一实验配置层与仿真主流程；其第一版固定采用：
   - 中心化 auction-style 分配，而不是完整分布式协商
   - 只对 `baseline_service` 与 `hotspot_confirmation` 计算竞价分数
   - `uav_resupply` 继续保留现有专门逻辑
   - 竞价分数由“任务基础价值 + 目标格 AoI 收益 - 真实路径代价 - 低电量 UAV 支援保护惩罚”组成
-- 当前 `offshore_hotspot_pressure` 下已经完成第一轮 `3-seed / 1200-step` 任务层三方对比：
-  - `basic_task_allocator`
-  - `cost_aware_centralized_allocator`
-  - `aoi_energy_auction_allocator`
-- 当前这轮 AEA 首次对比的已落地事实是：
-  - `aoi_energy_auction_allocator` 能稳定跑完整仿真主流程
-  - 在这轮 `3-seed` 结果里，AEA 相比 `basic` 与 `cost_aware` 都具有竞争力
-  - 第一版 AEA 仍需要继续做 AoI / energy 权重收敛与单因素复核
 - 当前实验配置层已支持选择：
   - `astar_path_planner`
   - `astar_smoother_path_planner`
@@ -463,7 +470,6 @@
 - `simulation/experiment_batch.py` 已提供批量实验入口，当前支持读取 batch TOML、顺序运行多组实验，并输出 `batch_results.jsonl` 与 `batch_summary.json`
 - 当前 batch 运行默认会在配置指定的 `output_dir` 名后自动追加时间戳，写入一个新的输出目录，避免中途打断或重复复现实验时把新旧结果混到同一目录
 - 当前 batch 运行已支持按 run 覆盖 `scenario`，从而可以在同一 base config 下复用多个实验场景做算法对比
-- 当前正式 `5-seed / 1200-step` 任务层对比结果已经同步固化进上述实验数据集目录，可直接作为后续算法复现实验与对比基线使用
 - 当前 `outputs/` 目录仍是默认运行输出目录；batch 复现实验与未固化的中间产物继续写到这里
 - 若某轮实验结果被认定为正式合格数据集，可将其关键配置、代表性日志、汇总结果与回放副本同步固化到 `configs/experiment_datasets/`，但不应假定 `outputs/` 已失去复现用途
 - `simulation/simulation_core.py` 负责回放仿真的顶层时间步编排，并组织帧采集与日志采集

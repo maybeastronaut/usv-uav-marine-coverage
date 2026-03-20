@@ -623,6 +623,14 @@ def serialize_task_record(task: TaskRecord) -> dict[str, object]:
             {"agent_id": agent_id, "retry_after_step": retry_after_step}
             for agent_id, retry_after_step in task.agent_retry_after_steps
         ],
+        "distributed_winner_memories": [
+            {
+                "observer_agent_id": observer_agent_id,
+                "winner_agent_id": winner_agent_id,
+                "known_step": known_step,
+            }
+            for observer_agent_id, winner_agent_id, known_step in task.distributed_winner_memories
+        ],
     }
 
 

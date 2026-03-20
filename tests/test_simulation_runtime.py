@@ -16,6 +16,9 @@ from usv_uav_marine_coverage.execution.execution_types import (
     ExecutionStage,
     UavCoverageState,
 )
+from usv_uav_marine_coverage.execution.path_follower import (
+    follow_path_step_with_local_mpc as real_follow_path_step_with_local_mpc,
+)
 from usv_uav_marine_coverage.execution.progress_feedback import (
     build_initial_progress_states,
 )
@@ -81,6 +84,29 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         self.assertNotEqual((usv_before.x, usv_before.y), (usv_after.x, usv_after.y))
         self.assertIsNotNone(usv_state.active_plan)
         assert usv_state.active_plan is not None
+
+    def test_advance_agents_one_step_uses_local_mpc_execution_policy_for_usv(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        grid_map = _build_runtime_grid_map()
+
+        with patch(
+            "usv_uav_marine_coverage.simulation.simulation_agent_runtime.follow_path_step_with_local_mpc",
+            wraps=real_follow_path_step_with_local_mpc,
+        ) as local_mpc_mock:
+            advance_agents_one_step(
+                agents=agents,
+                execution_states=execution_states,
+                progress_states=progress_states,
+                task_records=(),
+                patrol_routes=build_patrol_routes(),
+                grid_map=grid_map,
+                dt_seconds=1.0,
+                execution_policy="local_mpc_execution",
+            )
+
+        self.assertTrue(local_mpc_mock.called)
 
     def test_should_refresh_return_plan_reuses_recent_planned_path(self) -> None:
         agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-2")

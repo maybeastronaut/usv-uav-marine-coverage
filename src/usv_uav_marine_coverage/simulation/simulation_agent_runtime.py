@@ -32,7 +32,10 @@ from usv_uav_marine_coverage.execution.execution_types import (
     ExecutionStage,
     UavCoverageState,
 )
-from usv_uav_marine_coverage.execution.path_follower import follow_path_step
+from usv_uav_marine_coverage.execution.path_follower import (
+    follow_path_step,
+    follow_path_step_with_local_mpc,
+)
 from usv_uav_marine_coverage.execution.progress_feedback import (
     build_goal_signature,
     evaluate_usv_progress,
@@ -116,6 +119,7 @@ def advance_agents_one_step(
     step: int = 0,
     usv_path_planner: str = "astar_path_planner",
     uav_search_planner: str = "uav_lawnmower_planner",
+    execution_policy: str = "phase_one_execution",
     uav_coverage_states: dict[str, UavCoverageState] | None = None,
 ) -> tuple[
     tuple[AgentState, ...],
@@ -159,6 +163,7 @@ def advance_agents_one_step(
             step=step,
             usv_path_planner=usv_path_planner,
             uav_search_planner=uav_search_planner,
+            execution_policy=execution_policy,
             uav_coverage_states=uav_coverage_states,
         )
         updated_execution_state, updated_progress_state = _evaluate_agent_progress(
@@ -250,6 +255,7 @@ def _run_agent_stage(
     step: int,
     usv_path_planner: str,
     uav_search_planner: str,
+    execution_policy: str,
     uav_coverage_states: dict[str, UavCoverageState] | None,
 ) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
     if execution_state.stage == ExecutionStage.RECOVERY:
@@ -328,11 +334,13 @@ def _run_agent_stage(
                 progress_state=progress_state,
                 patrol_routes=patrol_routes,
             )
-        advanced_agent, execution_state, outcome = follow_path_step(
+        advanced_agent, execution_state, outcome = _advance_path_execution_step(
             agent,
-            execution_state,
+            execution_state=execution_state,
             dt_seconds=dt_seconds,
             obstacle_layout=obstacle_layout,
+            execution_policy=execution_policy,
+            neighboring_agents=_neighboring_agents(agent, agent_by_id),
         )
         advanced_agent, execution_state = _apply_usv_collision_guard(
             agent,
@@ -374,11 +382,13 @@ def _run_agent_stage(
             task_id=active_task.task_id,
         )
         execution_state = replace(execution_state, active_plan=plan, current_waypoint_index=0)
-        advanced_agent, execution_state, outcome = follow_path_step(
+        advanced_agent, execution_state, outcome = _advance_path_execution_step(
             agent,
-            execution_state,
+            execution_state=execution_state,
             dt_seconds=dt_seconds,
             obstacle_layout=obstacle_layout,
+            execution_policy=execution_policy,
+            neighboring_agents=_neighboring_agents(agent, agent_by_id),
         )
         if outcome == ExecutionOutcome.TASK_SITE_REACHED or _has_reached_rendezvous(
             advanced_agent,
@@ -427,11 +437,13 @@ def _run_agent_stage(
             plan = execution_state.active_plan
             if plan is None or plan.status != PathPlanStatus.PLANNED:
                 return (assign_agent_task(agent, TaskMode.PATROL), execution_state, progress_state)
-        advanced_agent, execution_state, outcome = follow_path_step(
+        advanced_agent, execution_state, outcome = _advance_path_execution_step(
             agent,
-            execution_state,
+            execution_state=execution_state,
             dt_seconds=dt_seconds,
             obstacle_layout=obstacle_layout,
+            execution_policy=execution_policy,
+            neighboring_agents=_neighboring_agents(agent, agent_by_id),
         )
         advanced_agent, execution_state = _apply_usv_collision_guard(
             agent,
@@ -568,11 +580,13 @@ def _run_agent_stage(
                 return (stalled_agent, execution_state, progress_state)
     if agent.kind == "UAV":
         execution_state = replace(execution_state, active_plan=plan, current_waypoint_index=0)
-    advanced_agent, execution_state, outcome = follow_path_step(
+    advanced_agent, execution_state, outcome = _advance_path_execution_step(
         agent,
-        execution_state,
+        execution_state=execution_state,
         dt_seconds=dt_seconds,
         obstacle_layout=obstacle_layout,
+        execution_policy=execution_policy,
+        neighboring_agents=_neighboring_agents(agent, agent_by_id),
     )
     advanced_agent, execution_state = _apply_usv_collision_guard(
         agent,
@@ -631,6 +645,42 @@ def _run_agent_stage(
             patrol_waypoint_index=next_index,
         )
     return (advanced_agent, execution_state, progress_state)
+
+
+def _advance_path_execution_step(
+    agent: AgentState,
+    *,
+    execution_state: AgentExecutionState,
+    dt_seconds: float,
+    obstacle_layout: ObstacleLayout | None,
+    execution_policy: str,
+    neighboring_agents: tuple[AgentState, ...],
+) -> tuple[AgentState, AgentExecutionState, ExecutionOutcome]:
+    if execution_policy == "local_mpc_execution":
+        return follow_path_step_with_local_mpc(
+            agent,
+            execution_state,
+            dt_seconds=dt_seconds,
+            obstacle_layout=obstacle_layout,
+            neighboring_agents=neighboring_agents,
+        )
+    return follow_path_step(
+        agent,
+        execution_state,
+        dt_seconds=dt_seconds,
+        obstacle_layout=obstacle_layout,
+    )
+
+
+def _neighboring_agents(
+    agent: AgentState,
+    agent_by_id: dict[str, AgentState],
+) -> tuple[AgentState, ...]:
+    return tuple(
+        other_agent
+        for other_agent_id, other_agent in agent_by_id.items()
+        if other_agent_id != agent.agent_id
+    )
 
 
 def _has_reached_rendezvous(uav: AgentState, support_agent: AgentState) -> bool:

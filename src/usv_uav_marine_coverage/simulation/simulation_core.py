@@ -53,6 +53,9 @@ from usv_uav_marine_coverage.tasking.basic_task_allocator import (
 from usv_uav_marine_coverage.tasking.cost_aware_task_allocator import (
     allocate_tasks_with_cost_aware_policy,
 )
+from usv_uav_marine_coverage.tasking.distributed_cbba_allocator import (
+    allocate_tasks_with_distributed_cbba_policy,
+)
 from usv_uav_marine_coverage.tasking.hotspot_task_generator import sync_hotspot_confirmation_tasks
 from usv_uav_marine_coverage.tasking.rho_task_allocator import (
     allocate_tasks_with_rho_policy,
@@ -243,6 +246,16 @@ def build_simulation_replay(
             step=step,
             task_allocator=effective_config.algorithms.task_allocator,
             zone_partition_policy=effective_config.algorithms.zone_partition_policy,
+            distributed_sync_interval_steps=(
+                effective_config.algorithms.distributed_sync_interval_steps
+            ),
+            distributed_broadcast_range_m=(
+                effective_config.algorithms.distributed_broadcast_range_m
+            ),
+            distributed_winner_memory_ttl_steps=(
+                effective_config.algorithms.distributed_winner_memory_ttl_steps
+            ),
+            distributed_bundle_length=(effective_config.algorithms.distributed_bundle_length),
             usv_path_planner=effective_config.algorithms.usv_path_planner,
             agents=agents,
             execution_states=execution_states,
@@ -270,6 +283,7 @@ def build_simulation_replay(
             step=step,
             usv_path_planner=effective_config.algorithms.usv_path_planner,
             uav_search_planner=effective_config.algorithms.uav_search_planner,
+            execution_policy=effective_config.algorithms.execution_policy,
         )
         task_records = sync_task_statuses(task_records, execution_states)
 
@@ -415,6 +429,10 @@ def _allocate_task_records(
     step: int,
     task_allocator: str,
     zone_partition_policy: str,
+    distributed_sync_interval_steps: int,
+    distributed_broadcast_range_m: float,
+    distributed_winner_memory_ttl_steps: int,
+    distributed_bundle_length: int,
     usv_path_planner: str,
     agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
@@ -460,6 +478,21 @@ def _allocate_task_records(
             step=step,
             usv_path_planner=usv_path_planner,
             zone_partition_policy=zone_partition_policy,
+        )
+    if task_allocator == "distributed_cbba_allocator":
+        return allocate_tasks_with_distributed_cbba_policy(
+            task_records,
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=grid_map,
+            info_map=info_map,
+            step=step,
+            usv_path_planner=usv_path_planner,
+            zone_partition_policy=zone_partition_policy,
+            sync_interval_steps=distributed_sync_interval_steps,
+            broadcast_range_m=distributed_broadcast_range_m,
+            winner_memory_ttl_steps=distributed_winner_memory_ttl_steps,
+            bundle_length=distributed_bundle_length,
         )
     raise ValueError(f"Unsupported task allocator {task_allocator!r}")
 

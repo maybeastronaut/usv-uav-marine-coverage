@@ -26,6 +26,12 @@ from usv_uav_marine_coverage.tasking.cost_aware_task_allocator import (
     _reachable_cost,
     allocate_tasks_with_cost_aware_policy,
 )
+from usv_uav_marine_coverage.tasking.distributed_cbba_allocator import (
+    AGENT_TASK_BLOCKED_COOLDOWN_STEPS as CBBA_AGENT_TASK_BLOCKED_COOLDOWN_STEPS,
+)
+from usv_uav_marine_coverage.tasking.distributed_cbba_allocator import (
+    allocate_tasks_with_distributed_cbba_policy,
+)
 from usv_uav_marine_coverage.tasking.partitioning import (
     baseline_primary_usv_ids_for_task,
     baseline_secondary_usv_ids_for_task,
@@ -2067,6 +2073,782 @@ class TaskingTestCase(unittest.TestCase):
             (("USV-2", 20 + RHO_AGENT_TASK_BLOCKED_COOLDOWN_STEPS),),
         )
         self.assertEqual(decisions, ())
+
+    def test_distributed_cbba_resolves_conflict_and_reassigns_losing_agent(self) -> None:
+        agents = tuple(
+            replace(agent, x=160.0, y=170.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=170.0, y=180.0)
+            if agent.agent_id == "USV-2"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        hotspot = TaskRecord(
+            task_id="hotspot-cbba-shared",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=220.0,
+            target_y=220.0,
+            target_row=8,
+            target_col=8,
+            created_step=5,
+        )
+        baseline = TaskRecord(
+            task_id="baseline-cbba-fallback",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=190.0,
+            target_y=190.0,
+            target_row=7,
+            target_col=7,
+            created_step=4,
+        )
+        info_map.state_at(8, 8).information_age = 120
+        info_map.state_at(7, 7).information_age = 40
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            estimated_cost_map = {
+                ("USV-1", "hotspot-cbba-shared"): 20.0,
+                ("USV-2", "hotspot-cbba-shared"): 28.0,
+                ("USV-1", "baseline-cbba-fallback"): 18.0,
+                ("USV-2", "baseline-cbba-fallback"): 16.0,
+            }
+            estimated_cost = estimated_cost_map[(agent.agent_id, task_id)]
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=estimated_cost,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_distributed_cbba_policy(
+                (hotspot, baseline),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=30,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                sync_interval_steps=5,
+            )
+
+        assigned_by_id = {task.task_id: task.assigned_agent_id for task in updated_tasks}
+        self.assertEqual(assigned_by_id["hotspot-cbba-shared"], "USV-1")
+        self.assertEqual(assigned_by_id["baseline-cbba-fallback"], "USV-2")
+        decision_by_task = {decision.task_id: decision for decision in decisions}
+        self.assertEqual(
+            decision_by_task["hotspot-cbba-shared"].selection_reason,
+            "distributed_cbba_winner_for_hotspot_confirmation",
+        )
+        self.assertEqual(
+            decision_by_task["baseline-cbba-fallback"].selection_reason,
+            "distributed_cbba_winner_for_baseline_service",
+        )
+        assert decision_by_task["hotspot-cbba-shared"].selection_details is not None
+        assert decision_by_task["baseline-cbba-fallback"].selection_details is not None
+        self.assertEqual(
+            decision_by_task["hotspot-cbba-shared"].selection_details["cbba_round"],
+            1,
+        )
+        self.assertEqual(
+            decision_by_task["hotspot-cbba-shared"].selection_details["sync_interval_steps"],
+            5,
+        )
+        self.assertEqual(
+            decision_by_task["baseline-cbba-fallback"].selection_details["cbba_round"],
+            2,
+        )
+        self.assertEqual(
+            decision_by_task["baseline-cbba-fallback"].selection_details["sync_interval_steps"],
+            5,
+        )
+
+    def test_distributed_cbba_skips_new_market_assignments_between_sync_steps(self) -> None:
+        task = TaskRecord(
+            task_id="hotspot-confirmation-cbba-sync-wait",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan"
+        ) as planner:
+            updated_tasks, decisions = allocate_tasks_with_distributed_cbba_policy(
+                (task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=7,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                sync_interval_steps=5,
+            )
+
+        self.assertEqual(planner.call_count, 0)
+        self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
+        self.assertIsNone(updated_tasks[0].assigned_agent_id)
+        self.assertEqual(decisions, ())
+
+    def test_distributed_cbba_broadcast_range_limits_cross_component_competition(self) -> None:
+        agents = (
+            replace(
+                next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1"),
+                x=100.0,
+                y=100.0,
+            ),
+            replace(
+                next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-2"),
+                x=260.0,
+                y=100.0,
+            ),
+            replace(
+                next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-3"),
+                x=800.0,
+                y=800.0,
+            ),
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="hotspot-confirmation-cbba-range",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=160.0,
+            target_y=100.0,
+            target_row=4,
+            target_col=6,
+            created_step=5,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            estimated_cost_map = {
+                ("USV-1", "hotspot-confirmation-cbba-range"): 50.0,
+                ("USV-2", "hotspot-confirmation-cbba-range"): 10.0,
+            }
+            estimated_cost = estimated_cost_map[(agent.agent_id, task_id)]
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=estimated_cost,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            unlimited_tasks, unlimited_decisions = allocate_tasks_with_distributed_cbba_policy(
+                (task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=20,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                broadcast_range_m=0.0,
+            )
+        self.assertEqual(unlimited_tasks[0].assigned_agent_id, "USV-2")
+        self.assertEqual(unlimited_decisions[0].agent_id, "USV-2")
+        assert unlimited_decisions[0].selection_details is not None
+        self.assertEqual(
+            unlimited_decisions[0].selection_details["communication_component_size"],
+            3,
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            ranged_tasks, ranged_decisions = allocate_tasks_with_distributed_cbba_policy(
+                (task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=20,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                broadcast_range_m=100.0,
+            )
+        self.assertEqual(ranged_tasks[0].assigned_agent_id, "USV-1")
+        self.assertEqual(ranged_decisions[0].agent_id, "USV-1")
+        assert ranged_decisions[0].selection_details is not None
+        self.assertEqual(ranged_decisions[0].selection_details["communication_component_size"], 1)
+
+    def test_distributed_cbba_winner_memory_delays_rebidding_until_expired(self) -> None:
+        agents = (
+            replace(
+                next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1"),
+                x=100.0,
+                y=100.0,
+            ),
+            replace(
+                next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-2"),
+                x=200.0,
+                y=100.0,
+            ),
+            replace(
+                next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-3"),
+                x=900.0,
+                y=900.0,
+            ),
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="hotspot-confirmation-cbba-memory",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=150.0,
+            target_y=100.0,
+            target_row=4,
+            target_col=6,
+            created_step=5,
+            distributed_winner_memories=(("USV-1", "USV-2", 10),),
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            estimated_cost_map = {
+                ("USV-1", "hotspot-confirmation-cbba-memory"): 10.0,
+                ("USV-2", "hotspot-confirmation-cbba-memory"): 30.0,
+            }
+            estimated_cost = estimated_cost_map[(agent.agent_id, task_id)]
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=estimated_cost,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            remembered_tasks, remembered_decisions = allocate_tasks_with_distributed_cbba_policy(
+                (task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=12,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                winner_memory_ttl_steps=5,
+            )
+
+        self.assertEqual(remembered_tasks[0].assigned_agent_id, "USV-2")
+        self.assertEqual(remembered_decisions[0].agent_id, "USV-2")
+        assert remembered_decisions[0].selection_details is not None
+        self.assertEqual(remembered_decisions[0].selection_details["winner_memory_ttl_steps"], 5)
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            expired_tasks, expired_decisions = allocate_tasks_with_distributed_cbba_policy(
+                (task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=16,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                winner_memory_ttl_steps=5,
+            )
+
+        self.assertEqual(expired_tasks[0].assigned_agent_id, "USV-1")
+        self.assertEqual(expired_decisions[0].agent_id, "USV-1")
+
+    def test_distributed_cbba_bundle2_assigns_two_ordered_tasks_to_same_agent(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-2"] = replace(
+            execution_states["USV-2"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-upper",
+        )
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-lower",
+        )
+        first_task = TaskRecord(
+            task_id="baseline-bundle-first",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=2,
+            target_x=150.0,
+            target_y=140.0,
+            target_row=5,
+            target_col=5,
+            created_step=4,
+        )
+        second_task = TaskRecord(
+            task_id="baseline-bundle-second",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=2,
+            target_x=170.0,
+            target_y=155.0,
+            target_row=5,
+            target_col=6,
+            created_step=5,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=20.0 if task_id == "baseline-bundle-first" else 24.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_distributed_cbba_policy(
+                (first_task, second_task),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=30,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                bundle_length=2,
+            )
+
+        assigned_by_id = {task.task_id: task.assigned_agent_id for task in updated_tasks}
+        self.assertEqual(assigned_by_id["baseline-bundle-first"], "USV-1")
+        self.assertEqual(assigned_by_id["baseline-bundle-second"], "USV-1")
+        self.assertEqual(len(decisions), 2)
+        decision_by_task = {decision.task_id: decision for decision in decisions}
+        first_details = decision_by_task["baseline-bundle-first"].selection_details
+        second_details = decision_by_task["baseline-bundle-second"].selection_details
+        assert first_details is not None
+        assert second_details is not None
+        self.assertEqual(first_details["bundle_length"], 2)
+        self.assertEqual(second_details["bundle_length"], 2)
+        self.assertEqual(first_details["bundle_position"], 1)
+        self.assertEqual(second_details["bundle_position"], 2)
+        self.assertEqual(
+            first_details["bundle_task_ids"],
+            ("baseline-bundle-first", "baseline-bundle-second"),
+        )
+        self.assertEqual(second_details["bundle_task_ids"], first_details["bundle_task_ids"])
+
+    def test_distributed_cbba_bundle2_atomic_winner_keeps_second_task(self) -> None:
+        agents = tuple(
+            replace(agent, x=140.0, y=140.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=260.0, y=145.0)
+            if agent.agent_id == "USV-2"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-lower",
+        )
+        first_task = TaskRecord(
+            task_id="bundle-atomic-first",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=2,
+            target_x=150.0,
+            target_y=150.0,
+            target_row=5,
+            target_col=5,
+            created_step=2,
+        )
+        second_task = TaskRecord(
+            task_id="bundle-atomic-second",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=2,
+            target_x=220.0,
+            target_y=150.0,
+            target_row=5,
+            target_col=7,
+            created_step=3,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            estimated_cost_map = {
+                ("USV-1", "bundle-atomic-first"): 8.0,
+                ("USV-1", "bundle-atomic-second"): 14.0,
+                ("USV-2", "bundle-atomic-first"): 40.0,
+                ("USV-2", "bundle-atomic-second"): 6.0,
+            }
+            estimated_cost = estimated_cost_map[(agent.agent_id, task_id)]
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=estimated_cost,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_distributed_cbba_policy(
+                (first_task, second_task),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=20,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                bundle_length=2,
+            )
+
+        assigned_by_id = {task.task_id: task.assigned_agent_id for task in updated_tasks}
+        self.assertEqual(assigned_by_id["bundle-atomic-first"], "USV-1")
+        self.assertEqual(assigned_by_id["bundle-atomic-second"], "USV-1")
+        self.assertEqual({decision.agent_id for decision in decisions}, {"USV-1"})
+
+    def test_distributed_cbba_bundle2_uses_inter_task_cost_for_second_task(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-2"] = replace(
+            execution_states["USV-2"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-upper",
+        )
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-lower",
+        )
+        first_task = TaskRecord(
+            task_id="bundle-margin-first",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=2,
+            target_x=150.0,
+            target_y=150.0,
+            target_row=5,
+            target_col=5,
+            created_step=2,
+        )
+        far_second = TaskRecord(
+            task_id="bundle-margin-far",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=2,
+            target_x=850.0,
+            target_y=850.0,
+            target_row=25,
+            target_col=25,
+            created_step=3,
+        )
+        near_second = TaskRecord(
+            task_id="bundle-margin-near",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=2,
+            target_x=180.0,
+            target_y=165.0,
+            target_row=6,
+            target_col=6,
+            created_step=4,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            estimated_cost_map = {
+                ("USV-1", "bundle-margin-first"): 12.0,
+                ("USV-1", "bundle-margin-far"): 10.0,
+                ("USV-1", "bundle-margin-near"): 12.0,
+            }
+            estimated_cost = estimated_cost_map[(agent.agent_id, task_id)]
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=estimated_cost,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_distributed_cbba_policy(
+                (first_task, far_second, near_second),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=20,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                bundle_length=2,
+            )
+
+        assigned_by_id = {task.task_id: task.assigned_agent_id for task in updated_tasks}
+        self.assertEqual(assigned_by_id["bundle-margin-first"], "USV-1")
+        self.assertEqual(assigned_by_id["bundle-margin-near"], "USV-1")
+        self.assertIsNone(assigned_by_id["bundle-margin-far"])
+        decision_by_task = {decision.task_id: decision for decision in decisions}
+        second_details = decision_by_task["bundle-margin-near"].selection_details
+        assert second_details is not None
+        self.assertEqual(
+            second_details["bundle_task_ids"],
+            ("bundle-margin-first", "bundle-margin-near"),
+        )
+
+    def test_distributed_cbba_bundle_length_one_preserves_single_assignment(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-2"] = replace(
+            execution_states["USV-2"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-upper",
+        )
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-lower",
+        )
+        first_task = TaskRecord(
+            task_id="bundle-one-first",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=2,
+            target_x=150.0,
+            target_y=140.0,
+            target_row=5,
+            target_col=5,
+            created_step=4,
+        )
+        second_task = TaskRecord(
+            task_id="bundle-one-second",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=2,
+            target_x=170.0,
+            target_y=155.0,
+            target_row=5,
+            target_col=6,
+            created_step=5,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=20.0 if task_id == "bundle-one-first" else 24.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_distributed_cbba_policy(
+                (first_task, second_task),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=30,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+                bundle_length=1,
+            )
+
+        assigned_task_ids = {
+            task.task_id for task in updated_tasks if task.assigned_agent_id is not None
+        }
+        self.assertEqual(len(assigned_task_ids), 1)
+        self.assertEqual(len(decisions), 1)
+        assert decisions[0].selection_details is not None
+        self.assertEqual(decisions[0].selection_details["bundle_length"], 1)
+
+    def test_distributed_cbba_respects_agent_task_cooldown(self) -> None:
+        task = TaskRecord(
+            task_id="hotspot-confirmation-cbba-cooldown",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+            retry_after_step=40,
+            agent_retry_after_steps=(("USV-2", 40),),
+        )
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-1"] = replace(
+            execution_states["USV-1"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-task-nearshore",
+        )
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-task",
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan"
+        ) as planner:
+            updated_tasks, decisions = allocate_tasks_with_distributed_cbba_policy(
+                (task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=30,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+            )
+
+        self.assertEqual(planner.call_count, 0)
+        self.assertEqual(updated_tasks[0].retry_after_step, 40)
+        self.assertEqual(updated_tasks[0].agent_retry_after_steps, (("USV-2", 40),))
+        self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
+        self.assertEqual(decisions, ())
+
+    def test_distributed_cbba_applies_blocked_retry_to_current_agent_only(self) -> None:
+        agents = tuple(
+            replace(agent, x=620.0, y=320.0)
+            if agent.agent_id == "USV-2"
+            else replace(agent, x=150.0, y=150.0)
+            if agent.agent_id == "USV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-task",
+        )
+        task = TaskRecord(
+            task_id="hotspot-confirmation-cbba-blocked",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            if agent.agent_id == "USV-2":
+                return PathPlan(
+                    plan_id=f"{agent.agent_id}-{task_id}",
+                    planner_name=planner_name,
+                    agent_id=agent.agent_id,
+                    task_id=task_id,
+                    status=PathPlanStatus.BLOCKED,
+                    waypoints=(),
+                    goal_x=goal_x,
+                    goal_y=goal_y,
+                    estimated_cost=0.0,
+                )
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=30.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.distributed_cbba_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_distributed_cbba_policy(
+                (task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=20,
+                zone_partition_policy="weighted_voronoi_partition_policy",
+            )
+
+        self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
+        self.assertEqual(decisions, ())
+        self.assertEqual(
+            updated_tasks[0].agent_retry_after_steps,
+            (("USV-2", 20 + CBBA_AGENT_TASK_BLOCKED_COOLDOWN_STEPS),),
+        )
 
 
 if __name__ == "__main__":

@@ -11,11 +11,13 @@ from usv_uav_marine_coverage.agent_model import (
     AgentState,
     TaskMode,
     advance_agent_towards_task,
+    advance_agent_with_control,
     assign_agent_task,
 )
 from usv_uav_marine_coverage.planning.path_types import Waypoint
 
 from .execution_types import AgentExecutionState, ExecutionOutcome, ExecutionStage
+from .local_mpc import compute_local_mpc_decision
 
 if TYPE_CHECKING:
     from usv_uav_marine_coverage.environment import ObstacleLayout
@@ -26,6 +28,7 @@ USV_LOCAL_AVOIDANCE_ANGLES_DEG = (20.0, 35.0, 55.0, 75.0)
 USV_LOCAL_AVOIDANCE_MAX_DISTANCE_M = 55.0
 USV_LOCAL_AVOIDANCE_SAMPLE_SPACING_M = 4.0
 USV_LOCAL_AVOIDANCE_CLEARANCE_M = USV_COLLISION_CLEARANCE_M
+USV_LOCAL_MPC_NEIGHBOR_TRIGGER_M = USV_COLLISION_CLEARANCE_M * 4.0
 
 
 def follow_path_step(
@@ -88,6 +91,139 @@ def follow_path_step(
     if next_waypoint_index > waypoint_index:
         return (advanced_agent, updated_state, ExecutionOutcome.WAYPOINT_REACHED)
     return (advanced_agent, updated_state, ExecutionOutcome.ADVANCING)
+
+
+def follow_path_step_with_local_mpc(
+    agent: AgentState,
+    execution_state: AgentExecutionState,
+    *,
+    dt_seconds: float,
+    obstacle_layout: ObstacleLayout | None = None,
+    neighboring_agents: tuple[AgentState, ...] = (),
+) -> tuple[AgentState, AgentExecutionState, ExecutionOutcome]:
+    """Advance one agent with local MPC enabled for USVs and default tracking for UAVs."""
+
+    if agent.kind != "USV":
+        return follow_path_step(
+            agent,
+            execution_state,
+            dt_seconds=dt_seconds,
+            obstacle_layout=obstacle_layout,
+        )
+
+    plan = execution_state.active_plan
+    if plan is None or not plan.waypoints:
+        if execution_state.stage in {ExecutionStage.ON_TASK, ExecutionStage.ON_RECHARGE}:
+            return (
+                assign_agent_task(agent, _mode_for_stage(agent.kind, execution_state.stage)),
+                execution_state,
+                ExecutionOutcome.ADVANCING,
+            )
+        return (agent, execution_state, ExecutionOutcome.FAILED)
+
+    waypoint_index = _skip_reached_waypoints(agent, execution_state)
+    if waypoint_index >= len(plan.waypoints):
+        return (
+            assign_agent_task(agent, _mode_for_stage(agent.kind, execution_state.stage)),
+            replace(execution_state, current_waypoint_index=waypoint_index),
+            _final_outcome_for_stage(execution_state.stage),
+        )
+
+    tracking_target = _build_tracking_target(
+        agent,
+        execution_state=execution_state,
+        waypoint_index=waypoint_index,
+    )
+    tracking_target = _apply_local_avoidance(
+        agent,
+        tracking_target=tracking_target,
+        obstacle_layout=obstacle_layout,
+    )
+    if not _should_activate_local_mpc(
+        agent,
+        tracking_target=tracking_target,
+        obstacle_layout=obstacle_layout,
+        neighboring_agents=neighboring_agents,
+    ):
+        return follow_path_step(
+            agent,
+            execution_state,
+            dt_seconds=dt_seconds,
+            obstacle_layout=obstacle_layout,
+        )
+    mode = _mode_for_stage(agent.kind, execution_state.stage)
+    tracked_agent = assign_agent_task(
+        agent,
+        mode,
+        tracking_target.x,
+        tracking_target.y,
+    )
+    mpc_decision = compute_local_mpc_decision(
+        tracked_agent,
+        tracking_target=tracking_target,
+        dt_seconds=dt_seconds,
+        obstacle_layout=obstacle_layout,
+        neighboring_agents=neighboring_agents,
+    )
+    advanced_agent = advance_agent_with_control(tracked_agent, mpc_decision.command, dt_seconds)
+    if (
+        hypot(tracking_target.x - advanced_agent.x, tracking_target.y - advanced_agent.y)
+        <= advanced_agent.arrival_tolerance_m
+    ):
+        advanced_agent = assign_agent_task(advanced_agent, mode)
+
+    progressed_state = replace(execution_state, current_waypoint_index=waypoint_index)
+    next_waypoint_index = _skip_reached_waypoints(advanced_agent, progressed_state)
+    if next_waypoint_index > waypoint_index:
+        advanced_agent = assign_agent_task(advanced_agent, mode)
+
+    updated_state = replace(execution_state, current_waypoint_index=next_waypoint_index)
+    if next_waypoint_index >= len(plan.waypoints):
+        return (
+            advanced_agent,
+            updated_state,
+            _final_outcome_for_stage(execution_state.stage),
+        )
+    if next_waypoint_index > waypoint_index:
+        return (advanced_agent, updated_state, ExecutionOutcome.WAYPOINT_REACHED)
+    return (advanced_agent, updated_state, ExecutionOutcome.ADVANCING)
+
+
+def _should_activate_local_mpc(
+    agent: AgentState,
+    *,
+    tracking_target: Waypoint,
+    obstacle_layout: ObstacleLayout | None,
+    neighboring_agents: tuple[AgentState, ...],
+) -> bool:
+    if obstacle_layout is not None and not _segment_is_clear(
+        agent.x,
+        agent.y,
+        tracking_target.x,
+        tracking_target.y,
+        obstacle_layout=obstacle_layout,
+        clearance_m=USV_LOCAL_AVOIDANCE_CLEARANCE_M,
+    ):
+        return True
+    if obstacle_layout is not None:
+        for feature in obstacle_layout.offshore_features:
+            if feature.feature_type != "risk_area":
+                continue
+            if _distance_to_segment(
+                feature.x,
+                feature.y,
+                (agent.x, agent.y),
+                (tracking_target.x, tracking_target.y),
+            ) <= feature.radius + USV_LOCAL_AVOIDANCE_CLEARANCE_M:
+                return True
+    for neighboring_agent in neighboring_agents:
+        if neighboring_agent.kind != "USV":
+            continue
+        if hypot(agent.x - neighboring_agent.x, agent.y - neighboring_agent.y) <= (
+            USV_LOCAL_MPC_NEIGHBOR_TRIGGER_M
+        ):
+            return True
+    return False
 
 
 def _skip_reached_waypoints(agent: AgentState, execution_state: AgentExecutionState) -> int:

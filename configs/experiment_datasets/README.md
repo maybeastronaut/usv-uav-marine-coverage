@@ -56,6 +56,30 @@
     - 每个 seed 的 `events.jsonl`
     - 每个 seed 的 `summary.json`
   - 适合观察 `cost_aware / AEA / RHO` 在 `weighted_voronoi` 新分区基线上是否真正拉开差异
+- `task_allocator_offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_1200/`
+  - 当前正式“中心化 vs 分布式任务分配”对比数据集目录
+  - 已包含：
+    - `batch.toml`
+    - 聚合对比结果
+    - 每个 seed 的 `events.jsonl`
+    - 每个 seed 的 `summary.json`
+  - 适合观察 `cost_aware / RHO / distributed_CBBA(bundle=2)` 在相同分区与规划条件下的表现差异
+- `distributed_cbba_bundle_compare_distributed_overlap_pressure_3seed_1200/`
+  - 当前正式分布式 `CBBA-lite` 内部结构验证数据集目录
+  - 已包含：
+    - `batch.toml`
+    - 聚合对比结果
+    - 每个 seed 的 `events.jsonl`
+    - 每个 seed 的 `summary.json`
+  - 适合观察 `bundle = 1` 与 `bundle = 2` 是否会改变分布式协商行为
+- `distributed_cbba_bundle2_memory_compare_distributed_overlap_pressure_3seed_1200/`
+  - 当前正式 `distributed_CBBA(bundle=2)` 局部 winner 记忆滞后验证数据集目录
+  - 已包含：
+    - `batch.toml`
+    - 聚合对比结果
+    - 每个 seed 的 `events.jsonl`
+    - 每个 seed 的 `summary.json`
+  - 适合观察 `winner_memory_ttl = 0 / 5 / 10` 是否会改变当前分布式协商结果
 
 ## 使用方式
 

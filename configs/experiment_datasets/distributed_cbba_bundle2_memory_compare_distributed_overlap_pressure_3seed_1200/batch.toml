@@ -1,0 +1,56 @@
+[batch]
+name = "distributed_overlap_pressure_distributed_cbba_bundle2_memory_compare_3seed"
+base_config = "../../distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2.toml"
+output_dir = "../../../outputs/experiments/task_allocator/distributed_overlap_pressure_distributed_cbba_bundle2_memory_compare_3seed"
+generate_html = false
+
+[[runs]]
+label = "cbba_bundle2_memory0_seed_20260324"
+seed = 20260324
+steps = 1200
+
+[[runs]]
+label = "cbba_bundle2_memory0_seed_20260325"
+seed = 20260325
+steps = 1200
+
+[[runs]]
+label = "cbba_bundle2_memory0_seed_20260326"
+seed = 20260326
+steps = 1200
+
+[[runs]]
+label = "cbba_bundle2_memory5_seed_20260324"
+config = "../../distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2_memory5.toml"
+seed = 20260324
+steps = 1200
+
+[[runs]]
+label = "cbba_bundle2_memory5_seed_20260325"
+config = "../../distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2_memory5.toml"
+seed = 20260325
+steps = 1200
+
+[[runs]]
+label = "cbba_bundle2_memory5_seed_20260326"
+config = "../../distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2_memory5.toml"
+seed = 20260326
+steps = 1200
+
+[[runs]]
+label = "cbba_bundle2_memory10_seed_20260324"
+config = "../../distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2_memory10.toml"
+seed = 20260324
+steps = 1200
+
+[[runs]]
+label = "cbba_bundle2_memory10_seed_20260325"
+config = "../../distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2_memory10.toml"
+seed = 20260325
+steps = 1200
+
+[[runs]]
+label = "cbba_bundle2_memory10_seed_20260326"
+config = "../../distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2_memory10.toml"
+seed = 20260326
+steps = 1200
