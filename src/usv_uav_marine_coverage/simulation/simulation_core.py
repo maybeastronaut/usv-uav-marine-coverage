@@ -43,6 +43,9 @@ from usv_uav_marine_coverage.planning.astar_path_planner import (
     reset_planner_metrics,
     snapshot_planner_metrics,
 )
+from usv_uav_marine_coverage.tasking.aoi_energy_auction_allocator import (
+    allocate_tasks_with_aoi_energy_auction_policy,
+)
 from usv_uav_marine_coverage.tasking.baseline_task_generator import build_baseline_tasks
 from usv_uav_marine_coverage.tasking.basic_task_allocator import (
     allocate_tasks_with_basic_policy,
@@ -51,6 +54,9 @@ from usv_uav_marine_coverage.tasking.cost_aware_task_allocator import (
     allocate_tasks_with_cost_aware_policy,
 )
 from usv_uav_marine_coverage.tasking.hotspot_task_generator import sync_hotspot_confirmation_tasks
+from usv_uav_marine_coverage.tasking.rho_task_allocator import (
+    allocate_tasks_with_rho_policy,
+)
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
 from usv_uav_marine_coverage.tasking.uav_resupply_task_generator import (
     build_uav_resupply_tasks,
@@ -80,9 +86,8 @@ class SimulationFrame:
     valid_cells: tuple[tuple[int, int], ...]
     stale_cells: tuple[tuple[int, int], ...]
     baseline_cells: tuple[tuple[int, int], ...]
+    pending_hotspot_cells: tuple[tuple[int, int], ...]
     uav_checked_cells: tuple[tuple[int, int], ...]
-    confirmed_cells: tuple[tuple[int, int], ...]
-    false_alarm_cells: tuple[tuple[int, int], ...]
     covered_cells: tuple[tuple[int, int], ...]
     coverage_ratio: float
     events: tuple[str, ...]
@@ -193,7 +198,6 @@ def build_simulation_replay(
             newly_stale_cells=tuple(_collect_stale_cells(info_map)),
             detected_by_agent={},
             confirmations_by_agent={},
-            false_alarms_by_agent={},
             task_decisions=(),
             prior_agents=agents,
             planned_agents=agents,
@@ -238,10 +242,12 @@ def build_simulation_replay(
             task_records,
             step=step,
             task_allocator=effective_config.algorithms.task_allocator,
+            zone_partition_policy=effective_config.algorithms.zone_partition_policy,
             usv_path_planner=effective_config.algorithms.usv_path_planner,
             agents=agents,
             execution_states=execution_states,
             grid_map=grid_map,
+            info_map=info_map,
         )
         if any(task.task_type == TaskType.UAV_RESUPPLY for task in task_records):
             events.append("Low-energy UAV rendezvous task active")
@@ -270,7 +276,6 @@ def build_simulation_replay(
         observed_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
         uav_checked_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
         confirmations_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
-        false_alarms_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
         for agent in agents:
             trajectories[agent.agent_id].append((agent.x, agent.y))
 
@@ -302,23 +307,15 @@ def build_simulation_replay(
                     rng=rng,
                 )
                 confirmed_count = 0
-                false_alarm_count = 0
                 confirmed_indices: list[tuple[int, int]] = []
-                false_alarm_indices: list[tuple[int, int]] = []
                 for row, col in resolved:
                     state = info_map.state_at(row, col)
                     if state.known_hotspot_state == HotspotKnowledgeState.CONFIRMED:
                         confirmed_count += 1
                         confirmed_indices.append((row, col))
-                    elif state.known_hotspot_state == HotspotKnowledgeState.FALSE_ALARM:
-                        false_alarm_count += 1
-                        false_alarm_indices.append((row, col))
                 confirmations_by_agent[agent.agent_id] = tuple(confirmed_indices)
-                false_alarms_by_agent[agent.agent_id] = tuple(false_alarm_indices)
                 if confirmed_count:
                     events.append(f"{agent.agent_id} confirmed {confirmed_count} hotspot(s)")
-                if false_alarm_count:
-                    events.append(f"{agent.agent_id} cleared {false_alarm_count} false alarm(s)")
 
         task_records, execution_states, progress_states = finalize_task_resolutions(
             agents=agents,
@@ -354,7 +351,6 @@ def build_simulation_replay(
                 newly_stale_cells=newly_stale_cells,
                 detected_by_agent=uav_checked_by_agent,
                 confirmations_by_agent=confirmations_by_agent,
-                false_alarms_by_agent=false_alarms_by_agent,
                 task_decisions=task_decisions,
                 prior_agents=previous_agents,
                 planned_agents=agents,
@@ -418,10 +414,12 @@ def _allocate_task_records(
     *,
     step: int,
     task_allocator: str,
+    zone_partition_policy: str,
     usv_path_planner: str,
     agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
     grid_map: GridMap,
+    info_map: InformationMap,
 ) -> tuple[tuple[TaskRecord, ...], tuple]:
     if task_allocator == "basic_task_allocator":
         return allocate_tasks_with_basic_policy(
@@ -439,6 +437,29 @@ def _allocate_task_records(
             grid_map=grid_map,
             step=step,
             usv_path_planner=usv_path_planner,
+            zone_partition_policy=zone_partition_policy,
+        )
+    if task_allocator == "aoi_energy_auction_allocator":
+        return allocate_tasks_with_aoi_energy_auction_policy(
+            task_records,
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=grid_map,
+            info_map=info_map,
+            step=step,
+            usv_path_planner=usv_path_planner,
+            zone_partition_policy=zone_partition_policy,
+        )
+    if task_allocator == "rho_task_allocator":
+        return allocate_tasks_with_rho_policy(
+            task_records,
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=grid_map,
+            info_map=info_map,
+            step=step,
+            usv_path_planner=usv_path_planner,
+            zone_partition_policy=zone_partition_policy,
         )
     raise ValueError(f"Unsupported task allocator {task_allocator!r}")
 
@@ -456,9 +477,8 @@ def _capture_frame(
     valid_cells: list[tuple[int, int]] = []
     stale_cells: list[tuple[int, int]] = []
     baseline_cells: list[tuple[int, int]] = []
+    pending_hotspot_cells: list[tuple[int, int]] = []
     uav_checked_cells: list[tuple[int, int]] = []
-    confirmed_cells: list[tuple[int, int]] = []
-    false_alarm_cells: list[tuple[int, int]] = []
     covered_cells: list[tuple[int, int]] = []
 
     for cell in info_map.grid_map.flat_cells:
@@ -471,12 +491,13 @@ def _capture_frame(
                 stale_cells.append((cell.row, cell.col))
         if info_state.has_baseline_task:
             baseline_cells.append((cell.row, cell.col))
-        if info_state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED:
+        if (
+            info_state.ground_truth_hotspot
+            and info_state.known_hotspot_state == HotspotKnowledgeState.NONE
+        ):
+            pending_hotspot_cells.append((cell.row, cell.col))
+        elif info_state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED:
             uav_checked_cells.append((cell.row, cell.col))
-        elif info_state.known_hotspot_state == HotspotKnowledgeState.CONFIRMED:
-            confirmed_cells.append((cell.row, cell.col))
-        elif info_state.known_hotspot_state == HotspotKnowledgeState.FALSE_ALARM:
-            false_alarm_cells.append((cell.row, cell.col))
         if coverage_state.coverage_state == CoverageState.COVERED:
             covered_cells.append((cell.row, cell.col))
 
@@ -495,9 +516,8 @@ def _capture_frame(
         valid_cells=tuple(valid_cells),
         stale_cells=tuple(stale_cells),
         baseline_cells=tuple(baseline_cells),
+        pending_hotspot_cells=tuple(pending_hotspot_cells),
         uav_checked_cells=tuple(uav_checked_cells),
-        confirmed_cells=tuple(confirmed_cells),
-        false_alarm_cells=tuple(false_alarm_cells),
         covered_cells=tuple(covered_cells),
         coverage_ratio=coverage_map.covered_ratio(),
         events=events,

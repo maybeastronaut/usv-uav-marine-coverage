@@ -14,10 +14,10 @@ from .allocator_common import (
     allocate_uav_resupply_task,
     can_keep_existing_assignment,
     is_available_for_new_assignment,
-    preferred_usv_ids_for_task,
     selection_score_for_task,
     task_sort_key,
 )
+from .partitioning import build_task_partition
 from .task_types import TaskAssignment, TaskRecord, TaskStatus, TaskType
 
 HOTSPOT_COST_BIAS = 20.0
@@ -35,6 +35,7 @@ def allocate_tasks_with_cost_aware_policy(
     grid_map: GridMap | None = None,
     step: int | None = None,
     usv_path_planner: str = "astar_path_planner",
+    zone_partition_policy: str = "baseline_fixed_partition",
 ) -> tuple[tuple[TaskRecord, ...], tuple[TaskAssignment, ...]]:
     """Apply the first cost-aware centralized task-allocation policy."""
 
@@ -111,6 +112,7 @@ def allocate_tasks_with_cost_aware_policy(
             reachability_cache=reachability_cache,
             step=step,
             usv_path_planner=usv_path_planner,
+            zone_partition_policy=zone_partition_policy,
         )
         updated_tasks.extend(assigned_tasks)
         decisions.extend(group_decisions)
@@ -129,6 +131,7 @@ def _allocate_one_priority_layer(
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
     step: int | None,
     usv_path_planner: str,
+    zone_partition_policy: str,
 ) -> tuple[list[TaskRecord], list[TaskAssignment], set[str]]:
     if not tasks:
         return ([], [], set())
@@ -157,6 +160,9 @@ def _allocate_one_priority_layer(
             age_bonuses=age_bonuses,
             step=current_step,
             usv_path_planner=usv_path_planner,
+            all_agents=agents,
+            execution_states=execution_states,
+            zone_partition_policy=zone_partition_policy,
         )
         for task_id, agent_ids in newly_blocked_agent_ids_by_task.items():
             blocked_agent_ids_by_task.setdefault(task_id, set()).update(agent_ids)
@@ -205,12 +211,23 @@ def _build_candidate_pairs(
     age_bonuses: dict[str, float],
     step: int,
     usv_path_planner: str,
+    all_agents: tuple[AgentState, ...],
+    execution_states: dict[str, AgentExecutionState],
+    zone_partition_policy: str,
 ) -> tuple[list[tuple[TaskRecord, AgentState, float]], dict[str, set[str]]]:
     pairs: list[tuple[TaskRecord, AgentState, float]] = []
     blocked_agent_ids_by_task: dict[str, set[str]] = {}
 
     for task in tasks:
-        preferred_ids = preferred_usv_ids_for_task(task)
+        partition = build_task_partition(
+            task,
+            policy_name=zone_partition_policy,
+            tasks=tasks,
+            agents=all_agents,
+            execution_states=execution_states,
+            step=step,
+        )
+        preferred_ids = set(partition.primary_usv_ids) | set(partition.secondary_usv_ids)
         for agent in candidate_agents:
             if agent.agent_id not in preferred_ids:
                 continue

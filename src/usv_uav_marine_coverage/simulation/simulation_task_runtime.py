@@ -159,19 +159,24 @@ def finalize_task_resolutions(
 def serialize_task_assignment(assignment: TaskAssignment) -> dict[str, object]:
     """Serialize one assignment decision for the step log layer."""
 
+    candidate_agents = list(assignment.candidate_agents)
+    if not candidate_agents:
+        candidate_agents = [
+            {
+                "agent_id": assignment.agent_id,
+                "support_agent_id": assignment.support_agent_id,
+            }
+        ]
+
     return {
         "task_id": assignment.task_id,
         "task_type": assignment.task_type.value,
         "selected_agent": assignment.agent_id,
         "support_agent": assignment.support_agent_id,
-        "candidate_agents": [
-            {
-                "agent_id": assignment.agent_id,
-                "support_agent_id": assignment.support_agent_id,
-            }
-        ],
+        "candidate_agents": candidate_agents,
         "selection_reason": assignment.selection_reason,
         "selection_score": round(assignment.selection_score, 3),
+        "selection_details": assignment.selection_details,
     }
 
 

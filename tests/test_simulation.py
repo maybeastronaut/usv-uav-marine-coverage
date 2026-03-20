@@ -100,14 +100,13 @@ class SimulationTestCase(unittest.TestCase):
         summaries = json.loads(_build_frame_summaries(replay))
 
         self.assertEqual(len(summaries), len(replay.frames))
-        self.assertEqual(summaries[0]["uav_checked_cells"], 0)
-        self.assertEqual(summaries[0]["confirmed_cells"], 0)
-        self.assertEqual(summaries[0]["false_alarm_cells"], 0)
+        self.assertEqual(summaries[0]["uav_checked_marks"], 0)
+        self.assertEqual(summaries[0]["confirmed_hotspots"], 0)
+        self.assertGreaterEqual(summaries[0]["active_hotspots"], 0)
 
         final_totals = build_event_totals(replay.step_logs)
-        self.assertEqual(summaries[-1]["uav_checked_cells"], final_totals["uav_checked_marks"])
-        self.assertEqual(summaries[-1]["confirmed_cells"], final_totals["confirmed_hotspots"])
-        self.assertEqual(summaries[-1]["false_alarm_cells"], final_totals["false_alarms"])
+        self.assertEqual(summaries[-1]["uav_checked_marks"], final_totals["uav_checked_marks"])
+        self.assertEqual(summaries[-1]["confirmed_hotspots"], final_totals["confirmed_hotspots"])
 
     def test_simulation_artifacts_include_machine_readable_logs(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -148,6 +147,11 @@ class SimulationTestCase(unittest.TestCase):
             self.assertIn("tasks", step_records[-1]["task_layer"])
             self.assertIn("retry_after_step", step_records[-1]["task_layer"]["tasks"][0])
             self.assertIn("agent_retry_after_steps", step_records[-1]["task_layer"]["tasks"][0])
+            if step_records[-1]["task_layer"]["task_decisions"]:
+                self.assertIn(
+                    "selection_details",
+                    step_records[-1]["task_layer"]["task_decisions"][0],
+                )
             self.assertIn("path_plans", step_records[-1]["path_layer"])
             self.assertIn("planner_metrics", step_records[-1]["path_layer"])
             self.assertIn("planner_name", step_records[-1]["path_layer"]["path_plans"][0])
@@ -254,6 +258,38 @@ nearshore_information_timeout_steps = 800
             self.assertEqual(
                 summary["simulation"]["experiment_config"]["algorithms"]["task_allocator"],
                 "cost_aware_centralized_allocator",
+            )
+
+    def test_simulation_artifacts_can_run_with_aoi_energy_auction_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "simulation_replay.html"
+            artifacts = write_simulation_artifacts(
+                output_path=output_path,
+                generate_html=False,
+                config_path=Path("configs/aoi_energy_auction_allocator.toml"),
+                steps=5,
+            )
+
+            summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                summary["simulation"]["experiment_config"]["algorithms"]["task_allocator"],
+                "aoi_energy_auction_allocator",
+            )
+
+    def test_simulation_artifacts_can_run_with_rho_allocator_config(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "simulation_replay.html"
+            artifacts = write_simulation_artifacts(
+                output_path=output_path,
+                generate_html=False,
+                config_path=Path("configs/rho_task_allocator.toml"),
+                steps=5,
+            )
+
+            summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                summary["simulation"]["experiment_config"]["algorithms"]["task_allocator"],
+                "rho_task_allocator",
             )
 
     def test_simulation_artifacts_can_run_with_hybrid_astar_config(self) -> None:

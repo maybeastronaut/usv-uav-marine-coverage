@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tomllib
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from statistics import mean
 
@@ -114,10 +115,11 @@ def run_batch_experiment(
 
     from . import write_simulation_artifacts
 
-    spec.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = _build_timestamped_output_dir(spec.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=False)
     run_records: list[dict[str, object]] = []
     for run in spec.runs:
-        html_path = spec.output_dir / f"{run.label}.html"
+        html_path = output_dir / f"{run.label}.html"
         resolved_config = load_experiment_config(
             run.config_path,
             scenario_override=run.scenario_override,
@@ -170,19 +172,19 @@ def run_batch_experiment(
             }
         )
 
-    runs_path = spec.output_dir / "batch_results.jsonl"
+    runs_path = output_dir / "batch_results.jsonl"
     with runs_path.open("w", encoding="utf-8") as handle:
         for record in run_records:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    summary_path = spec.output_dir / "batch_summary.json"
-    summary_payload = build_batch_summary(spec, run_records)
+    summary_path = output_dir / "batch_summary.json"
+    summary_payload = build_batch_summary(spec, output_dir, run_records)
     summary_path.write_text(
         json.dumps(summary_payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     return BatchExperimentArtifacts(
-        output_dir=spec.output_dir,
+        output_dir=output_dir,
         runs_path=runs_path,
         summary_path=summary_path,
     )
@@ -190,6 +192,7 @@ def run_batch_experiment(
 
 def build_batch_summary(
     spec: BatchExperimentSpec,
+    output_dir: Path,
     run_records: list[dict[str, object]],
 ) -> dict[str, object]:
     """Build aggregate summary payload for one batch experiment."""
@@ -204,18 +207,23 @@ def build_batch_summary(
     ]
     valid_cells = [int(record["final_metrics"]["valid_cells"]) for record in successful_runs]
     stale_cells = [int(record["final_metrics"]["stale_cells"]) for record in successful_runs]
-    confirmed_cells = [
-        int(record["final_metrics"]["confirmed_cells"]) for record in successful_runs
+    active_hotspot_cells = [
+        int(record["final_metrics"]["active_hotspot_cells"]) for record in successful_runs
     ]
-    false_alarm_cells = [
-        int(record["final_metrics"]["false_alarm_cells"]) for record in successful_runs
+    uav_checked_cells = [
+        int(record["final_metrics"]["uav_checked_cells"]) for record in successful_runs
+    ]
+    confirmed_hotspots = [
+        int(record["final_metrics"]["event_totals"]["confirmed_hotspots"])
+        for record in successful_runs
     ]
     event_totals = [record["final_metrics"]["event_totals"] for record in successful_runs]
 
     return {
         "batch": {
             "name": spec.name,
-            "output_dir": str(spec.output_dir),
+            "requested_output_dir": str(spec.output_dir),
+            "output_dir": str(output_dir),
             "run_count": len(run_records),
             "successful_runs": len(successful_runs),
             "failed_runs": len(run_records) - len(successful_runs),
@@ -226,11 +234,24 @@ def build_batch_summary(
             "coverage_ratio": _aggregate_numeric_series(coverage_ratios),
             "valid_cells": _aggregate_numeric_series(valid_cells),
             "stale_cells": _aggregate_numeric_series(stale_cells),
-            "confirmed_cells": _aggregate_numeric_series(confirmed_cells),
-            "false_alarm_cells": _aggregate_numeric_series(false_alarm_cells),
+            "active_hotspot_cells": _aggregate_numeric_series(active_hotspot_cells),
+            "uav_checked_cells": _aggregate_numeric_series(uav_checked_cells),
+            "confirmed_hotspots": _aggregate_numeric_series(confirmed_hotspots),
             "event_totals": _aggregate_event_totals(event_totals),
         },
     }
+
+
+def _build_timestamped_output_dir(base_output_dir: Path) -> Path:
+    """Return a fresh timestamped output directory for one batch run."""
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = base_output_dir.with_name(f"{base_output_dir.name}_{timestamp}")
+    counter = 2
+    while candidate.exists():
+        candidate = base_output_dir.with_name(f"{base_output_dir.name}_{timestamp}_{counter}")
+        counter += 1
+    return candidate
 
 
 def _aggregate_numeric_series(values: list[int | float]) -> dict[str, float]:
@@ -248,7 +269,6 @@ def _aggregate_event_totals(event_totals: list[dict[str, object]]) -> dict[str, 
         return {
             "spawned_hotspots_mean": 0.0,
             "confirmed_hotspots_mean": 0.0,
-            "false_alarms_mean": 0.0,
             "astar_expanded_nodes_mean": 0.0,
         }
     return {
@@ -258,7 +278,6 @@ def _aggregate_event_totals(event_totals: list[dict[str, object]]) -> dict[str, 
         "confirmed_hotspots_mean": round(
             mean(float(item["confirmed_hotspots"]) for item in event_totals), 6
         ),
-        "false_alarms_mean": round(mean(float(item["false_alarms"]) for item in event_totals), 6),
         "astar_expanded_nodes_mean": round(
             mean(float(item["astar_expanded_nodes"]) for item in event_totals), 6
         ),

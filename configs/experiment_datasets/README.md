@@ -24,22 +24,6 @@
 
 ## 当前已落地的数据集
 
-- `task_allocator_offshore_hotspot_pressure_5seed/`
-  - 当前正式任务层对比数据集目录
-  - 已包含：
-    - `batch.toml`
-    - 聚合对比结果
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
-  - 适合突出热点压力下的任务分配差异
-- `task_allocator_offshore_hotspot_pressure_3seed_cooldown/`
-  - 当前“修正 `cost_aware` 不可达任务冷却后”的正式任务层对比数据集目录
-  - 已包含：
-    - `batch.toml`
-    - 聚合对比结果
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
-  - 适合观察第一轮任务层对比在修正重复 blocked 噪声后的真实取舍
 - `usv_planner_offshore_hotspot_pressure_3seed_800/`
   - 当前正式 `USV` 规划层对比数据集目录
   - 已包含：
@@ -56,12 +40,22 @@
     - 每个 seed 的 `events.jsonl`
     - 每个 seed 的 `summary.json`
   - 适合观察 `astar` 与 `astar + smoother` 在任务后长距离回巡航场景下的热点完成数、blocked 行为与规划成本差异
-
-## 后续建议的数据集方向
-
-- `task_allocator_mixed_task_pressure_5seed/`
-- `uav_planner_multi_region_coverage_5seed/`
-- `usv_planner_hybrid_astar_smoothing_5seed/`
+- `partition_policy_offshore_hotspot_pressure_3seed_1200/`
+  - 当前正式分区层对比数据集目录
+  - 已包含：
+    - `batch.toml`
+    - 聚合对比结果
+    - 每个 seed 的 `events.jsonl`
+    - 每个 seed 的 `summary.json`
+  - 适合观察 `baseline_fixed / soft / weighted_voronoi` 在高远海热点压力下的 freshness、热点确认与 blocked 取舍
+- `task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/`
+  - 当前正式任务层对比数据集目录
+  - 已包含：
+    - `batch.toml`
+    - 聚合对比结果
+    - 每个 seed 的 `events.jsonl`
+    - 每个 seed 的 `summary.json`
+  - 适合观察 `cost_aware / AEA / RHO` 在 `weighted_voronoi` 新分区基线上是否真正拉开差异
 
 ## 使用方式
 

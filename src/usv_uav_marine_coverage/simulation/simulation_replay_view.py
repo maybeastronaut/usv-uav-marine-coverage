@@ -314,9 +314,9 @@ def build_simulation_html(replay: SimulationReplay) -> str:
           <div class="stat"><span>Coverage</span><strong id="coverageRatio">0.0%</strong></div>
           <div class="stat"><span>Valid Cells</span><strong id="validCells">0</strong></div>
           <div class="stat"><span>Stale Cells</span><strong id="staleCells">0</strong></div>
-          <div class="stat"><span>UAV Checked Marks</span><strong id="uavCheckedCells">0</strong></div>
-          <div class="stat"><span>Confirmed Hotspots</span><strong id="confirmedCells">0</strong></div>
-          <div class="stat"><span>False Alarms</span><strong id="falseAlarmCells">0</strong></div>
+          <div class="stat"><span>Active Hotspots</span><strong id="activeHotspots">0</strong></div>
+          <div class="stat"><span>UAV Checked Marks</span><strong id="uavCheckedMarks">0</strong></div>
+          <div class="stat"><span>Confirmed Hotspots</span><strong id="confirmedHotspots">0</strong></div>
           <h2 class="side-title" style="margin-top:14px;">Events</h2>
           <ul class="events" id="eventList"></ul>
           <div class="empty-events" id="emptyEvents">No notable event in this step.</div>
@@ -666,27 +666,14 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         `;
       }}
 
-      function renderFalseAlarm(cellId) {{
-        const cell = cellCenter(cellId);
-        const [svgX, svgY] = mapPointToSvg(cell.x, cell.y);
-        return `
-          <g aria-label="False Alarm ${{cell.row}}-${{cell.col}}">
-            <circle cx="${{svgX.toFixed(2)}}" cy="${{svgY.toFixed(2)}}" r="10.0" fill="rgba(148, 163, 184, 0.10)" stroke="#64748B" stroke-width="1.3" />
-            <path d="M ${{(svgX - 6).toFixed(2)}} ${{(svgY - 6).toFixed(2)}} L ${{(svgX + 6).toFixed(2)}} ${{(svgY + 6).toFixed(2)}} M ${{(svgX + 6).toFixed(2)}} ${{(svgY - 6).toFixed(2)}} L ${{(svgX - 6).toFixed(2)}} ${{(svgY + 6).toFixed(2)}}"
-                  stroke="#64748B" stroke-width="1.6" stroke-linecap="round" />
-          </g>
-        `;
-      }}
-
       function renderHotspotLayer(frame) {{
+        const pendingMarkup = frame.pending_hotspot_cells
+          .map((cellId) => renderHotspotMarker(cellId, "#F59E0B", "rgba(245, 158, 11, 0.18)", "Pending"))
+          .join("");
         const uavCheckedMarkup = frame.uav_checked_cells
-          .map((cellId) => renderHotspotMarker(cellId, "#F59E0B", "rgba(245, 158, 11, 0.18)", "UAV Checked"))
+          .map((cellId) => renderHotspotMarker(cellId, "#DC2626", "rgba(248, 113, 113, 0.18)", "UAV Checked"))
           .join("");
-        const confirmedMarkup = frame.confirmed_cells
-          .map((cellId) => renderHotspotMarker(cellId, "#DC2626", "rgba(248, 113, 113, 0.18)", "Confirmed"))
-          .join("");
-        const falseAlarmMarkup = frame.false_alarm_cells.map((cellId) => renderFalseAlarm(cellId)).join("");
-        return `<g aria-label="Hotspot Knowledge Layer">${{uavCheckedMarkup}}${{confirmedMarkup}}${{falseAlarmMarkup}}</g>`;
+        return `<g aria-label="Hotspot Knowledge Layer">${{pendingMarkup}}${{uavCheckedMarkup}}</g>`;
       }}
 
       function renderPlannedPaths(step) {{
@@ -734,9 +721,9 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         document.getElementById("coverageRatio").textContent = summary.coverage_ratio;
         document.getElementById("validCells").textContent = String(summary.valid_cells);
         document.getElementById("staleCells").textContent = String(summary.stale_cells);
-        document.getElementById("uavCheckedCells").textContent = String(summary.uav_checked_cells);
-        document.getElementById("confirmedCells").textContent = String(summary.confirmed_cells);
-        document.getElementById("falseAlarmCells").textContent = String(summary.false_alarm_cells);
+        document.getElementById("activeHotspots").textContent = String(summary.active_hotspots);
+        document.getElementById("uavCheckedMarks").textContent = String(summary.uav_checked_marks);
+        document.getElementById("confirmedHotspots").textContent = String(summary.confirmed_hotspots);
 
         const eventList = document.getElementById("eventList");
         eventList.innerHTML = "";
@@ -801,9 +788,9 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         document.getElementById("coverageRatio").textContent = summary.coverage_ratio;
         document.getElementById("validCells").textContent = String(summary.valid_cells);
         document.getElementById("staleCells").textContent = String(summary.stale_cells);
-        document.getElementById("uavCheckedCells").textContent = String(summary.uav_checked_cells);
-        document.getElementById("confirmedCells").textContent = String(summary.confirmed_cells);
-        document.getElementById("falseAlarmCells").textContent = String(summary.false_alarm_cells);
+        document.getElementById("activeHotspots").textContent = String(summary.active_hotspots);
+        document.getElementById("uavCheckedMarks").textContent = String(summary.uav_checked_marks);
+        document.getElementById("confirmedHotspots").textContent = String(summary.confirmed_hotspots);
 
         const eventList = document.getElementById("eventList");
         eventList.innerHTML = "";
@@ -853,12 +840,11 @@ def _build_frame_payloads(replay: SimulationReplay, grid_map) -> str:
                 "stale_cells": _encode_cell_indices(frame.stale_cells, cols=grid_map.cols),
                 "covered_cells": _encode_cell_indices(frame.covered_cells, cols=grid_map.cols),
                 "baseline_cells": _encode_cell_indices(frame.baseline_cells, cols=grid_map.cols),
+                "pending_hotspot_cells": _encode_cell_indices(
+                    frame.pending_hotspot_cells, cols=grid_map.cols
+                ),
                 "uav_checked_cells": _encode_cell_indices(
                     frame.uav_checked_cells, cols=grid_map.cols
-                ),
-                "confirmed_cells": _encode_cell_indices(frame.confirmed_cells, cols=grid_map.cols),
-                "false_alarm_cells": _encode_cell_indices(
-                    frame.false_alarm_cells, cols=grid_map.cols
                 ),
                 "agents": [
                     {
@@ -897,7 +883,6 @@ def _build_frame_summaries(replay: SimulationReplay) -> str:
     running_totals = {
         "uav_checked_marks": 0,
         "confirmed_hotspots": 0,
-        "false_alarms": 0,
     }
     for frame, step_log in zip(replay.frames, replay.step_logs, strict=True):
         task_layer = step_log["task_layer"]
@@ -907,18 +892,15 @@ def _build_frame_summaries(replay: SimulationReplay) -> str:
         running_totals["confirmed_hotspots"] += sum(
             len(indices) for indices in task_layer["confirmed_by_agent"].values()
         )
-        running_totals["false_alarms"] += sum(
-            len(indices) for indices in task_layer["false_alarms_by_agent"].values()
-        )
         summary_items.append(
             {
                 "step": frame.step,
                 "coverage_ratio": f"{frame.coverage_ratio * 100:.1f}%",
                 "valid_cells": len(frame.valid_cells),
                 "stale_cells": len(frame.stale_cells),
-                "uav_checked_cells": running_totals["uav_checked_marks"],
-                "confirmed_cells": running_totals["confirmed_hotspots"],
-                "false_alarm_cells": running_totals["false_alarms"],
+                "active_hotspots": len(frame.pending_hotspot_cells) + len(frame.uav_checked_cells),
+                "uav_checked_marks": running_totals["uav_checked_marks"],
+                "confirmed_hotspots": running_totals["confirmed_hotspots"],
                 "events": list(frame.events),
             }
         )

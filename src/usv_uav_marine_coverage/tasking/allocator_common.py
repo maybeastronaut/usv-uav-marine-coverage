@@ -8,10 +8,11 @@ from math import hypot
 from usv_uav_marine_coverage.agent_model import AgentState
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState, ExecutionStage
 
+from . import partitioning as zone_partition_layer
 from .task_types import TaskAssignment, TaskRecord, TaskStatus, TaskType
 
-NEARSHORE_X_END_M = 250.0
-OFFSHORE_Y_SPLIT_M = 500.0
+NEARSHORE_X_END_M = zone_partition_layer.NEARSHORE_X_END_M
+OFFSHORE_Y_SPLIT_M = zone_partition_layer.OFFSHORE_Y_SPLIT_M
 
 
 def task_sort_key(task: TaskRecord) -> tuple[int, int, int, str]:
@@ -67,15 +68,9 @@ def distance_to_task(agent: AgentState, task: TaskRecord) -> float:
 
 
 def preferred_usv_ids_for_task(task: TaskRecord) -> set[str]:
-    """Return the hard responsibility-zone filter for one task."""
+    """Return the baseline fixed-partition primary USV set for one task."""
 
-    if task.task_type == TaskType.UAV_RESUPPLY:
-        return {"USV-1", "USV-2", "USV-3"}
-    if task.target_x < NEARSHORE_X_END_M:
-        return {"USV-1"}
-    if task.target_y < OFFSHORE_Y_SPLIT_M:
-        return {"USV-2"}
-    return {"USV-3"}
+    return zone_partition_layer.baseline_primary_usv_ids_for_task(task)
 
 
 def allocate_uav_resupply_task(

@@ -1,0 +1,56 @@
+[batch]
+name = "partition_policy_offshore_hotspot_pressure_3seed_1200"
+base_config = "../../offshore_hotspot_pressure_cost_aware.toml"
+output_dir = "../../../outputs/experiments/partition_policy/offshore_hotspot_pressure_3seed_1200"
+generate_html = false
+
+[[runs]]
+label = "baseline_partition_seed_20260324"
+seed = 20260324
+steps = 1200
+
+[[runs]]
+label = "baseline_partition_seed_20260325"
+seed = 20260325
+steps = 1200
+
+[[runs]]
+label = "baseline_partition_seed_20260326"
+seed = 20260326
+steps = 1200
+
+[[runs]]
+label = "soft_partition_seed_20260324"
+config = "../../offshore_hotspot_pressure_cost_aware_soft_partition.toml"
+seed = 20260324
+steps = 1200
+
+[[runs]]
+label = "soft_partition_seed_20260325"
+config = "../../offshore_hotspot_pressure_cost_aware_soft_partition.toml"
+seed = 20260325
+steps = 1200
+
+[[runs]]
+label = "soft_partition_seed_20260326"
+config = "../../offshore_hotspot_pressure_cost_aware_soft_partition.toml"
+seed = 20260326
+steps = 1200
+
+[[runs]]
+label = "weighted_voronoi_seed_20260324"
+config = "../../offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml"
+seed = 20260324
+steps = 1200
+
+[[runs]]
+label = "weighted_voronoi_seed_20260325"
+config = "../../offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml"
+seed = 20260325
+steps = 1200
+
+[[runs]]
+label = "weighted_voronoi_seed_20260326"
+config = "../../offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml"
+seed = 20260326
+steps = 1200

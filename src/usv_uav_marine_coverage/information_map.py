@@ -49,7 +49,9 @@ class InformationMapConfig:
     baseline_respawn_cooldown_steps: int = 240
     uav_false_alarm_probability: float = 0.08
     uav_hotspot_inspection_steps: int = 1
-    usv_true_hotspot_probability: float = 0.9
+    # Kept for backward-compatible config loading; USV fine inspection now
+    # deterministically confirms every UAV-checked ground-truth hotspot.
+    usv_true_hotspot_probability: float = 1.0
     usv_confirmation_steps: int = 5
     baseline_service_steps: int = 5
     nearshore_hotspot_spawn_probability: float = 0.0
@@ -392,9 +394,9 @@ def apply_usv_confirmation(
     step: int,
     rng: Random | None = None,
 ) -> tuple[tuple[int, int], ...]:
-    """Advance USV fine-inspection progress for UAV-checked hotspots."""
+    """Advance USV fine inspection and confirm UAV-checked hotspots."""
 
-    confirmation_rng = rng or Random(0)
+    _ = rng or Random(0)
     resolved_indices: list[tuple[int, int]] = []
     for row, col in observed_indices:
         state = info_map.state_at(row, col)
@@ -406,18 +408,10 @@ def apply_usv_confirmation(
             continue
 
         state.confirmed_by = agent.agent_id
-        is_true_hotspot = state.ground_truth_hotspot and (
-            confirmation_rng.random() < info_map.config.usv_true_hotspot_probability
-        )
-        if is_true_hotspot:
-            state.known_hotspot_state = HotspotKnowledgeState.CONFIRMED
-            state.known_hotspot_id = state.ground_truth_hotspot_id
-            state.task_status = TaskStatus.ASSIGNED
-            state.assigned_agent_id = agent.agent_id
-        else:
-            state.known_hotspot_state = HotspotKnowledgeState.FALSE_ALARM
-            state.task_status = TaskStatus.IDLE
-            state.assigned_agent_id = None
+        state.known_hotspot_state = HotspotKnowledgeState.CONFIRMED
+        state.known_hotspot_id = state.ground_truth_hotspot_id
+        state.task_status = TaskStatus.ASSIGNED
+        state.assigned_agent_id = agent.agent_id
         resolved_indices.append((row, col))
 
     return tuple(resolved_indices)

@@ -1,0 +1,400 @@
+{
+  "simulation": {
+    "seed": 20260324,
+    "steps": 1200,
+    "dt_seconds": 1.0,
+    "algorithm_stage": "replay_preview",
+    "experiment_config": {
+      "simulation": {
+        "seed": 20260324,
+        "steps": 1200,
+        "dt_seconds": 1.0
+      },
+      "scenario": {
+        "name": "offshore_hotspot_pressure"
+      },
+      "algorithms": {
+        "task_allocator": "cost_aware_centralized_allocator",
+        "zone_partition_policy": "soft_partition_policy",
+        "usv_path_planner": "astar_path_planner",
+        "uav_search_planner": "uav_lawnmower_planner",
+        "execution_policy": "phase_one_execution"
+      },
+      "information_map": {
+        "information_timeout_steps": 400,
+        "nearshore_information_timeout_steps": 800,
+        "max_active_baseline_tasks": 1,
+        "max_active_hotspots": 12,
+        "max_suspected_hotspots": 12,
+        "nearshore_baseline_spawn_probability": 0.0001,
+        "baseline_respawn_cooldown_steps": 240,
+        "uav_false_alarm_probability": 0.08,
+        "uav_hotspot_inspection_steps": 1,
+        "usv_true_hotspot_probability": 1.0,
+        "usv_confirmation_steps": 5,
+        "baseline_service_steps": 5,
+        "nearshore_hotspot_spawn_probability": 0.0,
+        "offshore_hotspot_spawn_probability": 0.08,
+        "hotspot_clearance_cells": 1
+      }
+    }
+  },
+  "environment": {
+    "sea_map": {
+      "width": 1000.0,
+      "height": 1000.0,
+      "zones": [
+        {
+          "name": "Nearshore Zone",
+          "x_start": 0.0,
+          "x_end": 250.0
+        },
+        {
+          "name": "Middle Risk Zone",
+          "x_start": 250.0,
+          "x_end": 450.0
+        },
+        {
+          "name": "Offshore Zone",
+          "x_start": 450.0,
+          "x_end": 1000.0
+        }
+      ]
+    },
+    "obstacle_layout": {
+      "seed": 20260324,
+      "generation_attempts": 2,
+      "risk_zone_obstacles": [
+        {
+          "name": "Risk Obstacle 1",
+          "zone_name": "Middle Risk Zone",
+          "points": [
+            [
+              250.0,
+              0.0
+            ],
+            [
+              450.0,
+              0.0
+            ],
+            [
+              450.0,
+              232.3534477251366
+            ],
+            [
+              410.0,
+              255.82362565634605
+            ],
+            [
+              370.0,
+              240.2237912809359
+            ],
+            [
+              330.0,
+              212.60727068987848
+            ],
+            [
+              290.0,
+              271.2249952573226
+            ],
+            [
+              250.0,
+              230.61969224309362
+            ]
+          ]
+        },
+        {
+          "name": "Risk Obstacle 2",
+          "zone_name": "Middle Risk Zone",
+          "points": [
+            [
+              272.0,
+              332.3616792888532
+            ],
+            [
+              288.0,
+              350.49325204297566
+            ],
+            [
+              304.0,
+              332.79383271023676
+            ],
+            [
+              320.0,
+              308.9577805361943
+            ],
+            [
+              336.0,
+              284.39739196088317
+            ],
+            [
+              336.0,
+              666.5241576295643
+            ],
+            [
+              320.0,
+              635.5361343605837
+            ],
+            [
+              304.0,
+              609.2782416426162
+            ],
+            [
+              288.0,
+              621.3276668710947
+            ],
+            [
+              272.0,
+              643.5582530593165
+            ]
+          ]
+        },
+        {
+          "name": "Risk Obstacle 3",
+          "zone_name": "Middle Risk Zone",
+          "points": [
+            [
+              352.0,
+              297.82842824102823
+            ],
+            [
+              371.5,
+              320.894768648234
+            ],
+            [
+              391.0,
+              345.4188761776648
+            ],
+            [
+              410.5,
+              334.8480317835866
+            ],
+            [
+              430.0,
+              326.2482908627119
+            ],
+            [
+              430.0,
+              660.7542317610843
+            ],
+            [
+              410.5,
+              647.4421416369198
+            ],
+            [
+              391.0,
+              654.0341721364452
+            ],
+            [
+              371.5,
+              678.6821534570947
+            ],
+            [
+              352.0,
+              695.5993531838633
+            ]
+          ]
+        },
+        {
+          "name": "Risk Obstacle 4",
+          "zone_name": "Middle Risk Zone",
+          "points": [
+            [
+              250.0,
+              776.3174999934084
+            ],
+            [
+              290.0,
+              721.4076840933581
+            ],
+            [
+              330.0,
+              754.1063456691475
+            ],
+            [
+              370.0,
+              782.6469890343835
+            ],
+            [
+              410.0,
+              745.5230523081602
+            ],
+            [
+              450.0,
+              775.262337695032
+            ],
+            [
+              450.0,
+              1000.0
+            ],
+            [
+              250.0,
+              1000.0
+            ]
+          ]
+        }
+      ],
+      "offshore_features": [
+        {
+          "name": "Offshore Islet 1",
+          "feature_type": "islet",
+          "x": 623.9563923625892,
+          "y": 181.51745423253996,
+          "radius": 27.036324134283515
+        },
+        {
+          "name": "Offshore Islet 2",
+          "feature_type": "islet",
+          "x": 759.1166176285976,
+          "y": 658.1385361087505,
+          "radius": 30.291153427578898
+        },
+        {
+          "name": "Offshore Islet 3",
+          "feature_type": "islet",
+          "x": 919.6866771881125,
+          "y": 347.72309321109384,
+          "radius": 23.83891632489724
+        },
+        {
+          "name": "Offshore Risk Area 1",
+          "feature_type": "risk_area",
+          "x": 746.0176928106808,
+          "y": 454.2532041680371,
+          "radius": 44.80412519787611
+        },
+        {
+          "name": "Offshore Risk Area 2",
+          "feature_type": "risk_area",
+          "x": 874.116223102209,
+          "y": 815.2765574464971,
+          "radius": 50.6164717235425
+        }
+      ],
+      "nearshore_monitor_points": [],
+      "offshore_hotspots": []
+    }
+  },
+  "initial_agents": [
+    {
+      "agent_id": "USV-1",
+      "kind": "USV",
+      "x": 110.0,
+      "y": 180.0,
+      "heading_deg": 8.0,
+      "speed_mps": 0.0,
+      "detection_radius": 70.0,
+      "coverage_radius": 50.0,
+      "cruise_speed_mps": 5.5,
+      "max_speed_mps": 8.0,
+      "max_turn_rate_degps": 28.0,
+      "energy_capacity": 0.0,
+      "energy_level": 0.0,
+      "energy_ratio": null,
+      "task_mode": "idle",
+      "available": true
+    },
+    {
+      "agent_id": "USV-2",
+      "kind": "USV",
+      "x": 120.0,
+      "y": 500.0,
+      "heading_deg": -12.0,
+      "speed_mps": 0.0,
+      "detection_radius": 70.0,
+      "coverage_radius": 50.0,
+      "cruise_speed_mps": 5.5,
+      "max_speed_mps": 8.0,
+      "max_turn_rate_degps": 28.0,
+      "energy_capacity": 0.0,
+      "energy_level": 0.0,
+      "energy_ratio": null,
+      "task_mode": "idle",
+      "available": true
+    },
+    {
+      "agent_id": "USV-3",
+      "kind": "USV",
+      "x": 130.0,
+      "y": 820.0,
+      "heading_deg": 5.0,
+      "speed_mps": 0.0,
+      "detection_radius": 70.0,
+      "coverage_radius": 50.0,
+      "cruise_speed_mps": 5.5,
+      "max_speed_mps": 8.0,
+      "max_turn_rate_degps": 28.0,
+      "energy_capacity": 0.0,
+      "energy_level": 0.0,
+      "energy_ratio": null,
+      "task_mode": "idle",
+      "available": true
+    },
+    {
+      "agent_id": "UAV-1",
+      "kind": "UAV",
+      "x": 150.0,
+      "y": 260.0,
+      "heading_deg": -14.0,
+      "speed_mps": 0.0,
+      "detection_radius": 120.0,
+      "coverage_radius": 100.0,
+      "cruise_speed_mps": 16.0,
+      "max_speed_mps": 22.0,
+      "max_turn_rate_degps": 120.0,
+      "energy_capacity": 180.0,
+      "energy_level": 180.0,
+      "energy_ratio": 1.0,
+      "task_mode": "idle",
+      "available": true
+    },
+    {
+      "agent_id": "UAV-2",
+      "kind": "UAV",
+      "x": 165.0,
+      "y": 700.0,
+      "heading_deg": 18.0,
+      "speed_mps": 0.0,
+      "detection_radius": 120.0,
+      "coverage_radius": 100.0,
+      "cruise_speed_mps": 16.0,
+      "max_speed_mps": 22.0,
+      "max_turn_rate_degps": 120.0,
+      "energy_capacity": 180.0,
+      "energy_level": 180.0,
+      "energy_ratio": 1.0,
+      "task_mode": "idle",
+      "available": true
+    }
+  ],
+  "final_metrics": {
+    "coverage_ratio": 0.880673,
+    "covered_cells": 1203,
+    "total_coverable_cells": 1366,
+    "valid_cells": 891,
+    "stale_cells": 475,
+    "active_hotspot_cells": 12,
+    "uav_checked_cells": 5,
+    "active_ground_truth_hotspots": 12,
+    "path_lengths_by_agent": {
+      "UAV-1": 10565.83,
+      "UAV-2": 10374.863,
+      "USV-1": 5579.138,
+      "USV-2": 4927.092,
+      "USV-3": 4648.645
+    },
+    "event_totals": {
+      "spawned_hotspots": 31,
+      "uav_checked_marks": 24,
+      "confirmed_hotspots": 19,
+      "astar_total_calls": 292,
+      "astar_planned_calls": 257,
+      "astar_blocked_calls": 35,
+      "astar_expanded_nodes": 58651,
+      "astar_max_expanded_nodes": 4423
+    },
+    "last_step_events": [
+      "Low-energy UAV rendezvous task active"
+    ]
+  }
+}

@@ -26,6 +26,7 @@ class AlgorithmSelection:
     """Named baseline algorithms selected for one experiment."""
 
     task_allocator: str = "basic_task_allocator"
+    zone_partition_policy: str = "baseline_fixed_partition"
     usv_path_planner: str = "astar_path_planner"
     uav_search_planner: str = "uav_lawnmower_planner"
     execution_policy: str = "phase_one_execution"
@@ -99,6 +100,11 @@ def load_experiment_config(
         scenario=scenario,
         algorithms=AlgorithmSelection(
             task_allocator=_read_str(algorithms_raw, "task_allocator"),
+            zone_partition_policy=_read_optional_str(
+                algorithms_raw,
+                "zone_partition_policy",
+                default=AlgorithmSelection().zone_partition_policy,
+            ),
             usv_path_planner=_read_str(algorithms_raw, "usv_path_planner"),
             uav_search_planner=_read_str(algorithms_raw, "uav_search_planner"),
             execution_policy=_read_str(algorithms_raw, "execution_policy"),
@@ -155,6 +161,14 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
     supported_allocators = {
         "basic_task_allocator",
         "cost_aware_centralized_allocator",
+        "aoi_energy_auction_allocator",
+        "rho_task_allocator",
+    }
+    supported_partition_policies = {
+        "baseline_fixed_partition",
+        "soft_partition_policy",
+        "backlog_aware_partition_policy",
+        "weighted_voronoi_partition_policy",
     }
     supported_usv_planners = set(SUPPORTED_USV_PATH_PLANNERS)
     supported_uav_planners = {
@@ -175,6 +189,12 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
         raise ValueError(
             "Unsupported task allocator "
             f"{config.algorithms.task_allocator!r}; supported: {sorted(supported_allocators)}"
+        )
+    if config.algorithms.zone_partition_policy not in supported_partition_policies:
+        raise ValueError(
+            "Unsupported zone partition policy "
+            f"{config.algorithms.zone_partition_policy!r}; "
+            f"supported: {sorted(supported_partition_policies)}"
         )
     if config.algorithms.usv_path_planner not in supported_usv_planners:
         raise ValueError(
@@ -247,6 +267,15 @@ def _read_str(raw: dict[str, object], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} must be a non-empty string")
+    return value
+
+
+def _read_optional_str(raw: dict[str, object], key: str, *, default: str) -> str:
+    value = raw.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be a non-empty string when provided")
     return value
 
 

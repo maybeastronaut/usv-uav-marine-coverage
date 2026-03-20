@@ -602,7 +602,7 @@ class InformationMapTestCase(unittest.TestCase):
         self.assertEqual(state.task_status, TaskStatus.ASSIGNED)
         self.assertEqual(state.assigned_agent_id, "USV-2")
 
-    def test_usv_marks_false_alarm_after_threshold(self) -> None:
+    def test_usv_confirms_uav_checked_hotspot_after_threshold(self) -> None:
         info_map = build_information_map(
             self.grid_map,
             InformationMapConfig(usv_confirmation_steps=5),
@@ -611,7 +611,8 @@ class InformationMapTestCase(unittest.TestCase):
             candidate for candidate in self.grid_map.flat_cells if not candidate.has_obstacle
         )
         state = info_map.state_at(cell.row, cell.col)
-        state.known_hotspot_state = HotspotKnowledgeState.SUSPECTED
+        state.ground_truth_hotspot = True
+        state.known_hotspot_state = HotspotKnowledgeState.UAV_CHECKED
 
         usv = AgentState(
             agent_id="USV-3",
@@ -637,8 +638,8 @@ class InformationMapTestCase(unittest.TestCase):
         )
 
         self.assertEqual(resolved, ((cell.row, cell.col),))
-        self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.FALSE_ALARM)
+        self.assertEqual(state.known_hotspot_state, HotspotKnowledgeState.CONFIRMED)
         self.assertEqual(state.confirmed_by, "USV-3")
-        self.assertEqual(state.task_status, TaskStatus.IDLE)
-        self.assertIsNone(state.assigned_agent_id)
-        self.assertFalse(state.ground_truth_hotspot)
+        self.assertEqual(state.task_status, TaskStatus.ASSIGNED)
+        self.assertEqual(state.assigned_agent_id, "USV-3")
+        self.assertTrue(state.ground_truth_hotspot)

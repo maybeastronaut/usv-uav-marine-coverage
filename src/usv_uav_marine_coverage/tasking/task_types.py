@@ -66,3 +66,5 @@ class TaskAssignment:
     support_agent_id: str | None
     selection_reason: str
     selection_score: float
+    selection_details: dict[str, object] | None = None
+    candidate_agents: tuple[dict[str, object], ...] = ()

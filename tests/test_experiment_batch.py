@@ -83,6 +83,8 @@ steps = 4
 
             self.assertTrue(artifacts.runs_path.exists())
             self.assertTrue(artifacts.summary_path.exists())
+            self.assertNotEqual(artifacts.output_dir, temp_root / "outputs")
+            self.assertTrue(artifacts.output_dir.name.startswith("outputs_"))
 
             run_records = artifacts.runs_path.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(run_records), 2)
@@ -90,6 +92,8 @@ steps = 4
             summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
             self.assertEqual(summary["batch"]["name"], "smoke_batch")
             self.assertEqual(summary["batch"]["run_count"], 2)
+            self.assertEqual(summary["batch"]["requested_output_dir"], str(spec.output_dir))
+            self.assertEqual(summary["batch"]["output_dir"], str(artifacts.output_dir))
             self.assertIn("aggregates", summary)
             self.assertIn("coverage_ratio", summary["aggregates"])
             self.assertEqual(summary["runs"][0]["label"], "seed_a")
@@ -169,3 +173,54 @@ steps = 4
             failed_run = next(run for run in summary["runs"] if run["label"] == "bad")
             self.assertEqual(failed_run["status"], "failed")
             self.assertEqual(failed_run["error_type"], "ValueError")
+
+    def test_run_batch_experiment_uses_fresh_timestamped_directory_each_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_root = Path(temp_dir)
+            base_config = temp_root / "baseline.toml"
+            base_config.write_text(
+                """
+[simulation]
+seed = 20260314
+steps = 2
+dt_seconds = 1.0
+
+[scenario]
+name = "baseline_patrol"
+
+[algorithms]
+task_allocator = "basic_task_allocator"
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+
+[information_map]
+information_timeout_steps = 400
+nearshore_information_timeout_steps = 800
+                """.strip(),
+                encoding="utf-8",
+            )
+            batch_config = temp_root / "batch.toml"
+            batch_config.write_text(
+                f"""
+[batch]
+name = "timestamp_batch"
+base_config = "{base_config.name}"
+output_dir = "{(temp_root / "outputs").name}"
+generate_html = false
+
+[[runs]]
+label = "seed_a"
+seed = 20260314
+steps = 2
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            spec = load_batch_experiment_spec(batch_config)
+            artifacts_one = run_batch_experiment(spec)
+            artifacts_two = run_batch_experiment(spec)
+
+            self.assertNotEqual(artifacts_one.output_dir, artifacts_two.output_dir)
+            self.assertTrue(artifacts_one.summary_path.exists())
+            self.assertTrue(artifacts_two.summary_path.exists())

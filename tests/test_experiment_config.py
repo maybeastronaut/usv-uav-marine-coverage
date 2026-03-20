@@ -33,6 +33,80 @@ class ExperimentConfigTestCase(unittest.TestCase):
             config.algorithms.task_allocator,
             "cost_aware_centralized_allocator",
         )
+        self.assertEqual(config.algorithms.zone_partition_policy, "baseline_fixed_partition")
+
+    def test_load_soft_partition_experiment_config_reads_new_partition_policy(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_cost_aware_soft_partition.toml"),
+        )
+
+        self.assertEqual(
+            config.algorithms.task_allocator,
+            "cost_aware_centralized_allocator",
+        )
+        self.assertEqual(config.algorithms.zone_partition_policy, "soft_partition_policy")
+
+    def test_load_aoi_energy_soft_partition_config_reads_new_partition_policy(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_aoi_energy_weighted_voronoi.toml"),
+        )
+
+        self.assertEqual(
+            config.algorithms.task_allocator,
+            "aoi_energy_auction_allocator",
+        )
+        self.assertEqual(
+            config.algorithms.zone_partition_policy,
+            "weighted_voronoi_partition_policy",
+        )
+
+    def test_load_rho_soft_partition_config_reads_new_partition_policy(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_rho_weighted_voronoi.toml"),
+        )
+
+        self.assertEqual(
+            config.algorithms.task_allocator,
+            "rho_task_allocator",
+        )
+        self.assertEqual(
+            config.algorithms.zone_partition_policy,
+            "weighted_voronoi_partition_policy",
+        )
+
+    def test_load_weighted_voronoi_config_reads_new_partition_policy(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml"),
+        )
+
+        self.assertEqual(
+            config.algorithms.task_allocator,
+            "cost_aware_centralized_allocator",
+        )
+        self.assertEqual(
+            config.algorithms.zone_partition_policy,
+            "weighted_voronoi_partition_policy",
+        )
+
+    def test_load_aoi_energy_auction_experiment_config_reads_new_allocator_name(self) -> None:
+        config = load_experiment_config(
+            Path("configs/aoi_energy_auction_allocator.toml"),
+        )
+
+        self.assertEqual(
+            config.algorithms.task_allocator,
+            "aoi_energy_auction_allocator",
+        )
+
+    def test_load_rho_experiment_config_reads_new_allocator_name(self) -> None:
+        config = load_experiment_config(
+            Path("configs/rho_task_allocator.toml"),
+        )
+
+        self.assertEqual(
+            config.algorithms.task_allocator,
+            "rho_task_allocator",
+        )
 
     def test_load_experiment_config_can_apply_scenario_preset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -63,9 +137,27 @@ execution_policy = "phase_one_execution"
         self.assertEqual(config.information_map.baseline_respawn_cooldown_steps, 120)
 
     def test_load_experiment_config_can_apply_planner_path_stress_scenario(self) -> None:
-        config = load_experiment_config(
-            Path("configs/planner_path_stress_cost_aware.toml"),
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "planner_path_stress.toml"
+            path.write_text(
+                """
+[simulation]
+seed = 1
+steps = 10
+dt_seconds = 1.0
+
+[scenario]
+name = "planner_path_stress"
+
+[algorithms]
+task_allocator = "cost_aware_centralized_allocator"
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(path)
 
         self.assertEqual(config.scenario.name, "planner_path_stress")
         self.assertEqual(config.algorithms.task_allocator, "cost_aware_centralized_allocator")
@@ -85,6 +177,38 @@ execution_policy = "phase_one_execution"
         self.assertEqual(config.information_map.nearshore_baseline_spawn_probability, 0.00002)
         self.assertEqual(config.information_map.baseline_respawn_cooldown_steps, 420)
         self.assertEqual(config.information_map.information_timeout_steps, 360)
+
+    def test_load_experiment_config_can_apply_aoi_revisit_pressure_scenario(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "aoi_revisit.toml"
+            path.write_text(
+                """
+[simulation]
+seed = 1
+steps = 10
+dt_seconds = 1.0
+
+[scenario]
+name = "aoi_revisit_pressure"
+
+[algorithms]
+task_allocator = "aoi_energy_auction_allocator"
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(path)
+
+        self.assertEqual(config.scenario.name, "aoi_revisit_pressure")
+        self.assertEqual(config.algorithms.task_allocator, "aoi_energy_auction_allocator")
+        self.assertEqual(config.information_map.information_timeout_steps, 300)
+        self.assertEqual(config.information_map.nearshore_information_timeout_steps, 520)
+        self.assertEqual(config.information_map.max_active_hotspots, 10)
+        self.assertEqual(config.information_map.max_active_baseline_tasks, 2)
+        self.assertEqual(config.information_map.nearshore_baseline_spawn_probability, 0.00018)
+        self.assertEqual(config.information_map.offshore_hotspot_spawn_probability, 0.05)
 
     def test_load_experiment_config_overlays_information_map_on_scenario(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -170,6 +294,53 @@ nearshore_information_timeout_steps = 800
 
     def test_validate_experiment_config_accepts_cost_aware_allocator(self) -> None:
         config = load_experiment_config(Path("configs/cost_aware_allocator.toml"))
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_soft_partition_policy(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_cost_aware_soft_partition.toml")
+        )
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_backlog_aware_partition_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "backlog_partition.toml"
+            path.write_text(
+                """
+[simulation]
+seed = 1
+steps = 10
+dt_seconds = 1.0
+
+[algorithms]
+task_allocator = "cost_aware_centralized_allocator"
+zone_partition_policy = "backlog_aware_partition_policy"
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(path)
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_weighted_voronoi_partition_policy(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml")
+        )
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_aoi_energy_auction_allocator(self) -> None:
+        config = load_experiment_config(Path("configs/aoi_energy_auction_allocator.toml"))
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_rho_allocator(self) -> None:
+        config = load_experiment_config(Path("configs/rho_task_allocator.toml"))
 
         validate_experiment_config(config)
 

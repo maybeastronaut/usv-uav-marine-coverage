@@ -53,6 +53,23 @@ SCENARIO_CATALOG: dict[str, ScenarioPreset] = {
             information_timeout_steps=360,
         ),
     ),
+    "aoi_revisit_pressure": ScenarioPreset(
+        name="aoi_revisit_pressure",
+        description=(
+            "AoI 优势放大场景，缩短信息超时并保持中等热点压力，同时保留少量近海基础任务干扰，"
+            "适合放大“近但不急”和“远但更 stale”之间的任务价值冲突。"
+        ),
+        information_map=replace(
+            _BASELINE_INFORMATION_MAP,
+            information_timeout_steps=300,
+            nearshore_information_timeout_steps=520,
+            max_active_hotspots=10,
+            max_active_baseline_tasks=2,
+            nearshore_baseline_spawn_probability=0.00018,
+            baseline_respawn_cooldown_steps=260,
+            offshore_hotspot_spawn_probability=0.05,
+        ),
+    ),
     "offshore_hotspot_pressure": ScenarioPreset(
         name="offshore_hotspot_pressure",
         description="远海热点压力场景，提升远海热点生成频率，适合放大热点响应与确认算法差异。",

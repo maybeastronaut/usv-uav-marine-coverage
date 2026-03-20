@@ -8,9 +8,15 @@ from usv_uav_marine_coverage.environment import (
 )
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState, ExecutionStage
 from usv_uav_marine_coverage.grid import build_grid_map
-from usv_uav_marine_coverage.information_map import build_information_map
+from usv_uav_marine_coverage.information_map import InformationValidity, build_information_map
 from usv_uav_marine_coverage.planning.path_types import PathPlan, PathPlanStatus, Waypoint
 from usv_uav_marine_coverage.simulation.simulation_policy import build_demo_agent_states
+from usv_uav_marine_coverage.tasking.aoi_energy_auction_allocator import (
+    AGENT_TASK_BLOCKED_COOLDOWN_STEPS as AEA_AGENT_TASK_BLOCKED_COOLDOWN_STEPS,
+)
+from usv_uav_marine_coverage.tasking.aoi_energy_auction_allocator import (
+    allocate_tasks_with_aoi_energy_auction_policy,
+)
 from usv_uav_marine_coverage.tasking.baseline_task_generator import build_baseline_tasks
 from usv_uav_marine_coverage.tasking.basic_task_allocator import (
     allocate_tasks_with_basic_policy,
@@ -19,6 +25,18 @@ from usv_uav_marine_coverage.tasking.cost_aware_task_allocator import (
     AGENT_TASK_BLOCKED_COOLDOWN_STEPS,
     _reachable_cost,
     allocate_tasks_with_cost_aware_policy,
+)
+from usv_uav_marine_coverage.tasking.partitioning import (
+    baseline_primary_usv_ids_for_task,
+    baseline_secondary_usv_ids_for_task,
+    build_baseline_task_partition,
+    build_task_partition,
+)
+from usv_uav_marine_coverage.tasking.rho_task_allocator import (
+    AGENT_TASK_BLOCKED_COOLDOWN_STEPS as RHO_AGENT_TASK_BLOCKED_COOLDOWN_STEPS,
+)
+from usv_uav_marine_coverage.tasking.rho_task_allocator import (
+    allocate_tasks_with_rho_policy,
 )
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskSource, TaskStatus, TaskType
 from usv_uav_marine_coverage.tasking.uav_resupply_task_generator import (
@@ -79,6 +97,413 @@ class TaskingTestCase(unittest.TestCase):
         self.assertEqual(tasks[0].task_type, TaskType.UAV_RESUPPLY)
         self.assertEqual(tasks[0].target_x, 600.0)
         self.assertEqual(tasks[0].target_y, 0.0)
+
+    def test_baseline_partition_layer_matches_current_hard_zones(self) -> None:
+        nearshore_task = TaskRecord(
+            task_id="baseline-nearshore",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=180.0,
+            target_y=150.0,
+            target_row=6,
+            target_col=7,
+            created_step=3,
+        )
+        upper_offshore_task = TaskRecord(
+            task_id="hotspot-upper",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=4,
+        )
+        lower_offshore_task = replace(
+            upper_offshore_task,
+            task_id="hotspot-lower",
+            target_y=720.0,
+            target_row=28,
+        )
+
+        self.assertEqual(
+            build_baseline_task_partition(nearshore_task).primary_usv_ids,
+            ("USV-1",),
+        )
+        self.assertEqual(
+            build_baseline_task_partition(upper_offshore_task).primary_usv_ids,
+            ("USV-2",),
+        )
+        self.assertEqual(
+            build_baseline_task_partition(lower_offshore_task).primary_usv_ids,
+            ("USV-3",),
+        )
+        self.assertEqual(baseline_secondary_usv_ids_for_task(nearshore_task), set())
+
+    def test_baseline_partition_layer_keeps_uav_resupply_open_to_all_usvs(self) -> None:
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.PENDING,
+            priority=20,
+            target_x=600.0,
+            target_y=500.0,
+            target_row=None,
+            target_col=None,
+            created_step=9,
+            assigned_agent_id="UAV-1",
+        )
+
+        partition = build_baseline_task_partition(task)
+
+        self.assertEqual(
+            baseline_primary_usv_ids_for_task(task),
+            {"USV-1", "USV-2", "USV-3"},
+        )
+        self.assertEqual(partition.secondary_usv_ids, ())
+        self.assertEqual(partition.partition_reason, "all_usvs_can_support_uav_resupply")
+
+    def test_soft_partition_enables_secondary_when_other_offshore_usv_is_much_closer(self) -> None:
+        agents = tuple(
+            replace(agent, x=650.0, y=315.0) if agent.agent_id == "USV-3" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="hotspot-soft-secondary",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+
+        partition = build_task_partition(
+            task,
+            policy_name="soft_partition_policy",
+            agents=agents,
+            execution_states=execution_states,
+            step=20,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-2",))
+        self.assertEqual(partition.secondary_usv_ids, ("USV-3",))
+        self.assertEqual(
+            partition.partition_reason,
+            "soft_partition_enable_secondary_for_distance_advantage",
+        )
+
+    def test_backlog_aware_partition_enables_secondary_for_fresh_baseline_under_backlog(
+        self,
+    ) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        fresh_baseline = TaskRecord(
+            task_id="baseline-backlog-target",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=180.0,
+            target_y=180.0,
+            target_row=2,
+            target_col=2,
+            created_step=180,
+        )
+        aged_baseline_a = replace(fresh_baseline, task_id="baseline-aged-a", created_step=0)
+        aged_baseline_b = replace(
+            fresh_baseline,
+            task_id="baseline-aged-b",
+            created_step=10,
+            target_y=220.0,
+        )
+
+        partition = build_task_partition(
+            fresh_baseline,
+            policy_name="backlog_aware_partition_policy",
+            tasks=(fresh_baseline, aged_baseline_a, aged_baseline_b),
+            agents=agents,
+            execution_states=execution_states,
+            step=200,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-1",))
+        self.assertEqual(partition.secondary_usv_ids, ("USV-2",))
+        self.assertEqual(
+            partition.partition_reason,
+            "backlog_aware_enable_secondary_for_baseline_backlog",
+        )
+
+    def test_backlog_aware_partition_holds_hotspot_secondary_for_baseline_backlog(self) -> None:
+        agents = tuple(
+            replace(agent, x=650.0, y=315.0) if agent.agent_id == "USV-3" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        hotspot_task = TaskRecord(
+            task_id="hotspot-backlog-hold",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=180,
+        )
+        baseline_template = TaskRecord(
+            task_id="baseline-backlog-template",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=180.0,
+            target_y=180.0,
+            target_row=2,
+            target_col=2,
+            created_step=0,
+        )
+        tasks = (
+            hotspot_task,
+            baseline_template,
+            replace(baseline_template, task_id="baseline-backlog-b", created_step=20),
+        )
+
+        partition = build_task_partition(
+            hotspot_task,
+            policy_name="backlog_aware_partition_policy",
+            tasks=tasks,
+            agents=agents,
+            execution_states=execution_states,
+            step=200,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-2",))
+        self.assertEqual(partition.secondary_usv_ids, ())
+        self.assertEqual(
+            partition.partition_reason,
+            "backlog_aware_hold_secondary_for_baseline_backlog",
+        )
+
+    def test_weighted_voronoi_partition_prefers_nearest_usv(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="weighted-nearest",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=140.0,
+            target_y=160.0,
+            target_row=6,
+            target_col=7,
+            created_step=5,
+        )
+
+        partition = build_task_partition(
+            task,
+            policy_name="weighted_voronoi_partition_policy",
+            agents=agents,
+            execution_states=execution_states,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-1",))
+        self.assertEqual(partition.secondary_usv_ids, ())
+        self.assertEqual(
+            partition.partition_reason,
+            "weighted_voronoi_keep_primary_only_outside_margin",
+        )
+
+    def test_weighted_voronoi_busy_penalty_can_demote_primary_candidate(self) -> None:
+        agents = tuple(
+            replace(agent, x=200.0, y=150.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=250.0, y=200.0)
+            if agent.agent_id == "USV-2"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="existing-task",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
+        task = TaskRecord(
+            task_id="weighted-busy",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=220.0,
+            target_y=180.0,
+            target_row=6,
+            target_col=7,
+            created_step=5,
+        )
+
+        partition = build_task_partition(
+            task,
+            policy_name="weighted_voronoi_partition_policy",
+            agents=agents,
+            execution_states=execution_states,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-2",))
+        self.assertEqual(partition.secondary_usv_ids, ())
+        self.assertEqual(
+            partition.partition_reason,
+            "weighted_voronoi_keep_primary_only_outside_margin",
+        )
+
+    def test_weighted_voronoi_support_penalty_protects_nearest_support_usv(self) -> None:
+        agents = tuple(
+            replace(agent, energy_level=30.0, x=150.0, y=150.0)
+            if agent.agent_id == "UAV-1"
+            else replace(agent, x=130.0, y=150.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=170.0, y=150.0)
+            if agent.agent_id == "USV-2"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="weighted-support-guard",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=135.0,
+            target_y=150.0,
+            target_row=6,
+            target_col=7,
+            created_step=5,
+        )
+
+        partition = build_task_partition(
+            task,
+            policy_name="weighted_voronoi_partition_policy",
+            agents=agents,
+            execution_states=execution_states,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-2",))
+        self.assertEqual(partition.secondary_usv_ids, ())
+        self.assertEqual(
+            partition.partition_reason,
+            "weighted_voronoi_keep_primary_only_outside_margin",
+        )
+
+    def test_weighted_voronoi_secondary_margin_blocks_far_secondary(self) -> None:
+        agents = tuple(
+            replace(agent, x=150.0, y=150.0) if agent.agent_id == "USV-1" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="weighted-margin",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=160.0,
+            target_y=160.0,
+            target_row=6,
+            target_col=7,
+            created_step=5,
+        )
+
+        partition = build_task_partition(
+            task,
+            policy_name="weighted_voronoi_partition_policy",
+            agents=agents,
+            execution_states=execution_states,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-1",))
+        self.assertEqual(partition.secondary_usv_ids, ())
+        self.assertEqual(
+            partition.partition_reason,
+            "weighted_voronoi_keep_primary_only_outside_margin",
+        )
+
+    def test_weighted_voronoi_keeps_uav_resupply_open_to_all_usvs(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.PENDING,
+            priority=20,
+            target_x=600.0,
+            target_y=500.0,
+            target_row=None,
+            target_col=None,
+            created_step=9,
+            assigned_agent_id="UAV-1",
+        )
+
+        partition = build_task_partition(
+            task,
+            policy_name="weighted_voronoi_partition_policy",
+            agents=agents,
+            execution_states=execution_states,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-1", "USV-2", "USV-3"))
+        self.assertEqual(partition.secondary_usv_ids, ())
+        self.assertEqual(
+            partition.partition_reason,
+            "weighted_voronoi_all_usvs_can_support_uav_resupply",
+        )
+
+    def test_cost_aware_soft_partition_can_select_secondary_candidate(self) -> None:
+        agents = tuple(
+            replace(agent, x=650.0, y=315.0) if agent.agent_id == "USV-3" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="hotspot-soft-selected-secondary",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_cost_aware_policy(
+            (task,),
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=self._build_runtime_grid_map(),
+            step=20,
+            zone_partition_policy="soft_partition_policy",
+        )
+
+        self.assertEqual(updated_tasks[0].assigned_agent_id, "USV-3")
+        self.assertEqual(decisions[0].agent_id, "USV-3")
 
     def test_allocator_assigns_hotspot_confirmation_only_to_usv(self) -> None:
         agents = build_demo_agent_states()
@@ -938,6 +1363,710 @@ class TaskingTestCase(unittest.TestCase):
         self.assertEqual(first_cost, 42.0)
         self.assertEqual(second_cost, 42.0)
         self.assertEqual(planner.call_count, 1)
+
+    def test_aoi_energy_auction_prefers_older_task_within_same_partition(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        info_map.state_at(6, 3).information_age = 200
+        info_map.state_at(6, 3).validity = InformationValidity.STALE_KNOWN
+        info_map.state_at(7, 3).information_age = 20
+        info_map.state_at(7, 3).validity = InformationValidity.STALE_KNOWN
+        older_task = TaskRecord(
+            task_id="baseline-service-old",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=180.0,
+            target_y=540.0,
+            target_row=6,
+            target_col=3,
+            created_step=2,
+        )
+        newer_task = TaskRecord(
+            task_id="baseline-service-new",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=180.0,
+            target_y=600.0,
+            target_row=7,
+            target_col=3,
+            created_step=5,
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_aoi_energy_auction_policy(
+            (older_task, newer_task),
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=grid_map,
+            info_map=info_map,
+            step=10,
+        )
+
+        assigned_by_id = {task.task_id: task.assigned_agent_id for task in updated_tasks}
+        self.assertEqual(assigned_by_id["baseline-service-old"], "USV-1")
+        self.assertEqual(assigned_by_id["baseline-service-new"], "USV-3")
+        self.assertEqual(
+            decisions[0].selection_reason,
+            "highest_aoi_energy_bid_partition_usv_for_baseline_service",
+        )
+        self.assertIsNotNone(decisions[0].selection_details)
+        assert decisions[0].selection_details is not None
+        self.assertIn("base_value", decisions[0].selection_details)
+        self.assertIn("aoi_gain", decisions[0].selection_details)
+        self.assertIn("baseline_stale_bonus", decisions[0].selection_details)
+        self.assertIn("path_cost", decisions[0].selection_details)
+        self.assertIn("energy_penalty", decisions[0].selection_details)
+        self.assertIn("hotspot_backlog_penalty", decisions[0].selection_details)
+        self.assertIn("baseline_guard_penalty", decisions[0].selection_details)
+        self.assertIn("final_bid", decisions[0].selection_details)
+        self.assertTrue(decisions[0].candidate_agents)
+
+    def test_aoi_energy_auction_allows_baseline_to_outbid_hotspot_in_same_market(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-2"] = replace(
+            execution_states["USV-2"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-usv-2",
+        )
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-usv-3",
+        )
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        info_map.state_at(6, 3).information_age = 220
+        info_map.state_at(6, 3).validity = InformationValidity.STALE_KNOWN
+        info_map.state_at(2, 2).information_age = 0
+        info_map.state_at(2, 2).validity = InformationValidity.VALID
+
+        baseline_task = TaskRecord(
+            task_id="baseline-service-market-win",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=170.0,
+            target_y=180.0,
+            target_row=2,
+            target_col=2,
+            created_step=4,
+        )
+        hotspot_task = TaskRecord(
+            task_id="hotspot-confirmation-market-lose",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=180.0,
+            target_y=540.0,
+            target_row=6,
+            target_col=3,
+            created_step=5,
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_aoi_energy_auction_policy(
+            (hotspot_task, baseline_task),
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=grid_map,
+            info_map=info_map,
+            step=10,
+        )
+
+        task_by_id = {task.task_id: task for task in updated_tasks}
+        self.assertEqual(task_by_id["baseline-service-market-win"].assigned_agent_id, "USV-1")
+        self.assertIsNone(task_by_id["hotspot-confirmation-market-lose"].assigned_agent_id)
+        self.assertEqual(
+            decisions[0].selection_reason,
+            "highest_aoi_energy_bid_partition_usv_for_baseline_service",
+        )
+
+    def test_aoi_energy_auction_backlog_penalty_can_flip_hotspot_bias(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-2"] = replace(
+            execution_states["USV-2"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-usv-2",
+        )
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-usv-3",
+        )
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        info_map.state_at(2, 2).information_age = 80
+        info_map.state_at(2, 2).validity = InformationValidity.STALE_KNOWN
+
+        baseline_task = TaskRecord(
+            task_id="baseline-service-backlog-win",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=170.0,
+            target_y=180.0,
+            target_row=2,
+            target_col=2,
+            created_step=4,
+        )
+        hotspot_tasks = tuple(
+            TaskRecord(
+                task_id=f"hotspot-confirmation-backlog-{index}",
+                task_type=TaskType.HOTSPOT_CONFIRMATION,
+                source=TaskSource.UAV_INSPECTED,
+                status=TaskStatus.PENDING,
+                priority=10,
+                target_x=170.0 + index,
+                target_y=180.0 + index,
+                target_row=2,
+                target_col=2,
+                created_step=5 + index,
+            )
+            for index in range(6)
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=20.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.aoi_energy_auction_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_aoi_energy_auction_policy(
+                hotspot_tasks + (baseline_task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=10,
+            )
+
+        task_by_id = {task.task_id: task for task in updated_tasks}
+        self.assertEqual(task_by_id["baseline-service-backlog-win"].assigned_agent_id, "USV-1")
+        self.assertEqual(
+            decisions[0].selection_reason,
+            "highest_aoi_energy_bid_partition_usv_for_baseline_service",
+        )
+        assert decisions[0].selection_details is not None
+        self.assertGreater(decisions[0].selection_details["baseline_stale_bonus"], 0.0)
+        first_candidate = decisions[0].candidate_agents[0]
+        self.assertEqual(first_candidate["agent_id"], "USV-1")
+
+    def test_aoi_energy_auction_baseline_guard_penalty_discourages_hotspot_detour(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-2"] = replace(
+            execution_states["USV-2"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-usv-2",
+        )
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-usv-3",
+        )
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        info_map.state_at(2, 2).information_age = 220
+        info_map.state_at(2, 2).validity = InformationValidity.STALE_KNOWN
+
+        baseline_task = TaskRecord(
+            task_id="baseline-service-guard-win",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=170.0,
+            target_y=180.0,
+            target_row=2,
+            target_col=2,
+            created_step=4,
+        )
+        hotspot_task = TaskRecord(
+            task_id="hotspot-confirmation-guard-lose",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=420.0,
+            target_y=260.0,
+            target_row=5,
+            target_col=5,
+            created_step=5,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            if task_id == hotspot_task.task_id:
+                estimated_cost = 20.0
+            else:
+                estimated_cost = 25.0
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=estimated_cost,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.aoi_energy_auction_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_aoi_energy_auction_policy(
+                (hotspot_task, baseline_task),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=10,
+                zone_partition_policy="soft_partition_policy",
+            )
+
+        task_by_id = {task.task_id: task for task in updated_tasks}
+        self.assertEqual(task_by_id["baseline-service-guard-win"].assigned_agent_id, "USV-1")
+        self.assertIsNone(task_by_id["hotspot-confirmation-guard-lose"].assigned_agent_id)
+        self.assertEqual(
+            decisions[0].selection_reason,
+            "highest_aoi_energy_bid_partition_usv_for_baseline_service",
+        )
+        assert decisions[0].selection_details is not None
+        self.assertGreater(decisions[0].selection_details["baseline_stale_bonus"], 0.0)
+        candidate_by_agent = {item["agent_id"]: item for item in decisions[0].candidate_agents}
+        self.assertIn("USV-1", candidate_by_agent)
+        self.assertEqual(candidate_by_agent["USV-1"]["baseline_guard_penalty"], 0.0)
+
+    def test_aoi_energy_auction_respects_agent_task_cooldown(self) -> None:
+        task = TaskRecord(
+            task_id="hotspot-confirmation-aea-cooldown",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+            retry_after_step=40,
+            agent_retry_after_steps=(("USV-2", 40),),
+        )
+        execution_states = self._build_idle_execution_states(build_demo_agent_states())
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-task",
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.aoi_energy_auction_allocator.build_usv_path_plan"
+        ) as planner:
+            updated_tasks, decisions = allocate_tasks_with_aoi_energy_auction_policy(
+                (task,),
+                agents=build_demo_agent_states(),
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=30,
+            )
+
+        self.assertEqual(planner.call_count, 0)
+        self.assertEqual(updated_tasks[0].retry_after_step, 40)
+        self.assertEqual(updated_tasks[0].agent_retry_after_steps, (("USV-2", 40),))
+        self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
+        self.assertEqual(decisions, ())
+
+    def test_aoi_energy_auction_applies_blocked_retry_only_to_current_agent(self) -> None:
+        agents = tuple(
+            replace(agent, x=287.5, y=487.5) if agent.agent_id == "USV-2" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-task",
+        )
+        task = TaskRecord(
+            task_id="hotspot-confirmation-aea-blocked",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_aoi_energy_auction_policy(
+            (task,),
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=self._build_runtime_grid_map(),
+            info_map=build_information_map(self._build_runtime_grid_map()),
+            step=20,
+        )
+
+        self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
+        self.assertEqual(
+            updated_tasks[0].agent_retry_after_steps,
+            (("USV-2", 20 + AEA_AGENT_TASK_BLOCKED_COOLDOWN_STEPS),),
+        )
+        self.assertEqual(decisions, ())
+
+    def test_aoi_energy_auction_energy_penalty_preserves_support_usv(self) -> None:
+        agents = tuple(
+            replace(agent, energy_level=50.0) if agent.agent_id == "UAV-1" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        protected_task = TaskRecord(
+            task_id="baseline-service-nearshore-protected",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=180.0,
+            target_y=540.0,
+            target_row=6,
+            target_col=3,
+            created_step=5,
+        )
+        competing_task = TaskRecord(
+            task_id="baseline-service-upper-competing",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+        info_map.state_at(6, 3).information_age = 120
+        info_map.state_at(10, 28).information_age = 120
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=20.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.aoi_energy_auction_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_aoi_energy_auction_policy(
+                (protected_task, competing_task),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=10,
+            )
+
+        assigned_by_id = {task.task_id: task.assigned_agent_id for task in updated_tasks}
+        self.assertEqual(assigned_by_id["baseline-service-upper-competing"], "USV-2")
+        self.assertEqual(assigned_by_id["baseline-service-nearshore-protected"], "USV-1")
+        decision_by_task = {decision.task_id: decision.agent_id for decision in decisions}
+        self.assertEqual(decision_by_task["baseline-service-upper-competing"], "USV-2")
+
+    def test_aoi_energy_auction_keeps_primary_only_when_primary_is_reachable(self) -> None:
+        task = TaskRecord(
+            task_id="hotspot-confirmation-primary-only",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+        info_map = build_information_map(self._build_runtime_grid_map())
+        info_map.state_at(10, 28).information_age = 120
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            estimated_cost = 40.0 if agent.agent_id == "USV-2" else 44.0
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=estimated_cost,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.aoi_energy_auction_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            _, decisions = allocate_tasks_with_aoi_energy_auction_policy(
+                (task,),
+                agents=build_demo_agent_states(),
+                execution_states=self._build_idle_execution_states(build_demo_agent_states()),
+                grid_map=self._build_runtime_grid_map(),
+                info_map=info_map,
+                step=10,
+            )
+
+        self.assertEqual(decisions[0].agent_id, "USV-2")
+        candidate_agent_ids = tuple(
+            candidate["agent_id"] for candidate in decisions[0].candidate_agents
+        )
+        self.assertEqual(candidate_agent_ids, ("USV-2",))
+
+    def test_aoi_energy_auction_selects_secondary_when_primary_is_blocked(
+        self,
+    ) -> None:
+        task = TaskRecord(
+            task_id="hotspot-confirmation-secondary-selected",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+        info_map = build_information_map(self._build_runtime_grid_map())
+        info_map.state_at(10, 28).information_age = 120
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            if agent.agent_id == "USV-2":
+                return PathPlan(
+                    plan_id=f"{agent.agent_id}-{task_id}",
+                    planner_name=planner_name,
+                    agent_id=agent.agent_id,
+                    task_id=task_id,
+                    status=PathPlanStatus.BLOCKED,
+                    waypoints=(),
+                    goal_x=goal_x,
+                    goal_y=goal_y,
+                    estimated_cost=0.0,
+                )
+            estimated_cost = 30.0
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=estimated_cost,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.aoi_energy_auction_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_aoi_energy_auction_policy(
+                (task,),
+                agents=build_demo_agent_states(),
+                execution_states=self._build_idle_execution_states(build_demo_agent_states()),
+                grid_map=self._build_runtime_grid_map(),
+                info_map=info_map,
+                step=10,
+            )
+
+        self.assertEqual(updated_tasks[0].assigned_agent_id, "USV-3")
+        self.assertEqual(decisions[0].agent_id, "USV-3")
+        candidate_agent_ids = tuple(
+            candidate["agent_id"] for candidate in decisions[0].candidate_agents
+        )
+        self.assertEqual(candidate_agent_ids, ("USV-3",))
+
+    def test_rho_prefers_older_baseline_when_path_costs_match(self) -> None:
+        agents = build_demo_agent_states()
+        execution_states = self._build_idle_execution_states(agents)
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        older_task = TaskRecord(
+            task_id="baseline-service-rho-old",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=180.0,
+            target_y=160.0,
+            target_row=6,
+            target_col=3,
+            created_step=5,
+        )
+        newer_task = TaskRecord(
+            task_id="baseline-service-rho-new",
+            task_type=TaskType.BASELINE_SERVICE,
+            source=TaskSource.SYSTEM_BASELINE_TIMEOUT,
+            status=TaskStatus.PENDING,
+            priority=1,
+            target_x=190.0,
+            target_y=170.0,
+            target_row=7,
+            target_col=3,
+            created_step=20,
+        )
+        info_map.state_at(6, 3).information_age = 110
+        info_map.state_at(7, 3).information_age = 10
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=30.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.rho_task_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_rho_policy(
+                (older_task, newer_task),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=30,
+            )
+
+        assigned_by_id = {task.task_id: task.assigned_agent_id for task in updated_tasks}
+        self.assertEqual(assigned_by_id["baseline-service-rho-old"], "USV-1")
+        self.assertEqual(
+            decisions[0].selection_reason,
+            "highest_rho_window_score_partition_usv_for_baseline_service",
+        )
+        self.assertIsNotNone(decisions[0].selection_details)
+        assert decisions[0].selection_details is not None
+        self.assertIn("aoi_reward", decisions[0].selection_details)
+        self.assertIn("delay_penalty", decisions[0].selection_details)
+        self.assertTrue(decisions[0].candidate_agents)
+
+    def test_rho_respects_agent_task_cooldown(self) -> None:
+        task = TaskRecord(
+            task_id="hotspot-confirmation-rho-cooldown",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+            retry_after_step=40,
+            agent_retry_after_steps=(("USV-2", 40),),
+        )
+        execution_states = self._build_idle_execution_states(build_demo_agent_states())
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-task",
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.rho_task_allocator.build_usv_path_plan"
+        ) as planner:
+            updated_tasks, decisions = allocate_tasks_with_rho_policy(
+                (task,),
+                agents=build_demo_agent_states(),
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=30,
+            )
+
+        self.assertEqual(planner.call_count, 0)
+        self.assertEqual(updated_tasks[0].retry_after_step, 40)
+        self.assertEqual(updated_tasks[0].agent_retry_after_steps, (("USV-2", 40),))
+        self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
+        self.assertEqual(decisions, ())
+
+    def test_rho_applies_blocked_retry_only_to_current_agent(self) -> None:
+        agents = tuple(
+            replace(agent, x=287.5, y=487.5) if agent.agent_id == "USV-2" else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-3"] = replace(
+            execution_states["USV-3"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="occupied-task",
+        )
+        task = TaskRecord(
+            task_id="hotspot-confirmation-rho-blocked",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_rho_policy(
+            (task,),
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=self._build_runtime_grid_map(),
+            info_map=build_information_map(self._build_runtime_grid_map()),
+            step=20,
+        )
+
+        self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
+        self.assertEqual(
+            updated_tasks[0].agent_retry_after_steps,
+            (("USV-2", 20 + RHO_AGENT_TASK_BLOCKED_COOLDOWN_STEPS),),
+        )
+        self.assertEqual(decisions, ())
 
 
 if __name__ == "__main__":
