@@ -654,24 +654,25 @@ def build_simulation_html(replay: SimulationReplay) -> str:
           .join("")}}</g>`;
       }}
 
-      function renderHotspotMarker(cellId, stroke, fill, label) {{
-        const cell = cellCenter(cellId);
-        const [svgX, svgY] = mapPointToSvg(cell.x, cell.y);
+      function renderHotspotMarker(hotspot, stroke, fill, label) {{
+        const [svgX, svgY] = mapPointToSvg(hotspot.x, hotspot.y);
+        const markerId = hotspot.hotspot_id === null ? "?" : String(hotspot.hotspot_id);
         return `
-          <g aria-label="${{label}} Hotspot ${{cell.row}}-${{cell.col}}">
+          <g aria-label="${{label}} Hotspot #${{markerId}} (${{hotspot.row}}-${{hotspot.col}})">
             <circle cx="${{svgX.toFixed(2)}}" cy="${{svgY.toFixed(2)}}" r="11.0" fill="${{fill}}" stroke="${{stroke}}" stroke-width="1.5" stroke-dasharray="4 3" />
             <polygon points="${{svgX.toFixed(2)}},${{(svgY - 8).toFixed(2)}} ${{(svgX + 8).toFixed(2)}},${{svgY.toFixed(2)}} ${{svgX.toFixed(2)}},${{(svgY + 8).toFixed(2)}} ${{(svgX - 8).toFixed(2)}},${{svgY.toFixed(2)}}"
                      fill="${{stroke}}" opacity="0.88" />
+            <text x="${{svgX.toFixed(2)}}" y="${{(svgY + 3.6).toFixed(2)}}" fill="#F8FAFC" font-size="8.8" font-weight="700" text-anchor="middle">${{markerId}}</text>
           </g>
         `;
       }}
 
       function renderHotspotLayer(frame) {{
-        const pendingMarkup = frame.pending_hotspot_cells
-          .map((cellId) => renderHotspotMarker(cellId, "#F59E0B", "rgba(245, 158, 11, 0.18)", "Pending"))
+        const pendingMarkup = frame.pending_hotspots
+          .map((hotspot) => renderHotspotMarker(hotspot, "#F59E0B", "rgba(245, 158, 11, 0.18)", "Pending"))
           .join("");
-        const uavCheckedMarkup = frame.uav_checked_cells
-          .map((cellId) => renderHotspotMarker(cellId, "#DC2626", "rgba(248, 113, 113, 0.18)", "UAV Checked"))
+        const uavCheckedMarkup = frame.uav_checked_hotspots
+          .map((hotspot) => renderHotspotMarker(hotspot, "#DC2626", "rgba(248, 113, 113, 0.18)", "UAV Checked"))
           .join("");
         return `<g aria-label="Hotspot Knowledge Layer">${{pendingMarkup}}${{uavCheckedMarkup}}</g>`;
       }}
@@ -846,6 +847,8 @@ def _build_frame_payloads(replay: SimulationReplay, grid_map) -> str:
                 "uav_checked_cells": _encode_cell_indices(
                     frame.uav_checked_cells, cols=grid_map.cols
                 ),
+                "pending_hotspots": list(frame.pending_hotspots),
+                "uav_checked_hotspots": list(frame.uav_checked_hotspots),
                 "agents": [
                     {
                         "agent_id": agent.agent_id,

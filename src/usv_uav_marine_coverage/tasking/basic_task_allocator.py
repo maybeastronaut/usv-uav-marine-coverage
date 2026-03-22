@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from usv_uav_marine_coverage.agent_model import AgentState
+from usv_uav_marine_coverage.agent_model import AgentState, is_operational_agent
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
 from usv_uav_marine_coverage.grid import GridMap
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
 from usv_uav_marine_coverage.planning.usv_path_planner import build_usv_path_plan
 
 from .allocator_common import (
+    allocate_hotspot_proximity_override_task,
     allocate_uav_resupply_task,
     can_keep_existing_assignment,
     distance_to_task,
+    is_available_for_candidate_pool,
     is_available_for_new_assignment,
     preferred_usv_ids_for_task,
+    release_preempted_uav_resupply_tasks,
     selection_score_for_task,
     task_sort_key,
 )
@@ -42,6 +45,33 @@ def allocate_tasks_with_basic_policy(
     for task in scheduled_tasks:
         if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
             updated_tasks.append(task)
+            continue
+
+        proximity_override = allocate_hotspot_proximity_override_task(
+            task,
+            agents=agents,
+            execution_states=execution_states,
+            task_records=scheduled_tasks,
+            reserved_agent_ids=reserved_agent_ids,
+        )
+        if proximity_override is not None:
+            updated_task, decision = proximity_override
+            updated_tasks, decisions, preempted_task_ids = release_preempted_uav_resupply_tasks(
+                updated_tasks,
+                decisions,
+                support_agent_id=decision.agent_id,
+            )
+            if preempted_task_ids:
+                decision = replace(
+                    decision,
+                    selection_details={
+                        **(decision.selection_details or {}),
+                        "preempted_support_task_ids": list(preempted_task_ids),
+                    },
+                )
+            updated_tasks.append(updated_task)
+            reserved_agent_ids.add(decision.agent_id)
+            decisions.append(decision)
             continue
 
         if can_keep_existing_assignment(
@@ -80,6 +110,8 @@ def allocate_tasks_with_basic_policy(
             updated_task, decision = allocate_uav_resupply_task(
                 task,
                 agent_by_id=agent_by_id,
+                execution_states=execution_states,
+                task_records=tuple(updated_tasks),
             )
             updated_tasks.append(updated_task)
             if decision is not None:
@@ -90,11 +122,25 @@ def allocate_tasks_with_basic_policy(
             agent
             for agent in agents
             if agent.kind == "USV"
+            and is_operational_agent(agent)
             and agent.agent_id not in reserved_agent_ids
-            and is_available_for_new_assignment(execution_states.get(agent.agent_id))
+            and is_available_for_candidate_pool(
+                execution_states.get(agent.agent_id),
+                agent_id=agent.agent_id,
+                task_records=tuple(updated_tasks),
+            )
         ]
         candidates = [
-            agent for agent in candidates if agent.agent_id in preferred_usv_ids_for_task(task)
+            agent
+            for agent in candidates
+            if agent.agent_id in preferred_usv_ids_for_task(task)
+            and is_available_for_new_assignment(
+                execution_states.get(agent.agent_id),
+                agent=agent,
+                task=task,
+                agent_id=agent.agent_id,
+                task_records=tuple(updated_tasks),
+            )
         ]
         if not candidates:
             updated_tasks.append(_mark_task_unassigned(task))

@@ -7,6 +7,7 @@ from math import hypot
 
 from usv_uav_marine_coverage.agent_model import (
     AgentState,
+    can_support_uav_resupply,
     estimate_uav_energy_to_point,
     needs_uav_resupply,
 )
@@ -23,7 +24,7 @@ def build_uav_resupply_tasks(
     """Sync one low-energy resupply task per UAV when needed."""
 
     existing_by_id = {task.task_id: task for task in existing_tasks}
-    usv_agents = tuple(agent for agent in agents if agent.kind == "USV")
+    usv_agents = tuple(agent for agent in agents if can_support_uav_resupply(agent))
     next_tasks: list[TaskRecord] = []
     active_ids: set[str] = set()
 
@@ -64,9 +65,24 @@ def build_uav_resupply_tasks(
             )
             continue
 
+        if existing.status in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}:
+            next_tasks.append(
+                replace(
+                    existing,
+                    assigned_agent_id=agent.agent_id,
+                    target_x=target_x,
+                    target_y=target_y,
+                )
+            )
+            continue
+
         next_tasks.append(
             replace(
                 existing,
+                status=TaskStatus.PENDING,
+                assigned_agent_id=agent.agent_id,
+                support_agent_id=None,
+                completed_step=None,
                 target_x=target_x,
                 target_y=target_y,
             )

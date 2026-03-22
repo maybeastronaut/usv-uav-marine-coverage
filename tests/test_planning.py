@@ -22,7 +22,11 @@ from usv_uav_marine_coverage.planning.fixed_patrol_planner import build_fixed_pa
 from usv_uav_marine_coverage.planning.hybrid_astar_path_planner import (
     build_hybrid_astar_path_plan,
 )
-from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
+from usv_uav_marine_coverage.planning.path_types import PathPlan, PathPlanStatus, Waypoint
+from usv_uav_marine_coverage.planning.traffic_cost import (
+    build_traffic_cost_context,
+    traffic_transition_cost,
+)
 from usv_uav_marine_coverage.planning.uav_lawnmower_planner import (
     build_lawnmower_route,
     build_uav_lawnmower_plan,
@@ -557,6 +561,90 @@ class PlanningTestCase(unittest.TestCase):
                 for waypoint in plan.waypoints[1:]
             )
         )
+
+    def test_traffic_cost_context_marks_corridor_used_by_reference_plan(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        upper_corridor = obstacle_layout.traversable_corridors[0]
+        entry_x, entry_y = upper_corridor.control_points[0]
+        mid_x, mid_y = upper_corridor.control_points[2]
+        exit_x, exit_y = upper_corridor.control_points[-1]
+        reference_plan = PathPlan(
+            plan_id="peer-upper-corridor",
+            planner_name="astar_path_planner",
+            agent_id="USV-2",
+            task_id="traffic-reference-task",
+            status=PathPlanStatus.PLANNED,
+            waypoints=(
+                Waypoint(x=entry_x - 50.0, y=entry_y),
+                Waypoint(x=entry_x, y=entry_y),
+                Waypoint(x=mid_x, y=mid_y),
+                Waypoint(x=exit_x, y=exit_y),
+            ),
+            goal_x=exit_x,
+            goal_y=exit_y,
+            estimated_cost=300.0,
+        )
+
+        traffic_cost_context = build_traffic_cost_context(
+            agent_id="USV-1",
+            reference_plans=(reference_plan,),
+            grid_map=grid_map,
+            obstacle_layout=obstacle_layout,
+        )
+
+        self.assertIsNotNone(traffic_cost_context)
+        assert traffic_cost_context is not None
+        self.assertIn(upper_corridor.name, traffic_cost_context.corridor_penalties)
+        entry_cell = grid_map.locate_cell(*upper_corridor.control_points[0])
+        outside_cell = grid_map.locate_cell(
+            upper_corridor.control_points[0][0] - 70.0,
+            upper_corridor.control_points[0][1],
+        )
+        inside_transition_penalty = traffic_transition_cost(
+            grid_map=grid_map,
+            current=(outside_cell.row, outside_cell.col, 0),
+            next_state=(entry_cell.row, entry_cell.col, 0),
+            obstacle_layout=obstacle_layout,
+            traffic_cost_context=traffic_cost_context,
+        )
+        self.assertGreater(inside_transition_penalty, 0.0)
+
+    def test_astar_path_planner_accepts_traffic_cost_context(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        agents = build_demo_agent_states()
+        reference_plan = build_astar_path_plan(
+            next(agent for agent in agents if agent.agent_id == "USV-2"),
+            grid_map=grid_map,
+            obstacle_layout=obstacle_layout,
+            goal_x=112.5,
+            goal_y=412.5,
+            planner_name="astar_path_planner",
+            task_id="peer-traffic-task",
+        )
+        traffic_cost_context = build_traffic_cost_context(
+            agent_id="USV-1",
+            reference_plans=(reference_plan,),
+            grid_map=grid_map,
+            obstacle_layout=obstacle_layout,
+        )
+
+        plan = build_astar_path_plan(
+            next(agent for agent in agents if agent.agent_id == "USV-1"),
+            grid_map=grid_map,
+            obstacle_layout=obstacle_layout,
+            goal_x=87.5,
+            goal_y=437.5,
+            planner_name="astar_path_planner",
+            task_id="traffic-aware-task",
+            traffic_cost_context=traffic_cost_context,
+        )
+
+        self.assertEqual(plan.status, PathPlanStatus.PLANNED)
+        self.assertGreater(len(plan.waypoints), 2)
 
     def test_astar_path_planner_respects_start_heading_on_first_move(self) -> None:
         sea_map = build_default_sea_map()

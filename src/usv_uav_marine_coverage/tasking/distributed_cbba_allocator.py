@@ -9,6 +9,7 @@ from usv_uav_marine_coverage.agent_model import (
     AgentState,
     distance_to_point,
     energy_ratio,
+    is_operational_agent,
     needs_uav_resupply,
 )
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
@@ -18,9 +19,12 @@ from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
 from usv_uav_marine_coverage.planning.usv_path_planner import build_usv_path_plan
 
 from .allocator_common import (
+    allocate_hotspot_proximity_override_task,
     allocate_uav_resupply_task,
     can_keep_existing_assignment,
+    is_available_for_candidate_pool,
     is_available_for_new_assignment,
+    release_preempted_uav_resupply_tasks,
     selection_score_for_task,
     task_sort_key,
 )
@@ -102,6 +106,33 @@ def allocate_tasks_with_distributed_cbba_policy(
             updated_tasks.append(task)
             continue
 
+        proximity_override = allocate_hotspot_proximity_override_task(
+            task,
+            agents=agents,
+            execution_states=execution_states,
+            task_records=scheduled_tasks,
+            reserved_agent_ids=reserved_agent_ids,
+        )
+        if proximity_override is not None:
+            updated_task, decision = proximity_override
+            updated_tasks, decisions, preempted_task_ids = release_preempted_uav_resupply_tasks(
+                updated_tasks,
+                decisions,
+                support_agent_id=decision.agent_id,
+            )
+            if preempted_task_ids:
+                decision = replace(
+                    decision,
+                    selection_details={
+                        **(decision.selection_details or {}),
+                        "preempted_support_task_ids": list(preempted_task_ids),
+                    },
+                )
+            updated_tasks.append(updated_task)
+            reserved_agent_ids.add(decision.agent_id)
+            decisions.append(decision)
+            continue
+
         if can_keep_existing_assignment(
             task,
             agent_by_id=agent_by_id,
@@ -133,7 +164,12 @@ def allocate_tasks_with_distributed_cbba_policy(
             continue
 
         if task.task_type == TaskType.UAV_RESUPPLY:
-            updated_task, decision = allocate_uav_resupply_task(task, agent_by_id=agent_by_id)
+            updated_task, decision = allocate_uav_resupply_task(
+                task,
+                agent_by_id=agent_by_id,
+                execution_states=execution_states,
+                task_records=tuple(updated_tasks),
+            )
             updated_tasks.append(updated_task)
             if decision is not None:
                 decisions.append(decision)
@@ -148,6 +184,7 @@ def allocate_tasks_with_distributed_cbba_policy(
             execution_states=execution_states,
             grid_map=grid_map,
             info_map=info_map,
+            task_records=tuple(updated_tasks),
             reserved_agent_ids=reserved_agent_ids,
             protected_support_usv_ids=protected_support_usv_ids,
             reachability_cache=reachability_cache,
@@ -181,6 +218,7 @@ def _allocate_cbba_market(
     execution_states: dict[str, AgentExecutionState],
     grid_map: GridMap | None,
     info_map: InformationMap | None,
+    task_records: tuple[TaskRecord, ...],
     reserved_agent_ids: set[str],
     protected_support_usv_ids: set[str],
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
@@ -200,8 +238,13 @@ def _allocate_cbba_market(
         agent.agent_id: agent
         for agent in agents
         if agent.kind == "USV"
+        and is_operational_agent(agent)
         and agent.agent_id not in reserved_agent_ids
-        and is_available_for_new_assignment(execution_states.get(agent.agent_id))
+        and is_available_for_candidate_pool(
+            execution_states.get(agent.agent_id),
+            agent_id=agent.agent_id,
+            task_records=task_records,
+        )
     }
     current_step = max((task.created_step for task in tasks), default=0) if step is None else step
     assigned_tasks: list[TaskRecord] = []
@@ -441,6 +484,14 @@ def _build_local_bundle_for_agent(
         preferred_ids = set(partition.primary_usv_ids) | set(partition.secondary_usv_ids)
         if agent.agent_id not in preferred_ids:
             continue
+        if not is_available_for_new_assignment(
+            execution_states.get(agent.agent_id),
+            agent=agent,
+            task=task,
+            agent_id=agent.agent_id,
+            task_records=tasks,
+        ):
+            continue
         remembered_winner_id = _remembered_winner_for_agent(
             task,
             observer_agent_id=agent.agent_id,
@@ -562,7 +613,7 @@ def _aoi_reward_for_task(task: TaskRecord, *, info_map: InformationMap | None) -
 
 
 def _protected_support_usv_ids(agents: tuple[AgentState, ...]) -> set[str]:
-    usvs = tuple(agent for agent in agents if agent.kind == "USV")
+    usvs = tuple(agent for agent in agents if agent.kind == "USV" and is_operational_agent(agent))
     if not usvs:
         return set()
 

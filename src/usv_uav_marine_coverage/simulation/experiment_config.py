@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+from usv_uav_marine_coverage.events.event_types import AgentDamageEvent, EventType
 from usv_uav_marine_coverage.information_map import InformationMapConfig
 from usv_uav_marine_coverage.planning.usv_path_planner import SUPPORTED_USV_PATH_PLANNERS
 
@@ -51,6 +52,7 @@ class ExperimentConfig:
     scenario: ScenarioSelection
     algorithms: AlgorithmSelection
     information_map: InformationMapConfig
+    events: tuple[AgentDamageEvent, ...] = ()
 
 
 def build_default_experiment_config(
@@ -72,6 +74,7 @@ def build_default_experiment_config(
         scenario=scenario,
         algorithms=AlgorithmSelection(),
         information_map=preset.information_map,
+        events=(),
     )
 
 
@@ -141,6 +144,7 @@ def load_experiment_config(
             info_map_raw,
             base=preset.information_map,
         ),
+        events=_read_scheduled_events(raw.get("events")),
     )
     return apply_experiment_overrides(
         config,
@@ -169,6 +173,7 @@ def apply_experiment_overrides(
         scenario=config.scenario,
         algorithms=config.algorithms,
         information_map=config.information_map,
+        events=config.events,
     )
 
 
@@ -180,6 +185,16 @@ def serialize_experiment_config(config: ExperimentConfig) -> dict[str, object]:
     payload["scenario"] = dict(payload["scenario"])
     payload["simulation"] = dict(payload["simulation"])
     payload["information_map"] = dict(payload["information_map"])
+    payload["events"] = [
+        {
+            "step": event.step,
+            "type": event.event_type.value,
+            "agent_id": event.agent_id,
+            "speed_multiplier": event.speed_multiplier,
+            "turn_rate_multiplier": event.turn_rate_multiplier,
+        }
+        for event in config.events
+    ]
     return payload
 
 
@@ -198,6 +213,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
         "soft_partition_policy",
         "backlog_aware_partition_policy",
         "weighted_voronoi_partition_policy",
+        "failure_triggered_hotspot_first_soft_partition_policy",
     }
     supported_usv_planners = set(SUPPORTED_USV_PATH_PLANNERS)
     supported_uav_planners = {
@@ -245,6 +261,24 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
             "Unsupported execution policy "
             f"{config.algorithms.execution_policy!r}; supported: {sorted(supported_execution)}"
         )
+    for event in config.events:
+        if event.step < 1:
+            raise ValueError(f"Event step must be >= 1, got {event.step!r}")
+        if not event.agent_id.startswith("USV-"):
+            raise ValueError(
+                "This first event-driven replanning stage only supports USV events; "
+                f"got {event.agent_id!r}"
+            )
+        if event.event_type == EventType.SPEED_DEGRADATION and not (
+            0.0 < event.speed_multiplier <= 1.0
+        ):
+            raise ValueError("speed_degradation events require speed_multiplier in (0.0, 1.0]")
+        if event.event_type == EventType.TURN_RATE_DEGRADATION and not (
+            0.0 < event.turn_rate_multiplier <= 1.0
+        ):
+            raise ValueError(
+                "turn_rate_degradation events require turn_rate_multiplier in (0.0, 1.0]"
+            )
 
 
 def _build_information_map_config(
@@ -313,6 +347,48 @@ def _read_optional_str(raw: dict[str, object], key: str, *, default: str) -> str
     return value
 
 
+def _read_scheduled_events(raw: object) -> tuple[AgentDamageEvent, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError("events must be provided as [[events]] tables")
+
+    scheduled: list[AgentDamageEvent] = []
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"events[{index}] must be a table")
+        event_type_raw = _read_str(item, "type")
+        try:
+            event_type = EventType(event_type_raw)
+        except ValueError as exc:
+            raise ValueError(
+                "Unsupported event type "
+                f"{event_type_raw!r}; supported: {[member.value for member in EventType]}"
+            ) from exc
+        scheduled.append(
+            AgentDamageEvent(
+                step=_read_int(item, "step", minimum=1),
+                event_type=event_type,
+                agent_id=_read_str(item, "agent_id"),
+                speed_multiplier=_read_optional_float(
+                    item,
+                    "speed_multiplier",
+                    default=1.0,
+                    minimum=0.0,
+                    strict_minimum=True,
+                ),
+                turn_rate_multiplier=_read_optional_float(
+                    item,
+                    "turn_rate_multiplier",
+                    default=1.0,
+                    minimum=0.0,
+                    strict_minimum=True,
+                ),
+            )
+        )
+    return tuple(scheduled)
+
+
 def _read_optional_int(
     raw: dict[str, object],
     key: str,
@@ -336,6 +412,7 @@ def _read_optional_float(
     *,
     default: float,
     minimum: float,
+    strict_minimum: bool = False,
 ) -> float:
     value = raw.get(key)
     if value is None:
@@ -343,7 +420,10 @@ def _read_optional_float(
     if not isinstance(value, (int, float)):
         raise ValueError(f"{key} must be a float when provided")
     float_value = float(value)
-    if float_value < minimum:
+    if strict_minimum:
+        if float_value <= minimum:
+            raise ValueError(f"{key} must be > {minimum}")
+    elif float_value < minimum:
         raise ValueError(f"{key} must be >= {minimum}")
     return float_value
 

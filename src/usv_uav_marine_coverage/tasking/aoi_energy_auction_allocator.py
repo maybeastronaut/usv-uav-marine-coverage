@@ -8,6 +8,7 @@ from usv_uav_marine_coverage.agent_model import (
     AgentState,
     distance_to_point,
     energy_ratio,
+    is_operational_agent,
     needs_uav_resupply,
 )
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
@@ -17,9 +18,12 @@ from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
 from usv_uav_marine_coverage.planning.usv_path_planner import build_usv_path_plan
 
 from .allocator_common import (
+    allocate_hotspot_proximity_override_task,
     allocate_uav_resupply_task,
     can_keep_existing_assignment,
+    is_available_for_candidate_pool,
     is_available_for_new_assignment,
+    release_preempted_uav_resupply_tasks,
     selection_score_for_task,
     task_sort_key,
 )
@@ -69,6 +73,8 @@ class AuctionMarketContext:
     pending_hotspots: int
     pending_baselines: int
     baseline_guard_agent_ids: tuple[str, ...]
+    task_records: tuple[TaskRecord, ...]
+    execution_states: dict[str, AgentExecutionState]
 
 
 def allocate_tasks_with_aoi_energy_auction_policy(
@@ -98,6 +104,33 @@ def allocate_tasks_with_aoi_energy_auction_policy(
         task = _prune_expired_agent_retries(task, step)
         if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
             updated_tasks.append(task)
+            continue
+
+        proximity_override = allocate_hotspot_proximity_override_task(
+            task,
+            agents=agents,
+            execution_states=execution_states,
+            task_records=scheduled_tasks,
+            reserved_agent_ids=reserved_agent_ids,
+        )
+        if proximity_override is not None:
+            updated_task, decision = proximity_override
+            updated_tasks, decisions, preempted_task_ids = release_preempted_uav_resupply_tasks(
+                updated_tasks,
+                decisions,
+                support_agent_id=decision.agent_id,
+            )
+            if preempted_task_ids:
+                decision = replace(
+                    decision,
+                    selection_details={
+                        **(decision.selection_details or {}),
+                        "preempted_support_task_ids": list(preempted_task_ids),
+                    },
+                )
+            updated_tasks.append(updated_task)
+            reserved_agent_ids.add(decision.agent_id)
+            decisions.append(decision)
             continue
 
         if can_keep_existing_assignment(
@@ -134,6 +167,8 @@ def allocate_tasks_with_aoi_energy_auction_policy(
             updated_task, decision = allocate_uav_resupply_task(
                 task,
                 agent_by_id=agent_by_id,
+                execution_states=execution_states,
+                task_records=tuple(updated_tasks),
             )
             updated_tasks.append(updated_task)
             if decision is not None:
@@ -147,6 +182,7 @@ def allocate_tasks_with_aoi_energy_auction_policy(
         agents=agents,
         grid_map=grid_map,
         info_map=info_map,
+        task_records=tuple(updated_tasks),
         reserved_agent_ids=reserved_agent_ids,
         protected_support_usv_ids=protected_support_usv_ids,
         reachability_cache=reachability_cache,
@@ -170,6 +206,7 @@ def _allocate_one_priority_layer(
     execution_states: dict[str, AgentExecutionState],
     grid_map: GridMap | None,
     info_map: InformationMap | None,
+    task_records: tuple[TaskRecord, ...],
     reserved_agent_ids: set[str],
     protected_support_usv_ids: set[str],
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
@@ -186,8 +223,13 @@ def _allocate_one_priority_layer(
         agent.agent_id: agent
         for agent in agents
         if agent.kind == "USV"
+        and is_operational_agent(agent)
         and agent.agent_id not in reserved_agent_ids
-        and is_available_for_new_assignment(execution_states.get(agent.agent_id))
+        and is_available_for_candidate_pool(
+            execution_states.get(agent.agent_id),
+            agent_id=agent.agent_id,
+            task_records=task_records,
+        )
     }
     assigned_tasks: list[TaskRecord] = []
     decisions: list[TaskAssignment] = []
@@ -313,6 +355,8 @@ def _build_candidate_pairs(
             all_agents=all_agents,
             execution_states=execution_states,
         ),
+        task_records=tasks,
+        execution_states=execution_states,
     )
 
     for task in tasks:
@@ -410,6 +454,14 @@ def _build_bid_group(
 
     for agent in candidate_agents:
         if agent.agent_id not in candidate_ids:
+            continue
+        if not is_available_for_new_assignment(
+            market_context.execution_states.get(agent.agent_id),
+            agent=agent,
+            task=task,
+            agent_id=agent.agent_id,
+            task_records=market_context.task_records,
+        ):
             continue
         if _is_agent_task_in_cooldown(task, agent_id=agent.agent_id, step=step):
             continue
@@ -565,7 +617,7 @@ def _baseline_guard_agent_ids(
 
 
 def _protected_support_usv_ids(agents: tuple[AgentState, ...]) -> set[str]:
-    usvs = tuple(agent for agent in agents if agent.kind == "USV")
+    usvs = tuple(agent for agent in agents if agent.kind == "USV" and is_operational_agent(agent))
     if not usvs:
         return set()
 

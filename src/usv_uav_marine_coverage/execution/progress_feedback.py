@@ -12,7 +12,7 @@ from usv_uav_marine_coverage.execution.execution_types import (
     ExecutionStage,
 )
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
-from usv_uav_marine_coverage.tasking.task_types import TaskRecord
+from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
 
 USV_TASK_REPLAN_GOAL_TOLERANCE_M = 1.0
 USV_TASK_REPLAN_DEVIATION_M = 60.0
@@ -53,6 +53,53 @@ def reset_progress_state(progress_state: AgentProgressState) -> AgentProgressSta
         blocked_goal_signature=None,
         pre_recovery_stage=None,
         pre_recovery_task_id=None,
+        task_final_approach_task_id=None,
+        task_final_approach_candidate_index=-1,
+        task_final_approach_candidate_x=None,
+        task_final_approach_candidate_y=None,
+        task_final_approach_attempt_count=0,
+        task_final_approach_status=None,
+        released_task_id=None,
+        released_task_retry_until_step=0,
+        released_task_reason=None,
+        pending_assigned_task_id=None,
+        claimed_task_id=None,
+        claim_transition_reason=None,
+    )
+
+
+def record_released_task_feedback(
+    progress_state: AgentProgressState,
+    *,
+    task_id: str,
+    retry_until_step: int,
+    reason: str,
+) -> AgentProgressState:
+    """Reset runtime stall state while preserving one release signal for tasking."""
+
+    cleared_state = reset_progress_state(progress_state)
+    return replace(
+        cleared_state,
+        released_task_id=task_id,
+        released_task_retry_until_step=retry_until_step,
+        released_task_reason=reason,
+    )
+
+
+def record_task_claim_feedback(
+    progress_state: AgentProgressState,
+    *,
+    pending_assigned_task_id: str | None,
+    claimed_task_id: str | None,
+    claim_transition_reason: str | None,
+) -> AgentProgressState:
+    """Record task-ownership metadata for logging and sync projection."""
+
+    return replace(
+        progress_state,
+        pending_assigned_task_id=pending_assigned_task_id,
+        claimed_task_id=claimed_task_id,
+        claim_transition_reason=claim_transition_reason,
     )
 
 
@@ -173,10 +220,14 @@ def should_replan_task(
     execution_state: AgentExecutionState,
     active_task: TaskRecord,
     usv_path_planner: str = "astar_path_planner",
+    goal_x: float | None = None,
+    goal_y: float | None = None,
 ) -> bool:
     """Return whether the current task path should be replanned."""
 
     plan = execution_state.active_plan
+    expected_goal_x = active_task.target_x if goal_x is None else goal_x
+    expected_goal_y = active_task.target_y if goal_y is None else goal_y
     if plan is None:
         return True
     if plan.status != PathPlanStatus.PLANNED:
@@ -188,9 +239,20 @@ def should_replan_task(
         return True
     if execution_state.current_waypoint_index >= len(plan.waypoints):
         return True
-    if (
-        abs(plan.goal_x - active_task.target_x) > USV_TASK_REPLAN_GOAL_TOLERANCE_M
-        or abs(plan.goal_y - active_task.target_y) > USV_TASK_REPLAN_GOAL_TOLERANCE_M
+    if agent.kind == "USV" and active_task.task_type in {
+        TaskType.BASELINE_SERVICE,
+        TaskType.HOTSPOT_CONFIRMATION,
+    }:
+        allowed_goal_offset = max(
+            agent.coverage_radius - agent.arrival_tolerance_m,
+            USV_TASK_REPLAN_GOAL_TOLERANCE_M,
+        )
+        goal_offset = hypot(plan.goal_x - expected_goal_x, plan.goal_y - expected_goal_y)
+        if goal_offset > allowed_goal_offset:
+            return True
+    elif (
+        abs(plan.goal_x - expected_goal_x) > USV_TASK_REPLAN_GOAL_TOLERANCE_M
+        or abs(plan.goal_y - expected_goal_y) > USV_TASK_REPLAN_GOAL_TOLERANCE_M
     ):
         return True
     if agent.kind != "USV":

@@ -23,6 +23,16 @@
 ### 1.2 明确升级顺序
 
 - 当前分区层主线已经收口为：固定 `weighted_voronoi_partition_policy`
+- 如果研究重点切到“中途失效后系统如何自适应”，当前新增的 `failure_triggered_hotspot_first_soft_partition_policy` 更适合当故障应急模式：
+  - 仅在 `agent_failure` 后启用
+  - 目标不是继续维持固定责任区，而是让剩余 `USV` 优先协同清空热点链
+  - 当前实现已经进一步收紧为：只要热点 backlog 仍在，就直接压住 `baseline_service`，并释放 `RHO` 已保留的 baseline 旧任务
+  - 当前又进一步补成“热点焦点簇优先”模式：
+    - 先从未完成外海热点里识别一个最值得优先清空的焦点簇
+    - 焦点簇内热点优先开放给剩余 `USV`
+    - 焦点簇外的零散热点暂时延后
+    - 对长期未处理且不属于当前焦点簇的孤立热点，则通过 aging 规则重新放回候选，避免它被永久拖到仿真结束
+  - 目标是让 surviving `USV` 更像一支协同清扫小队，而不是继续分散去追多个边角热点
 - 当前中心化任务层主线已经收口为：
   - `cost_aware_centralized_allocator`：当前最均衡、最稳的基线
   - `rho_task_allocator`：当前最有潜力的高级任务层，已经在 `valid_cells / stale_cells / blocked` 上体现出明显优势
@@ -67,6 +77,7 @@
   - `RHO` 的窗口长度、延迟惩罚和 AoI 回报权重调参
   - 第一版分布式 `CBBA-lite` / distributed auction
   - 分布式任务分配下的 winner 冲突、收敛步数和重分配开销建模
+  - `uav_resupply` 在“当前没有健康且空闲 `USV` 可支援”时的等待、延迟或主动改派策略
   - 后续再决定是否保留 `AEA` 作为长期主线
 - 后续若做算法比较，应优先保留：
   - `cost_aware` 作为中心化稳基线
@@ -84,8 +95,10 @@
   - `USV hybrid A* + smoother`
   - 船体安全余量
   - 局部巡航段接入
+  - 第一版轻量 traffic-aware path cost
 - 后续可升级方向包括：
   - 更细致风险代价模型
+  - 更强的 corridor congestion / bottleneck traffic-aware cost，而不只是在执行层入口处协调 owner/yield
   - 更稳定的回巡航接入策略
   - 更高级 `USV` 规划算法
   - 更复杂 `UAV` 搜索与会合规划
@@ -103,10 +116,55 @@
   - 因此当前正确做法不是全时接管，而是“按需接管”
   - 也就是：只有局部风险真正出现时才启用 `MPC`，平时退回原路径跟踪
 - 当前这一版已经按上述方向修正，后续若继续加强，应优先保持这个边界，不要再回到“全时接管”的执行策略
+- 当前执行层 runtime 也已经进一步按职责拆分：
+  - `traffic_runtime` 负责 owner / yield 交通规则
+  - `return_to_patrol_runtime` 负责回巡航接入与重规划
+  - `recharge_runtime` 负责 `UAV` 会合补能同步
+  - `recovery_runtime` 负责 `USV` 局部恢复
+  - `task_final_approach_runtime` 负责 `USV` 任务末段接近的统一邻域目标与失败轮换
+  - `collision_guard` 负责近程安全防护
+  - `stage_runtime` 负责各执行阶段的主推进逻辑
+- 因而后续再修 step 级异常时，应优先按上述执行层边界落点，不要再把局部策略重新堆回 `simulation_agent_runtime.py`；`simulation_agent_runtime.py` 应继续只保留 orchestration、`YIELD` 和 progress 评估
+- 后续所有执行层改动，都应优先复跑 `docx/execution_regression_checklist.md` 里固定的 `1200 step` 回归基线，再决定是否继续扩展功能
+- 当前 `RETURN_TO_PATROL` 目标选择也已经补上“安全候选硬过滤 + stale/hotspot 价值排序”：
+  - 这一步已经把边界附近的坏回巡航目标问题从主矛盾里移走
+  - 因而后续不应再继续围绕“最近回巡航点”打补丁，而应把注意力转向任务点附近的局部通过性与 `GO_TO_TASK` 卡滞
+- 当前执行层又进一步补了两条稳定性修正：
+  - `traversable_corridors` 上的单 owner 通道让行机制，已经把“同一窄通道双艇抢行后大绕行”从主问题里移走
+  - `failed USV -> wreck zone` 的后处理，已经把“残骸仍被当活邻居导致局部抖动”从主问题里移走
+- 当前又补入了“动态局部瓶颈区通行权管理”第一版：
+  - 它不再只依赖固定 corridor
+  - 而是对一般狭窄会车区域先做 owner / yield 判定，再交给 `local_mpc` 安全执行
+  - 这一步的目的不是追求最优交通调度，而是先把“都没撞上但会互相卡死”的现象从主问题里移走
+- 因而这条线下一步不应再继续先围绕“残骸边缘抖动”打补丁，而应把关注点转向：
+  - 更一般的 `GO_TO_TASK` 局部通过性
+  - 以及动态 bottleneck reservation 是否要从“两艇冲突”扩到更一般的多艇局部交通秩序
+- 当前 `baseline_service / hotspot_confirmation` 的最终接近逻辑也已经统一收口到 `task_final_approach_runtime`：
+  - 后续若再出现“接近末段卡住、反复 recovery、错误提前进入 ON_TASK”这类问题，应优先在这条统一机制内修，而不是再分别在 `stage_runtime / recovery_runtime / task_approach` 上打零散补丁
+
+- 任务层与执行层的“所有权状态机”现在单独收口到了 `task_claim_runtime`：
+  - 任务层只负责把任务分给某个 agent
+  - 执行层必须通过显式 claim 才算真正接单
+  - `simulation_task_runtime.sync_task_statuses(...)` 只负责把执行事实投影回任务状态，不再在正常路径里猜测一个 `ASSIGNED` 任务应不应该被自动回收到 `REQUEUED`
+  - 当前又进一步补入了“末段 through 性评分 + 失败预算 + agent 级冷却回传任务层”，因此后续若再出现同类问题，应优先继续增强这条统一闭环，而不是回到按单个 step 打补丁
+  - 当前热点还会在 HTML 回放中显示稳定 `hotspot_id` 数字编号，并与 `events.jsonl` 中的热点字段直接对应，后续排查不应再只凭坐标肉眼猜测
+- 任务层当前还补入了一条失效应急下的热点 proximity override 规则：
+  - 平时 `RETURN_TO_PATROL` 且无 active task 的 `USV`，只是允许进入附近普通任务候选
+  - 进入 `agent_failure` 后的应急模式时，空闲 `PATROL / RETURN_TO_PATROL` `USV` 若已足够靠近未完成热点，就会直接强制接管
+  - 因此后续如果再看到“surviving USV 从热点旁边路过却没去做”，应优先查它是否超出了近距离阈值、或者当时已经有 active task，而不是默认任务层还在等常规分配
+  - 当前又补成：若 surviving `USV` 只是被 `uav_resupply` 以 `ASSIGNED` 状态预留为支援艇，而附近热点已进入 proximity override 半径，则热点可以反压这条补能预留
+  - 但已经 `IN_PROGRESS` 的补能不会被热点强制打断；若后续仍出现“热点就在船边但没接”，应优先查当时是否正处于实际补能中
+- 当前第一版 `USV` 动态事件与受损重规划也已经落地：
+  - 当前只支持 `USV`
+  - 当前支持 `agent_failure / speed_degradation / turn_rate_degradation`
+  - 其中只有 `agent_failure` 会立刻释放任务并触发后续任务重分配
+  - `speed_degradation / turn_rate_degradation` 当前只改变执行与路径能力，不强制立即改派任务
 - 若后续引入更真实物理模型，则执行层必须同步升级
 - 后续可考虑：
   - 在 `local_mpc_execution` 基础上继续提高 `USV-USV` 避碰稳定性
-  - 事件触发的局部重规划，用于突然出现的海浪区/危险区
+  - 在 `GO_TO_TASK` 阶段补更稳的局部通过性判定与坏目标替换，避免把 `RETURN_TO_PATROL` 和残骸抖动修掉后问题整体转移到任务接近阶段
+  - 把当前静态配置事件扩展为更真实的动态环境事件，用于突然出现的海浪区/危险区
+  - 在 `speed_degradation / turn_rate_degradation` 事件下增加“是否改派任务”的显式重规划策略
   - 更贴近船舶/飞行器动力学的控制输入约束
   - 更自然的局部避障与恢复动作
 - 后续闭环层级建议保持：

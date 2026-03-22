@@ -451,6 +451,44 @@ class ExecutionTestCase(unittest.TestCase):
         self.assertLess(advanced_agent.speed_mps, agent.speed_mps)
         self.assertLess(advanced_agent.x, agent.x + agent.cruise_speed_mps)
 
+    def test_local_mpc_path_follower_avoids_hugging_map_edge(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-3")
+        agent = replace(agent, x=996.0, y=906.0, heading_deg=-48.0, speed_mps=3.9)
+        state = AgentExecutionState(
+            agent_id=agent.agent_id,
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="task-mpc-edge",
+            active_plan=PathPlan(
+                plan_id="plan-mpc-edge",
+                planner_name="astar_path_planner",
+                agent_id=agent.agent_id,
+                task_id="task-mpc-edge",
+                status=PathPlanStatus.PLANNED,
+                waypoints=(
+                    Waypoint(x=agent.x, y=agent.y),
+                    Waypoint(x=987.5, y=808.5),
+                ),
+                goal_x=987.5,
+                goal_y=808.5,
+                estimated_cost=98.0,
+            ),
+            current_waypoint_index=1,
+            patrol_route_id=agent.agent_id,
+            patrol_waypoint_index=0,
+        )
+
+        advanced_agent, _, outcome = follow_path_step_with_local_mpc(
+            agent,
+            state,
+            dt_seconds=1.0,
+            grid_width=1000.0,
+            grid_height=1000.0,
+        )
+
+        self.assertEqual(outcome, ExecutionOutcome.ADVANCING)
+        self.assertLess(advanced_agent.x, 1000.0)
+        self.assertLess(advanced_agent.x, agent.x + 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

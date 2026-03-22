@@ -12,9 +12,11 @@ from usv_uav_marine_coverage.agent_model import (
     AgentState,
     normalize_heading_deg,
 )
+from usv_uav_marine_coverage.environment import ObstacleLayout
 from usv_uav_marine_coverage.grid import GridMap
 
 from .path_types import PathPlan, PathPlanStatus, Waypoint
+from .traffic_cost import TrafficCostContext, traffic_transition_cost
 
 DEFAULT_HEADING_BIN_COUNT = 16
 
@@ -107,11 +109,13 @@ def build_astar_path_plan(
     agent: AgentState,
     *,
     grid_map: GridMap,
+    obstacle_layout: ObstacleLayout | None = None,
     goal_x: float,
     goal_y: float,
     planner_name: str,
     task_id: str | None,
     stats_context: str = "unspecified",
+    traffic_cost_context: TrafficCostContext | None = None,
 ) -> PathPlan:
     """Build one baseline heading-aware A* plan for the current USV task target."""
 
@@ -124,6 +128,8 @@ def build_astar_path_plan(
         task_id=task_id,
         stats_context=stats_context,
         tuning=ASTAR_TUNING,
+        obstacle_layout=obstacle_layout,
+        traffic_cost_context=traffic_cost_context,
     )
 
 
@@ -131,12 +137,14 @@ def build_heading_aware_path_plan(
     agent: AgentState,
     *,
     grid_map: GridMap,
+    obstacle_layout: ObstacleLayout | None = None,
     goal_x: float,
     goal_y: float,
     planner_name: str,
     task_id: str | None,
     stats_context: str = "unspecified",
     tuning: PlannerTuning = ASTAR_TUNING,
+    traffic_cost_context: TrafficCostContext | None = None,
 ) -> PathPlan:
     """Build one configured heading-aware grid path plan."""
 
@@ -168,6 +176,8 @@ def build_heading_aware_path_plan(
         goal=(goal_cell.row, goal_cell.col),
         start_pose=(agent.x, agent.y),
         tuning=tuning,
+        obstacle_layout=obstacle_layout,
+        traffic_cost_context=traffic_cost_context,
     )
     if path_states is None:
         path_states, expanded_nodes = _search_with_start_pose_fallback(
@@ -175,6 +185,8 @@ def build_heading_aware_path_plan(
             start_cell=start_cell,
             goal_cell=goal_cell,
             tuning=tuning,
+            obstacle_layout=obstacle_layout,
+            traffic_cost_context=traffic_cost_context,
         )
     if path_states is None:
         return _blocked_plan(
@@ -261,6 +273,8 @@ def _search_with_start_pose_fallback(
     start_cell,
     goal_cell,
     tuning: PlannerTuning,
+    obstacle_layout: ObstacleLayout | None = None,
+    traffic_cost_context: TrafficCostContext | None = None,
 ) -> tuple[tuple[tuple[int, int, int], ...] | None, int]:
     fallback_pose = (start_cell.center_x, start_cell.center_y)
     fallback_bins = _fallback_start_heading_bins(
@@ -278,6 +292,8 @@ def _search_with_start_pose_fallback(
             goal=(goal_cell.row, goal_cell.col),
             start_pose=fallback_pose,
             tuning=tuning,
+            obstacle_layout=obstacle_layout,
+            traffic_cost_context=traffic_cost_context,
         )
         if path_states is not None:
             return (path_states, expanded_nodes)
@@ -312,6 +328,8 @@ def _search_heading_aware_path(
     goal: tuple[int, int],
     start_pose: tuple[float, float],
     tuning: PlannerTuning,
+    obstacle_layout: ObstacleLayout | None = None,
+    traffic_cost_context: TrafficCostContext | None = None,
 ) -> tuple[tuple[tuple[int, int, int], ...] | None, int]:
     open_heap: list[tuple[float, int, tuple[int, int, int]]] = []
     heappush(open_heap, (_heuristic(start[:2], goal, grid_map.cell_size), 0, start))
@@ -330,6 +348,8 @@ def _search_heading_aware_path(
             start=start,
             start_pose=start_pose,
             tuning=tuning,
+            obstacle_layout=obstacle_layout,
+            traffic_cost_context=traffic_cost_context,
         ):
             next_cost = cost_so_far[current] + transition_cost
             if next_cost >= cost_so_far.get(next_state, float("inf")):
@@ -350,6 +370,8 @@ def _expand_motion_primitives(
     start: tuple[int, int, int],
     start_pose: tuple[float, float],
     tuning: PlannerTuning,
+    obstacle_layout: ObstacleLayout | None = None,
+    traffic_cost_context: TrafficCostContext | None = None,
 ) -> tuple[tuple[tuple[int, int, int], float], ...]:
     row, col, heading_bin = current
     current_x, current_y = _state_pose(
@@ -394,6 +416,8 @@ def _expand_motion_primitives(
                     next_state=next_state,
                     steering_action=steering_action,
                     tuning=tuning,
+                    obstacle_layout=obstacle_layout,
+                    traffic_cost_context=traffic_cost_context,
                 ),
             )
         )
@@ -408,6 +432,8 @@ def _transition_cost(
     next_state: tuple[int, int, int],
     steering_action: int,
     tuning: PlannerTuning,
+    obstacle_layout: ObstacleLayout | None = None,
+    traffic_cost_context: TrafficCostContext | None = None,
 ) -> float:
     current_cell = grid_map.cell_at(current[0], current[1])
     next_cell = grid_map.cell_at(next_state[0], next_state[1])
@@ -425,6 +451,13 @@ def _transition_cost(
     base_cost += heading_delta_bins * tuning.heading_change_cost
     if next_cell.zone_name != current_cell.zone_name and "Risk" in next_cell.zone_name:
         base_cost += grid_map.cell_size * 0.5
+    base_cost += traffic_transition_cost(
+        grid_map=grid_map,
+        current=current,
+        next_state=next_state,
+        obstacle_layout=obstacle_layout,
+        traffic_cost_context=traffic_cost_context,
+    )
     return base_cost
 
 

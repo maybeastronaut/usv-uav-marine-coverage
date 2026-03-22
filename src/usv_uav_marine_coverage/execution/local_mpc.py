@@ -15,6 +15,7 @@ from usv_uav_marine_coverage.agent_model import (
     compute_control_command,
     shortest_heading_delta_deg,
 )
+from usv_uav_marine_coverage.execution.execution_types import WreckZone
 from usv_uav_marine_coverage.planning.path_types import Waypoint
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ LOCAL_MPC_CLEARANCE_WEIGHT = 18.0
 LOCAL_MPC_HEADING_WEIGHT = 0.12
 LOCAL_MPC_SPEED_WEIGHT = 1.2
 LOCAL_MPC_STOPPING_SPEED_MPS = 0.0
+LOCAL_MPC_EDGE_CLEARANCE_M = USV_COLLISION_CLEARANCE_M * 2.0
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,9 @@ def compute_local_mpc_decision(
     dt_seconds: float,
     obstacle_layout: ObstacleLayout | None,
     neighboring_agents: tuple[AgentState, ...] = (),
+    wreck_zones: tuple[WreckZone, ...] = (),
+    grid_width: float | None = None,
+    grid_height: float | None = None,
 ) -> LocalMpcDecision:
     """Return one short-horizon control command that tracks the path while avoiding hazards."""
 
@@ -72,6 +77,9 @@ def compute_local_mpc_decision(
             dt_seconds=dt_seconds,
             obstacle_layout=obstacle_layout,
             neighboring_agents=neighboring_agents,
+            wreck_zones=wreck_zones,
+            grid_width=grid_width,
+            grid_height=grid_height,
         )
         if rollout is None:
             continue
@@ -149,6 +157,9 @@ def _simulate_rollout(
     dt_seconds: float,
     obstacle_layout: ObstacleLayout | None,
     neighboring_agents: tuple[AgentState, ...],
+    wreck_zones: tuple[WreckZone, ...],
+    grid_width: float | None,
+    grid_height: float | None,
 ) -> tuple[float, float] | None:
     simulated_agent = agent
     predicted_neighbors = neighboring_agents
@@ -162,6 +173,9 @@ def _simulate_rollout(
             simulated_agent,
             obstacle_layout=obstacle_layout,
             neighboring_agents=predicted_neighbors,
+            wreck_zones=wreck_zones,
+            grid_width=grid_width,
+            grid_height=grid_height,
         )
         min_clearance_m = min(min_clearance_m, clearance_m)
         if clearance_m <= 0.0:
@@ -208,8 +222,19 @@ def _minimum_clearance(
     *,
     obstacle_layout: ObstacleLayout | None,
     neighboring_agents: tuple[AgentState, ...],
+    wreck_zones: tuple[WreckZone, ...],
+    grid_width: float | None,
+    grid_height: float | None,
 ) -> float:
     best_clearance_m = float("inf")
+    if grid_width is not None and grid_height is not None:
+        best_clearance_m = min(
+            best_clearance_m,
+            agent.x - LOCAL_MPC_EDGE_CLEARANCE_M,
+            grid_width - agent.x - LOCAL_MPC_EDGE_CLEARANCE_M,
+            agent.y - LOCAL_MPC_EDGE_CLEARANCE_M,
+            grid_height - agent.y - LOCAL_MPC_EDGE_CLEARANCE_M,
+        )
     if obstacle_layout is not None:
         for obstacle in obstacle_layout.risk_zone_obstacles:
             if _point_in_polygon(agent.x, agent.y, obstacle.points):
@@ -232,6 +257,11 @@ def _minimum_clearance(
         best_clearance_m = min(
             best_clearance_m,
             hypot(agent.x - neighbor.x, agent.y - neighbor.y) - LOCAL_MPC_NEIGHBOR_CLEARANCE_M,
+        )
+    for wreck in wreck_zones:
+        best_clearance_m = min(
+            best_clearance_m,
+            hypot(agent.x - wreck.x, agent.y - wreck.y) - wreck.radius,
         )
     return best_clearance_m
 

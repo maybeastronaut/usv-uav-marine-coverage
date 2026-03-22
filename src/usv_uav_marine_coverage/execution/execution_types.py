@@ -17,7 +17,9 @@ class ExecutionStage(StrEnum):
     GO_TO_RENDEZVOUS = "go_to_rendezvous"
     ON_RECHARGE = "on_recharge"
     RETURN_TO_PATROL = "return_to_patrol"
+    YIELD = "yield"
     RECOVERY = "recovery"
+    FAILED = "failed"
 
 
 class ExecutionOutcome(StrEnum):
@@ -44,9 +46,29 @@ class AgentExecutionState:
     patrol_waypoint_index: int
     return_target_x: float | None = None
     return_target_y: float | None = None
+    return_target_source: str | None = None
     rejoin_to_segment: bool = False
+    yield_target_x: float | None = None
+    yield_target_y: float | None = None
+    yield_reason: str | None = None
+    reserved_corridor_name: str | None = None
+    corridor_owner_agent_id: str | None = None
+    corridor_reservation_until_step: int = -1
+    reserved_bottleneck_zone_id: str | None = None
+    bottleneck_owner_agent_id: str | None = None
+    pre_yield_stage: ExecutionStage | None = None
     last_return_plan_step: int = -1
     last_patrol_plan_step: int = -1
+
+
+@dataclass(frozen=True)
+class WreckZone:
+    """One static keepout zone created by a failed USV."""
+
+    source_agent_id: str
+    x: float
+    y: float
+    radius: float
 
 
 @dataclass(frozen=True)
@@ -63,6 +85,18 @@ class AgentProgressState:
     blocked_goal_signature: str | None = None
     pre_recovery_stage: ExecutionStage | None = None
     pre_recovery_task_id: str | None = None
+    task_final_approach_task_id: str | None = None
+    task_final_approach_candidate_index: int = -1
+    task_final_approach_candidate_x: float | None = None
+    task_final_approach_candidate_y: float | None = None
+    task_final_approach_attempt_count: int = 0
+    task_final_approach_status: str | None = None
+    released_task_id: str | None = None
+    released_task_retry_until_step: int = 0
+    released_task_reason: str | None = None
+    pending_assigned_task_id: str | None = None
+    claimed_task_id: str | None = None
+    claim_transition_reason: str | None = None
 
 
 @dataclass(frozen=True)

@@ -8,6 +8,7 @@ from usv_uav_marine_coverage.agent_model import (
     AgentState,
     distance_to_point,
     energy_ratio,
+    is_operational_agent,
     needs_uav_resupply,
 )
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
@@ -17,13 +18,21 @@ from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
 from usv_uav_marine_coverage.planning.usv_path_planner import build_usv_path_plan
 
 from .allocator_common import (
+    allocate_hotspot_proximity_override_task,
     allocate_uav_resupply_task,
     can_keep_existing_assignment,
+    is_available_for_candidate_pool,
     is_available_for_new_assignment,
+    release_preempted_uav_resupply_tasks,
     selection_score_for_task,
     task_sort_key,
 )
 from .partitioning import build_task_partition
+from .partitioning.failure_hotspot_soft_partition import (
+    failure_hotspot_emergency_active,
+    should_suppress_baseline_after_failure,
+    should_suppress_non_focus_hotspot_after_failure,
+)
 from .task_types import TaskAssignment, TaskRecord, TaskStatus, TaskType
 
 HOTSPOT_BASE_VALUE = 84.0
@@ -51,6 +60,7 @@ class RhoCandidate:
     path_cost: float
     delay_penalty: float
     energy_penalty: float
+    partition_reason: str
 
 
 def allocate_tasks_with_rho_policy(
@@ -76,12 +86,62 @@ def allocate_tasks_with_rho_policy(
 
     pending_hotspots: list[TaskRecord] = []
     pending_baselines: list[TaskRecord] = []
+    released_task_ids: set[str] = set()
+    force_available_agent_ids: set[str] = set()
 
     for task in scheduled_tasks:
         task = _prune_expired_agent_retries(task, step)
         if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
             updated_tasks.append(task)
             continue
+
+        proximity_override = allocate_hotspot_proximity_override_task(
+            task,
+            agents=agents,
+            execution_states=execution_states,
+            task_records=scheduled_tasks,
+            reserved_agent_ids=reserved_agent_ids,
+        )
+        if proximity_override is not None:
+            updated_task, decision = proximity_override
+            updated_tasks, decisions, preempted_task_ids = release_preempted_uav_resupply_tasks(
+                updated_tasks,
+                decisions,
+                support_agent_id=decision.agent_id,
+            )
+            if preempted_task_ids:
+                decision = replace(
+                    decision,
+                    selection_details={
+                        **(decision.selection_details or {}),
+                        "preempted_support_task_ids": list(preempted_task_ids),
+                    },
+                )
+            updated_tasks.append(updated_task)
+            reserved_agent_ids.add(decision.agent_id)
+            decisions.append(decision)
+            continue
+
+        if zone_partition_policy == "failure_triggered_hotspot_first_soft_partition_policy" and (
+            should_suppress_baseline_after_failure(
+                task,
+                tasks=scheduled_tasks,
+                agents=agents,
+            )
+            or should_suppress_non_focus_hotspot_after_failure(
+                task,
+                tasks=scheduled_tasks,
+                agents=agents,
+            )
+        ):
+            if task.assigned_agent_id is not None:
+                released_task_ids.add(task.task_id)
+                force_available_agent_ids.add(task.assigned_agent_id)
+            task = replace(
+                task,
+                status=TaskStatus.REQUEUED if task.assigned_agent_id else TaskStatus.PENDING,
+                assigned_agent_id=None,
+            )
 
         if can_keep_existing_assignment(
             task,
@@ -114,7 +174,12 @@ def allocate_tasks_with_rho_policy(
             continue
 
         if task.task_type == TaskType.UAV_RESUPPLY:
-            updated_task, decision = allocate_uav_resupply_task(task, agent_by_id=agent_by_id)
+            updated_task, decision = allocate_uav_resupply_task(
+                task,
+                agent_by_id=agent_by_id,
+                execution_states=execution_states,
+                task_records=tuple(updated_tasks),
+            )
             updated_tasks.append(updated_task)
             if decision is not None:
                 decisions.append(decision)
@@ -131,6 +196,7 @@ def allocate_tasks_with_rho_policy(
             agents=agents,
             grid_map=grid_map,
             info_map=info_map,
+            task_records=tuple(updated_tasks),
             reserved_agent_ids=reserved_agent_ids,
             protected_support_usv_ids=protected_support_usv_ids,
             reachability_cache=reachability_cache,
@@ -139,6 +205,8 @@ def allocate_tasks_with_rho_policy(
             zone_partition_policy=zone_partition_policy,
             all_agents=agents,
             execution_states=execution_states,
+            force_available_agent_ids=force_available_agent_ids,
+            released_task_ids=released_task_ids,
         )
         updated_tasks.extend(assigned_tasks)
         decisions.extend(group_decisions)
@@ -154,6 +222,7 @@ def _allocate_one_priority_layer(
     execution_states: dict[str, AgentExecutionState],
     grid_map: GridMap | None,
     info_map: InformationMap | None,
+    task_records: tuple[TaskRecord, ...],
     reserved_agent_ids: set[str],
     protected_support_usv_ids: set[str],
     reachability_cache: dict[tuple[str, str, float, float], tuple[bool, float]],
@@ -161,6 +230,8 @@ def _allocate_one_priority_layer(
     usv_path_planner: str,
     zone_partition_policy: str,
     all_agents: tuple[AgentState, ...],
+    force_available_agent_ids: set[str],
+    released_task_ids: set[str],
 ) -> tuple[list[TaskRecord], list[TaskAssignment], set[str]]:
     if not tasks:
         return ([], [], set())
@@ -170,8 +241,21 @@ def _allocate_one_priority_layer(
         agent.agent_id: agent
         for agent in agents
         if agent.kind == "USV"
+        and is_operational_agent(agent)
         and agent.agent_id not in reserved_agent_ids
-        and is_available_for_new_assignment(execution_states.get(agent.agent_id))
+        and (
+            is_available_for_candidate_pool(
+                execution_states.get(agent.agent_id),
+                agent_id=agent.agent_id,
+                task_records=task_records,
+            )
+            or _is_force_available_after_emergency_release(
+                execution_states.get(agent.agent_id),
+                agent_id=agent.agent_id,
+                force_available_agent_ids=force_available_agent_ids,
+                released_task_ids=released_task_ids,
+            )
+        )
     }
     assigned_tasks: list[TaskRecord] = []
     decisions: list[TaskAssignment] = []
@@ -183,6 +267,9 @@ def _allocate_one_priority_layer(
         candidate_pairs, newly_blocked = _build_candidate_pairs(
             tuple(remaining_tasks.values()),
             candidate_agents=tuple(available_agents.values()),
+            task_context=(
+                tuple(task_records) + tuple(assigned_tasks) + tuple(remaining_tasks.values())
+            ),
             grid_map=grid_map,
             info_map=info_map,
             protected_support_usv_ids=protected_support_usv_ids,
@@ -192,6 +279,8 @@ def _allocate_one_priority_layer(
             zone_partition_policy=zone_partition_policy,
             all_agents=all_agents,
             execution_states=execution_states,
+            force_available_agent_ids=force_available_agent_ids,
+            released_task_ids=released_task_ids,
         )
         for task_id, agent_ids in newly_blocked.items():
             blocked_agent_ids_by_task.setdefault(task_id, set()).update(agent_ids)
@@ -224,6 +313,7 @@ def _allocate_one_priority_layer(
                         "path_cost": round(candidate.path_cost, 3),
                         "delay_penalty": round(candidate.delay_penalty, 3),
                         "energy_penalty": round(candidate.energy_penalty, 3),
+                        "partition_reason": candidate.partition_reason,
                     }
                     for candidate in candidate_pairs
                     if candidate.task.task_id == selected_task.task_id
@@ -245,6 +335,7 @@ def _allocate_one_priority_layer(
                     "path_cost": round(selected_candidate.path_cost, 3),
                     "delay_penalty": round(selected_candidate.delay_penalty, 3),
                     "energy_penalty": round(selected_candidate.energy_penalty, 3),
+                    "partition_reason": selected_candidate.partition_reason,
                     "final_bid": round(selected_candidate.score, 3),
                 },
                 candidate_agents=candidate_scores,
@@ -270,6 +361,7 @@ def _build_candidate_pairs(
     tasks: tuple[TaskRecord, ...],
     *,
     candidate_agents: tuple[AgentState, ...],
+    task_context: tuple[TaskRecord, ...],
     grid_map: GridMap | None,
     info_map: InformationMap | None,
     protected_support_usv_ids: set[str],
@@ -279,6 +371,8 @@ def _build_candidate_pairs(
     zone_partition_policy: str,
     all_agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
+    force_available_agent_ids: set[str],
+    released_task_ids: set[str],
 ) -> tuple[list[RhoCandidate], dict[str, set[str]]]:
     pairs: list[RhoCandidate] = []
     blocked_agent_ids_by_task: dict[str, set[str]] = {}
@@ -287,7 +381,13 @@ def _build_candidate_pairs(
         partition = build_task_partition(
             task,
             policy_name=zone_partition_policy,
-            tasks=tasks,
+            tasks=_partition_context_tasks(
+                tasks=task_context,
+                all_agents=all_agents,
+                execution_states=execution_states,
+                force_available_agent_ids=force_available_agent_ids,
+                released_task_ids=released_task_ids,
+            ),
             agents=all_agents,
             execution_states=execution_states,
             step=step,
@@ -295,6 +395,14 @@ def _build_candidate_pairs(
         preferred_ids = set(partition.primary_usv_ids) | set(partition.secondary_usv_ids)
         for agent in candidate_agents:
             if agent.agent_id not in preferred_ids:
+                continue
+            if not is_available_for_new_assignment(
+                execution_states.get(agent.agent_id),
+                agent=agent,
+                task=task,
+                agent_id=agent.agent_id,
+                task_records=task_context,
+            ):
                 continue
             if _is_agent_task_in_cooldown(task, agent_id=agent.agent_id, step=step):
                 continue
@@ -315,6 +423,7 @@ def _build_candidate_pairs(
                     estimated_cost=estimated_cost,
                     info_map=info_map,
                     protected_support_usv_ids=protected_support_usv_ids,
+                    partition_reason=partition.partition_reason,
                 )
             )
     return (pairs, blocked_agent_ids_by_task)
@@ -327,6 +436,7 @@ def _build_rho_candidate(
     estimated_cost: float,
     info_map: InformationMap | None,
     protected_support_usv_ids: set[str],
+    partition_reason: str,
 ) -> RhoCandidate:
     base_value = (
         HOTSPOT_BASE_VALUE
@@ -355,7 +465,50 @@ def _build_rho_candidate(
         path_cost=round(estimated_cost, 3),
         delay_penalty=round(delay_penalty, 3),
         energy_penalty=energy_penalty,
+        partition_reason=partition_reason,
     )
+
+
+def _partition_context_tasks(
+    *,
+    tasks: tuple[TaskRecord, ...],
+    all_agents: tuple[AgentState, ...],
+    execution_states: dict[str, AgentExecutionState],
+    force_available_agent_ids: set[str],
+    released_task_ids: set[str],
+) -> tuple[TaskRecord, ...]:
+    if not failure_hotspot_emergency_active(tasks=tasks, agents=all_agents):
+        return tasks
+    if not released_task_ids:
+        return tasks
+
+    normalized: list[TaskRecord] = []
+    for task in tasks:
+        if task.task_id not in released_task_ids:
+            normalized.append(task)
+            continue
+        normalized.append(
+            replace(
+                task,
+                status=TaskStatus.REQUEUED if task.assigned_agent_id else TaskStatus.PENDING,
+                assigned_agent_id=None,
+            )
+        )
+    return tuple(normalized)
+
+
+def _is_force_available_after_emergency_release(
+    execution_state: AgentExecutionState | None,
+    *,
+    agent_id: str,
+    force_available_agent_ids: set[str],
+    released_task_ids: set[str],
+) -> bool:
+    if agent_id not in force_available_agent_ids:
+        return False
+    if execution_state is None:
+        return False
+    return execution_state.active_task_id in released_task_ids
 
 
 def _aoi_reward_for_task(task: TaskRecord, *, info_map: InformationMap | None) -> float:
@@ -492,9 +645,12 @@ def _mark_task_unassigned(
             retry_by_agent.get(agent_id, 0),
         )
     agent_retry_after_steps = tuple(sorted(retry_by_agent.items()))
+    next_status = task.status
+    if next_status != TaskStatus.REQUEUED:
+        next_status = TaskStatus.REQUEUED if task.assigned_agent_id else TaskStatus.PENDING
     return replace(
         task,
-        status=TaskStatus.REQUEUED if task.assigned_agent_id else TaskStatus.PENDING,
+        status=next_status,
         assigned_agent_id=None,
         retry_after_step=max(
             (retry_after for _, retry_after in agent_retry_after_steps),

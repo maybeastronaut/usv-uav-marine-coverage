@@ -8,17 +8,26 @@ from math import atan2, degrees, hypot
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from usv_uav_marine_coverage.agent_model import AgentState, TaskMode, shortest_heading_delta_deg
+from usv_uav_marine_coverage.agent_model import (
+    AgentState,
+    TaskMode,
+    shortest_heading_delta_deg,
+)
 from usv_uav_marine_coverage.environment import ObstacleLayout, SeaMap
 from usv_uav_marine_coverage.execution.execution_types import (
     AgentExecutionState,
     AgentProgressState,
+    ExecutionStage,
     UavCoverageState,
+)
+from usv_uav_marine_coverage.execution.task_claim_runtime import (
+    find_task_by_id,
+    select_claimable_task_for_agent,
 )
 from usv_uav_marine_coverage.grid import GridCoverageMap
 from usv_uav_marine_coverage.information_map import HotspotKnowledgeState, InformationMap
 from usv_uav_marine_coverage.planning.astar_path_planner import PlannerMetricsSnapshot
-from usv_uav_marine_coverage.tasking.task_types import TaskRecord
+from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskStatus, TaskType
 
 if TYPE_CHECKING:
     from .simulation_core import SimulationFrame, SimulationReplay
@@ -199,7 +208,10 @@ def serialize_initial_agent(agent: AgentState) -> dict[str, object]:
         if agent.energy_capacity > 0.0
         else None,
         "task_mode": agent.task.mode.value,
-        "available": True,
+        "available": agent.is_operational,
+        "health_status": agent.health_status.value,
+        "speed_multiplier": round(agent.speed_multiplier, 3),
+        "turn_rate_multiplier": round(agent.turn_rate_multiplier, 3),
     }
 
 
@@ -218,6 +230,10 @@ def serialize_agent_step(agent: AgentState) -> dict[str, object]:
         "energy_ratio": round(agent.energy_level / agent.energy_capacity, 6)
         if agent.energy_capacity > 0.0
         else None,
+        "health_status": agent.health_status.value,
+        "speed_multiplier": round(agent.speed_multiplier, 3),
+        "turn_rate_multiplier": round(agent.turn_rate_multiplier, 3),
+        "is_operational": agent.is_operational,
         "task_mode": agent.task.mode.value,
         "target_x": None if agent.task.target_x is None else round(agent.task.target_x, 3),
         "target_y": None if agent.task.target_y is None else round(agent.task.target_y, 3),
@@ -257,6 +273,10 @@ def build_step_log(
     progress_states: dict[str, AgentProgressState],
     uav_coverage_states: dict[str, UavCoverageState] | None,
     planner_metrics: PlannerMetricsSnapshot,
+    failure_events: tuple[dict[str, object], ...] = (),
+    reassignments: tuple[dict[str, object], ...] = (),
+    wreck_zones: tuple[dict[str, object], ...] = (),
+    failed_agent_ids: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Build one structured per-step simulation log record."""
 
@@ -283,6 +303,8 @@ def build_step_log(
         agents,
         task_records=task_records,
         execution_states=execution_states,
+        progress_states=progress_states,
+        info_map=info_map,
     )
 
     observed_union = sorted({index for indices in observed_by_agent.values() for index in indices})
@@ -321,11 +343,25 @@ def build_step_log(
             "active_hotspot_cells": active_hotspot_cells,
             "active_ground_truth_hotspots": active_ground_truth_hotspots,
             "uav_checked_cells": uav_checked_cells,
+            "pending_hotspots": _serialize_active_hotspots(
+                info_map, state_filter=HotspotKnowledgeState.NONE
+            ),
+            "uav_checked_hotspots": _serialize_active_hotspots(
+                info_map, state_filter=HotspotKnowledgeState.UAV_CHECKED
+            ),
         },
         "task_layer": {
             "task_assignments": task_assignments,
             "task_decisions": list(task_decisions),
-            "tasks": [serialize_task_record(task) for task in task_records],
+            "tasks": [
+                serialize_task_record(
+                    task,
+                    info_map=info_map,
+                    execution_states=execution_states,
+                    progress_states=progress_states,
+                )
+                for task in task_records
+            ],
             "task_rejections": [],
             "newly_uav_checked_by_agent": serialize_index_mapping(detected_by_agent),
             "confirmed_by_agent": serialize_index_mapping(confirmations_by_agent),
@@ -344,9 +380,11 @@ def build_step_log(
         "execution_layer": execution_updates,
         "hotspot_chain": hotspot_chain,
         "failure_recovery": {
-            "failure_events": [],
-            "reassignments": [],
-            "recovery_steps": None,
+            "failure_events": list(failure_events),
+            "reassignments": list(reassignments),
+            "recovery_steps": None if not reassignments else step,
+            "wreck_zones": list(wreck_zones),
+            "failed_agent_ids": list(failed_agent_ids),
         },
         "coverage": {
             "covered_cells": coverage_map.covered_cells,
@@ -378,6 +416,8 @@ def build_event_totals(step_logs: tuple[dict[str, object], ...]) -> dict[str, in
         "astar_blocked_calls": 0,
         "astar_expanded_nodes": 0,
         "astar_max_expanded_nodes": 0,
+        "failure_events": 0,
+        "task_reassignments": 0,
     }
     for record in step_logs:
         observation_updates = record["observation_updates"]
@@ -391,6 +431,7 @@ def build_event_totals(step_logs: tuple[dict[str, object], ...]) -> dict[str, in
             len(indices) for indices in task_layer["confirmed_by_agent"].values()
         )
         planner_metrics = path_layer.get("planner_metrics", {})
+        failure_recovery = record.get("failure_recovery", {})
         totals["astar_total_calls"] += int(planner_metrics.get("total_calls", 0))
         totals["astar_planned_calls"] += int(planner_metrics.get("planned_calls", 0))
         totals["astar_blocked_calls"] += int(planner_metrics.get("blocked_calls", 0))
@@ -399,6 +440,8 @@ def build_event_totals(step_logs: tuple[dict[str, object], ...]) -> dict[str, in
             totals["astar_max_expanded_nodes"],
             int(planner_metrics.get("max_expanded_nodes", 0)),
         )
+        totals["failure_events"] += len(failure_recovery.get("failure_events", []))
+        totals["task_reassignments"] += len(failure_recovery.get("reassignments", []))
     return totals
 
 
@@ -545,9 +588,61 @@ def build_execution_updates(
                 "blocked_goal_signature": None
                 if progress_state is None
                 else progress_state.blocked_goal_signature,
+                "task_final_approach_task_id": None
+                if progress_state is None
+                else progress_state.task_final_approach_task_id,
+                "task_final_approach_candidate_index": None
+                if progress_state is None or progress_state.task_final_approach_candidate_index < 0
+                else progress_state.task_final_approach_candidate_index,
+                "task_final_approach_candidate_x": None
+                if progress_state is None or progress_state.task_final_approach_candidate_x is None
+                else round(progress_state.task_final_approach_candidate_x, 3),
+                "task_final_approach_candidate_y": None
+                if progress_state is None or progress_state.task_final_approach_candidate_y is None
+                else round(progress_state.task_final_approach_candidate_y, 3),
+                "task_final_approach_attempt_count": None
+                if progress_state is None
+                else progress_state.task_final_approach_attempt_count,
+                "task_final_approach_status": None
+                if progress_state is None
+                else progress_state.task_final_approach_status,
+                "released_task_id": None
+                if progress_state is None
+                else progress_state.released_task_id,
+                "released_task_retry_until_step": None
+                if progress_state is None or progress_state.released_task_retry_until_step <= 0
+                else progress_state.released_task_retry_until_step,
+                "released_task_reason": None
+                if progress_state is None
+                else progress_state.released_task_reason,
+                "pending_assigned_task_id": None
+                if progress_state is None
+                else progress_state.pending_assigned_task_id,
+                "claimed_task_id": None
+                if progress_state is None
+                else progress_state.claimed_task_id,
+                "claim_transition_reason": None
+                if progress_state is None
+                else progress_state.claim_transition_reason,
                 "last_return_plan_step": None
                 if execution_state is None
                 else execution_state.last_return_plan_step,
+                "return_target_source": None
+                if execution_state is None
+                else execution_state.return_target_source,
+                "yield_reason": None if execution_state is None else execution_state.yield_reason,
+                "reserved_corridor_name": None
+                if execution_state is None
+                else execution_state.reserved_corridor_name,
+                "corridor_owner_agent_id": None
+                if execution_state is None
+                else execution_state.corridor_owner_agent_id,
+                "reserved_bottleneck_zone_id": None
+                if execution_state is None
+                else execution_state.reserved_bottleneck_zone_id,
+                "bottleneck_owner_agent_id": None
+                if execution_state is None
+                else execution_state.bottleneck_owner_agent_id,
                 "last_patrol_plan_step": None
                 if execution_state is None
                 else execution_state.last_patrol_plan_step,
@@ -573,42 +668,97 @@ def build_task_assignment_logs(
     *,
     task_records: tuple[TaskRecord, ...],
     execution_states: dict[str, AgentExecutionState],
+    progress_states: dict[str, AgentProgressState],
+    info_map: InformationMap,
 ) -> list[dict[str, object]]:
     """Build agent-centric task assignment snapshots for logs."""
 
-    task_by_agent = {
-        task.assigned_agent_id: task for task in task_records if task.assigned_agent_id is not None
-    }
     assignment_logs = []
     for agent in agents:
         execution_state = execution_states.get(agent.agent_id)
-        assigned_task = task_by_agent.get(agent.agent_id)
+        progress_state = progress_states.get(agent.agent_id)
+        assigned_task = None
+        if execution_state is not None:
+            assigned_task = find_task_by_id(task_records, execution_state.active_task_id)
+        if assigned_task is None:
+            assigned_task = select_claimable_task_for_agent(
+                task_records,
+                agent_id=agent.agent_id,
+                execution_state=execution_state,
+            )
         assignment_logs.append(
             {
                 "agent_id": agent.agent_id,
                 "mode": agent.task.mode.value,
                 "execution_stage": None if execution_state is None else execution_state.stage.value,
                 "active_task_id": None if assigned_task is None else assigned_task.task_id,
+                "hotspot_id": (
+                    None
+                    if assigned_task is None
+                    else _task_hotspot_id(assigned_task, info_map=info_map)
+                ),
                 "support_agent_id": None
                 if assigned_task is None
                 else assigned_task.support_agent_id,
                 "task_status": None if assigned_task is None else assigned_task.status.value,
+                "pending_assigned_task_id": None
+                if progress_state is None
+                else progress_state.pending_assigned_task_id,
+                "claimed_task_id": None
+                if progress_state is None
+                else progress_state.claimed_task_id,
+                "claim_transition_reason": None
+                if progress_state is None
+                else progress_state.claim_transition_reason,
                 "target_x": None if agent.task.target_x is None else round(agent.task.target_x, 3),
                 "target_y": None if agent.task.target_y is None else round(agent.task.target_y, 3),
                 "energy_level": round(agent.energy_level, 3),
+                "health_status": agent.health_status.value,
+                "is_operational": agent.is_operational,
             }
         )
     return assignment_logs
 
 
-def serialize_task_record(task: TaskRecord) -> dict[str, object]:
+def serialize_task_record(
+    task: TaskRecord,
+    *,
+    info_map: InformationMap,
+    execution_states: dict[str, AgentExecutionState],
+    progress_states: dict[str, AgentProgressState],
+) -> dict[str, object]:
     """Serialize one task record for logs."""
+
+    claim_status = "released"
+    release_reason = None
+    owner_agent_id = task.assigned_agent_id
+    if task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+        if owner_agent_id is None:
+            claim_status = "unclaimed"
+        else:
+            execution_state = execution_states.get(owner_agent_id)
+            progress_state = progress_states.get(owner_agent_id)
+            if execution_state is not None and execution_state.active_task_id == task.task_id:
+                if execution_state.stage in {ExecutionStage.ON_TASK, ExecutionStage.ON_RECHARGE}:
+                    claim_status = "executing"
+                else:
+                    claim_status = "claimed"
+            else:
+                claim_status = "pending_claim"
+            if progress_state is not None and progress_state.released_task_id == task.task_id:
+                release_reason = progress_state.released_task_reason
+    else:
+        release_reason = "completed" if task.status == TaskStatus.COMPLETED else "cancelled"
 
     return {
         "task_id": task.task_id,
+        "hotspot_id": _task_hotspot_id(task, info_map=info_map),
         "task_type": task.task_type.value,
         "source": task.source.value,
         "status": task.status.value,
+        "owner_agent_id": owner_agent_id,
+        "claim_status": claim_status,
+        "release_reason": release_reason,
         "priority": task.priority,
         "target_x": round(task.target_x, 3),
         "target_y": round(task.target_y, 3),
@@ -632,6 +782,49 @@ def serialize_task_record(task: TaskRecord) -> dict[str, object]:
             for observer_agent_id, winner_agent_id, known_step in task.distributed_winner_memories
         ],
     }
+
+
+def _task_hotspot_id(task: TaskRecord, *, info_map: InformationMap) -> int | None:
+    if task.task_type != TaskType.HOTSPOT_CONFIRMATION:
+        return None
+    state = info_map.state_at(task.target_row, task.target_col)
+    if state.known_hotspot_id is not None:
+        return state.known_hotspot_id
+    return state.ground_truth_hotspot_id
+
+
+def _serialize_active_hotspots(
+    info_map: InformationMap,
+    *,
+    state_filter: HotspotKnowledgeState,
+) -> list[dict[str, object]]:
+    serialized: list[dict[str, object]] = []
+    for cell in info_map.grid_map.flat_cells:
+        state = info_map.state_at(cell.row, cell.col)
+        if state_filter == HotspotKnowledgeState.NONE:
+            if not (
+                state.ground_truth_hotspot
+                and state.known_hotspot_state == HotspotKnowledgeState.NONE
+            ):
+                continue
+            hotspot_id = state.ground_truth_hotspot_id
+        else:
+            if state.known_hotspot_state != state_filter:
+                continue
+            hotspot_id = (
+                state.known_hotspot_id
+                if state.known_hotspot_id is not None
+                else state.ground_truth_hotspot_id
+            )
+        serialized.append(
+            {
+                "hotspot_id": hotspot_id,
+                "cell": [cell.row, cell.col],
+                "x": round(cell.center_x, 3),
+                "y": round(cell.center_y, 3),
+            }
+        )
+    return serialized
 
 
 def build_hotspot_chain_updates(

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from random import Random
 
-from usv_uav_marine_coverage.agent_model import AgentState
+from usv_uav_marine_coverage.agent_model import AgentState, is_operational_agent
 from usv_uav_marine_coverage.agent_overlay import VisualAgent
 from usv_uav_marine_coverage.environment import (
     ObstacleLayout,
@@ -13,6 +13,7 @@ from usv_uav_marine_coverage.environment import (
     build_default_sea_map,
     build_obstacle_layout,
 )
+from usv_uav_marine_coverage.events import apply_scheduled_events
 from usv_uav_marine_coverage.execution.execution_types import (
     AgentExecutionState,
     ExecutionStage,
@@ -20,6 +21,7 @@ from usv_uav_marine_coverage.execution.execution_types import (
 from usv_uav_marine_coverage.execution.progress_feedback import (
     build_initial_progress_states,
 )
+from usv_uav_marine_coverage.execution.task_claim_runtime import find_task_by_id
 from usv_uav_marine_coverage.grid import (
     CoverageState,
     GridCoverageMap,
@@ -69,11 +71,12 @@ from .experiment_config import ExperimentConfig, serialize_experiment_config
 from .simulation_agent_runtime import (
     advance_agents_one_step,
     build_initial_execution_states,
+    build_wreck_zones,
 )
 from .simulation_policy import build_demo_agent_states, build_patrol_routes
 from .simulation_task_runtime import (
     finalize_task_resolutions,
-    select_assigned_task_for_agent,
+    requeue_tasks_blocked_by_wrecks,
     serialize_task_assignment,
     sync_task_statuses,
 )
@@ -91,6 +94,8 @@ class SimulationFrame:
     baseline_cells: tuple[tuple[int, int], ...]
     pending_hotspot_cells: tuple[tuple[int, int], ...]
     uav_checked_cells: tuple[tuple[int, int], ...]
+    pending_hotspots: tuple[dict[str, object], ...]
+    uav_checked_hotspots: tuple[dict[str, object], ...]
     covered_cells: tuple[tuple[int, int], ...]
     coverage_ratio: float
     events: tuple[str, ...]
@@ -209,6 +214,10 @@ def build_simulation_replay(
             progress_states=progress_states,
             uav_coverage_states=uav_coverage_states,
             planner_metrics=snapshot_planner_metrics(),
+            failure_events=(),
+            reassignments=(),
+            wreck_zones=(),
+            failed_agent_ids=(),
         )
     )
 
@@ -240,6 +249,30 @@ def build_simulation_replay(
             agents,
             step=step,
             existing_tasks=task_records,
+        )
+        (
+            agents,
+            execution_states,
+            progress_states,
+            task_records,
+            applied_events,
+            released_assignments,
+        ) = apply_scheduled_events(
+            step=step,
+            scheduled_events=effective_config.events,
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            task_records=task_records,
+        )
+        if applied_events:
+            events.extend(applied_event.summary for applied_event in applied_events)
+        wreck_zones = build_wreck_zones(agents)
+        task_records, wreck_reassignments = requeue_tasks_blocked_by_wrecks(
+            task_records=task_records,
+            agents=agents,
+            wreck_zones=wreck_zones,
+            step=step,
         )
         task_records, task_assignments = _allocate_task_records(
             task_records,
@@ -285,7 +318,7 @@ def build_simulation_replay(
             uav_search_planner=effective_config.algorithms.uav_search_planner,
             execution_policy=effective_config.algorithms.execution_policy,
         )
-        task_records = sync_task_statuses(task_records, execution_states)
+        task_records = sync_task_statuses(task_records, execution_states, progress_states)
 
         observed_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
         uav_checked_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
@@ -294,6 +327,9 @@ def build_simulation_replay(
             trajectories[agent.agent_id].append((agent.x, agent.y))
 
         for agent in agents:
+            if not is_operational_agent(agent):
+                observed_by_agent[agent.agent_id] = ()
+                continue
             observed_indices = apply_agent_coverage(coverage_map, agent, step=step)
             observed_by_agent[agent.agent_id] = observed_indices
             observe_cells(info_map, observed_indices, observer_id=agent.agent_id, step=step)
@@ -340,7 +376,7 @@ def build_simulation_replay(
             info_map=info_map,
             step=step,
         )
-        task_records = sync_task_statuses(task_records, execution_states)
+        task_records = sync_task_statuses(task_records, execution_states, progress_states)
 
         frames.append(
             _capture_frame(
@@ -373,6 +409,28 @@ def build_simulation_replay(
                 progress_states=progress_states,
                 uav_coverage_states=uav_coverage_states,
                 planner_metrics=snapshot_planner_metrics(),
+                failure_events=tuple(
+                    {
+                        "step": applied_event.step,
+                        "type": applied_event.event_type.value,
+                        "agent_id": applied_event.agent_id,
+                        "summary": applied_event.summary,
+                    }
+                    for applied_event in applied_events
+                ),
+                reassignments=tuple(released_assignments) + tuple(wreck_reassignments),
+                wreck_zones=tuple(
+                    {
+                        "source_agent_id": wreck.source_agent_id,
+                        "x": round(wreck.x, 3),
+                        "y": round(wreck.y, 3),
+                        "radius": round(wreck.radius, 3),
+                    }
+                    for wreck in wreck_zones
+                ),
+                failed_agent_ids=tuple(
+                    agent.agent_id for agent in agents if not is_operational_agent(agent)
+                ),
             )
         )
 
@@ -401,7 +459,7 @@ def _confirmation_indices_for_usv(
     if execution_state is None or execution_state.stage != ExecutionStage.ON_TASK:
         return ()
 
-    active_task = select_assigned_task_for_agent(task_records, agent_id)
+    active_task = find_task_by_id(task_records, execution_state.active_task_id)
     if active_task is None or active_task.task_type != TaskType.HOTSPOT_CONFIRMATION:
         return ()
     if active_task.target_row is None or active_task.target_col is None:
@@ -512,6 +570,8 @@ def _capture_frame(
     baseline_cells: list[tuple[int, int]] = []
     pending_hotspot_cells: list[tuple[int, int]] = []
     uav_checked_cells: list[tuple[int, int]] = []
+    pending_hotspots: list[dict[str, object]] = []
+    uav_checked_hotspots: list[dict[str, object]] = []
     covered_cells: list[tuple[int, int]] = []
 
     for cell in info_map.grid_map.flat_cells:
@@ -529,8 +589,30 @@ def _capture_frame(
             and info_state.known_hotspot_state == HotspotKnowledgeState.NONE
         ):
             pending_hotspot_cells.append((cell.row, cell.col))
+            pending_hotspots.append(
+                {
+                    "hotspot_id": info_state.ground_truth_hotspot_id,
+                    "row": cell.row,
+                    "col": cell.col,
+                    "x": round(cell.center_x, 3),
+                    "y": round(cell.center_y, 3),
+                }
+            )
         elif info_state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED:
             uav_checked_cells.append((cell.row, cell.col))
+            uav_checked_hotspots.append(
+                {
+                    "hotspot_id": (
+                        info_state.known_hotspot_id
+                        if info_state.known_hotspot_id is not None
+                        else info_state.ground_truth_hotspot_id
+                    ),
+                    "row": cell.row,
+                    "col": cell.col,
+                    "x": round(cell.center_x, 3),
+                    "y": round(cell.center_y, 3),
+                }
+            )
         if coverage_state.coverage_state == CoverageState.COVERED:
             covered_cells.append((cell.row, cell.col))
 
@@ -551,6 +633,8 @@ def _capture_frame(
         baseline_cells=tuple(baseline_cells),
         pending_hotspot_cells=tuple(pending_hotspot_cells),
         uav_checked_cells=tuple(uav_checked_cells),
+        pending_hotspots=tuple(pending_hotspots),
+        uav_checked_hotspots=tuple(uav_checked_hotspots),
         covered_cells=tuple(covered_cells),
         coverage_ratio=coverage_map.covered_ratio(),
         events=events,

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from math import hypot
 
-from usv_uav_marine_coverage.agent_model import AgentState, energy_ratio, needs_uav_resupply
+from usv_uav_marine_coverage.agent_model import (
+    AgentState,
+    energy_ratio,
+    is_operational_agent,
+    needs_uav_resupply,
+)
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState, ExecutionStage
 
 from ..task_types import TaskRecord, TaskType
@@ -24,7 +29,7 @@ def build_weighted_voronoi_task_partition(
 ) -> TaskPartitionView:
     """Return one primary+secondary partition view based on weighted distance."""
 
-    usvs = tuple(agent for agent in agents if agent.kind == "USV")
+    usvs = tuple(agent for agent in agents if agent.kind == "USV" and is_operational_agent(agent))
     if task.task_type == TaskType.UAV_RESUPPLY:
         usv_ids = tuple(agent.agent_id for agent in usvs)
         return TaskPartitionView(
@@ -107,7 +112,7 @@ def _weighted_partition_cost(
 
 
 def _protected_support_usv_ids(agents: tuple[AgentState, ...]) -> set[str]:
-    usvs = tuple(agent for agent in agents if agent.kind == "USV")
+    usvs = tuple(agent for agent in agents if agent.kind == "USV" and is_operational_agent(agent))
     if not usvs:
         return set()
 

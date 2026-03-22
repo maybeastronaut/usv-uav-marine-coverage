@@ -193,6 +193,36 @@ execution_policy = "phase_one_execution"
 
         self.assertEqual(config.algorithms.execution_policy, "local_mpc_execution")
 
+    def test_load_experiment_config_reads_scheduled_usv_damage_events(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_cost_aware_failure_event.toml"),
+        )
+
+        self.assertEqual(len(config.events), 2)
+        self.assertEqual(config.events[0].event_type.value, "agent_failure")
+        self.assertEqual(config.events[0].agent_id, "USV-2")
+        self.assertEqual(config.events[1].event_type.value, "speed_degradation")
+        self.assertEqual(config.events[1].speed_multiplier, 0.5)
+
+    def test_load_experiment_config_reads_agent_failure_only_config(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_cost_aware_agent_failure.toml"),
+        )
+
+        self.assertEqual(len(config.events), 1)
+        self.assertEqual(config.events[0].event_type.value, "agent_failure")
+        self.assertEqual(config.events[0].agent_id, "USV-2")
+
+    def test_load_experiment_config_reads_speed_degradation_only_config(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_cost_aware_speed_degradation.toml"),
+        )
+
+        self.assertEqual(len(config.events), 1)
+        self.assertEqual(config.events[0].event_type.value, "speed_degradation")
+        self.assertEqual(config.events[0].agent_id, "USV-1")
+        self.assertEqual(config.events[0].speed_multiplier, 0.5)
+
     def test_load_experiment_config_can_apply_scenario_preset(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "experiment.toml"
@@ -437,6 +467,15 @@ execution_policy = "phase_one_execution"
 
         validate_experiment_config(config)
 
+    def test_validate_experiment_config_accepts_failure_hotspot_soft_partition_policy(
+        self,
+    ) -> None:
+        config = load_experiment_config(
+            Path("configs/baseline_patrol_rho_failure_hotspot_first_soft_partition.toml")
+        )
+
+        validate_experiment_config(config)
+
     def test_validate_experiment_config_accepts_aoi_energy_auction_allocator(self) -> None:
         config = load_experiment_config(Path("configs/aoi_energy_auction_allocator.toml"))
 
@@ -451,6 +490,45 @@ execution_policy = "phase_one_execution"
         config = load_experiment_config(Path("configs/distributed_cbba_allocator.toml"))
 
         validate_experiment_config(config)
+
+    def test_validate_experiment_config_accepts_scheduled_usv_damage_events(self) -> None:
+        config = load_experiment_config(
+            Path("configs/offshore_hotspot_pressure_cost_aware_failure_event.toml")
+        )
+
+        validate_experiment_config(config)
+
+    def test_validate_experiment_config_rejects_non_usv_damage_event(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "invalid_event.toml"
+            path.write_text(
+                """
+[simulation]
+seed = 1
+steps = 10
+dt_seconds = 1.0
+
+[scenario]
+name = "offshore_hotspot_pressure"
+
+[algorithms]
+task_allocator = "cost_aware_centralized_allocator"
+zone_partition_policy = "weighted_voronoi_partition_policy"
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+
+[[events]]
+step = 3
+type = "agent_failure"
+agent_id = "UAV-1"
+                """.strip(),
+                encoding="utf-8",
+            )
+            config = load_experiment_config(path)
+
+        with self.assertRaisesRegex(ValueError, "only supports USV events"):
+            validate_experiment_config(config)
 
     def test_validate_experiment_config_rejects_non_positive_distributed_sync_interval(
         self,

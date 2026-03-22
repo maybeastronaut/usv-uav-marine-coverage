@@ -14,6 +14,9 @@ from .baseline_fixed import (
     baseline_secondary_usv_ids_for_task,
     build_baseline_task_partition,
 )
+from .failure_hotspot_soft_partition import (
+    build_failure_hotspot_first_soft_partition,
+)
 from .partition_types import TaskPartitionView
 from .soft_partition import build_soft_task_partition
 from .weighted_voronoi import build_weighted_voronoi_task_partition
@@ -53,6 +56,13 @@ def build_task_partition(
             agents=agents,
             execution_states=execution_states or {},
         )
+    if policy_name == "failure_triggered_hotspot_first_soft_partition_policy":
+        return build_failure_hotspot_first_soft_partition(
+            task,
+            tasks=tasks,
+            agents=agents,
+            execution_states=execution_states or {},
+        )
     raise ValueError(f"Unsupported zone partition policy {policy_name!r}")
 
 
@@ -64,6 +74,7 @@ __all__ = [
     "baseline_secondary_usv_ids_for_task",
     "build_backlog_aware_task_partition",
     "build_baseline_task_partition",
+    "build_failure_hotspot_first_soft_partition",
     "build_soft_task_partition",
     "build_task_partition",
     "build_weighted_voronoi_task_partition",

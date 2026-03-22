@@ -16,7 +16,12 @@ from usv_uav_marine_coverage.agent_model import (
 )
 from usv_uav_marine_coverage.planning.path_types import Waypoint
 
-from .execution_types import AgentExecutionState, ExecutionOutcome, ExecutionStage
+from .execution_types import (
+    AgentExecutionState,
+    ExecutionOutcome,
+    ExecutionStage,
+    WreckZone,
+)
 from .local_mpc import compute_local_mpc_decision
 
 if TYPE_CHECKING:
@@ -29,6 +34,7 @@ USV_LOCAL_AVOIDANCE_MAX_DISTANCE_M = 55.0
 USV_LOCAL_AVOIDANCE_SAMPLE_SPACING_M = 4.0
 USV_LOCAL_AVOIDANCE_CLEARANCE_M = USV_COLLISION_CLEARANCE_M
 USV_LOCAL_MPC_NEIGHBOR_TRIGGER_M = USV_COLLISION_CLEARANCE_M * 4.0
+USV_LOCAL_MPC_EDGE_TRIGGER_M = USV_COLLISION_CLEARANCE_M * 2.5
 
 
 def follow_path_step(
@@ -37,6 +43,7 @@ def follow_path_step(
     *,
     dt_seconds: float,
     obstacle_layout: ObstacleLayout | None = None,
+    wreck_zones: tuple[WreckZone, ...] = (),
 ) -> tuple[AgentState, AgentExecutionState, ExecutionOutcome]:
     """Advance one agent by one step along the currently active plan."""
 
@@ -67,6 +74,7 @@ def follow_path_step(
         agent,
         tracking_target=tracking_target,
         obstacle_layout=obstacle_layout,
+        wreck_zones=wreck_zones,
     )
     mode = _mode_for_stage(agent.kind, execution_state.stage)
     tracked_agent = assign_agent_task(
@@ -100,6 +108,9 @@ def follow_path_step_with_local_mpc(
     dt_seconds: float,
     obstacle_layout: ObstacleLayout | None = None,
     neighboring_agents: tuple[AgentState, ...] = (),
+    wreck_zones: tuple[WreckZone, ...] = (),
+    grid_width: float | None = None,
+    grid_height: float | None = None,
 ) -> tuple[AgentState, AgentExecutionState, ExecutionOutcome]:
     """Advance one agent with local MPC enabled for USVs and default tracking for UAVs."""
 
@@ -109,6 +120,7 @@ def follow_path_step_with_local_mpc(
             execution_state,
             dt_seconds=dt_seconds,
             obstacle_layout=obstacle_layout,
+            wreck_zones=wreck_zones,
         )
 
     plan = execution_state.active_plan
@@ -138,18 +150,23 @@ def follow_path_step_with_local_mpc(
         agent,
         tracking_target=tracking_target,
         obstacle_layout=obstacle_layout,
+        wreck_zones=wreck_zones,
     )
     if not _should_activate_local_mpc(
         agent,
         tracking_target=tracking_target,
         obstacle_layout=obstacle_layout,
         neighboring_agents=neighboring_agents,
+        wreck_zones=wreck_zones,
+        grid_width=grid_width,
+        grid_height=grid_height,
     ):
         return follow_path_step(
             agent,
             execution_state,
             dt_seconds=dt_seconds,
             obstacle_layout=obstacle_layout,
+            wreck_zones=wreck_zones,
         )
     mode = _mode_for_stage(agent.kind, execution_state.stage)
     tracked_agent = assign_agent_task(
@@ -164,6 +181,9 @@ def follow_path_step_with_local_mpc(
         dt_seconds=dt_seconds,
         obstacle_layout=obstacle_layout,
         neighboring_agents=neighboring_agents,
+        wreck_zones=wreck_zones,
+        grid_width=grid_width,
+        grid_height=grid_height,
     )
     advanced_agent = advance_agent_with_control(tracked_agent, mpc_decision.command, dt_seconds)
     if (
@@ -195,7 +215,14 @@ def _should_activate_local_mpc(
     tracking_target: Waypoint,
     obstacle_layout: ObstacleLayout | None,
     neighboring_agents: tuple[AgentState, ...],
+    wreck_zones: tuple[WreckZone, ...],
+    grid_width: float | None,
+    grid_height: float | None,
 ) -> bool:
+    if grid_width is not None and grid_height is not None:
+        edge_clearance = min(agent.x, grid_width - agent.x, agent.y, grid_height - agent.y)
+        if edge_clearance <= USV_LOCAL_MPC_EDGE_TRIGGER_M:
+            return True
     if obstacle_layout is not None and not _segment_is_clear(
         agent.x,
         agent.y,
@@ -203,24 +230,33 @@ def _should_activate_local_mpc(
         tracking_target.y,
         obstacle_layout=obstacle_layout,
         clearance_m=USV_LOCAL_AVOIDANCE_CLEARANCE_M,
+        wreck_zones=wreck_zones,
     ):
         return True
     if obstacle_layout is not None:
         for feature in obstacle_layout.offshore_features:
             if feature.feature_type != "risk_area":
                 continue
-            if _distance_to_segment(
-                feature.x,
-                feature.y,
-                (agent.x, agent.y),
-                (tracking_target.x, tracking_target.y),
-            ) <= feature.radius + USV_LOCAL_AVOIDANCE_CLEARANCE_M:
+            if (
+                _distance_to_segment(
+                    feature.x,
+                    feature.y,
+                    (agent.x, agent.y),
+                    (tracking_target.x, tracking_target.y),
+                )
+                <= feature.radius + USV_LOCAL_AVOIDANCE_CLEARANCE_M
+            ):
                 return True
     for neighboring_agent in neighboring_agents:
         if neighboring_agent.kind != "USV":
             continue
         if hypot(agent.x - neighboring_agent.x, agent.y - neighboring_agent.y) <= (
             USV_LOCAL_MPC_NEIGHBOR_TRIGGER_M
+        ):
+            return True
+    for wreck in wreck_zones:
+        if hypot(agent.x - wreck.x, agent.y - wreck.y) <= (
+            wreck.radius + USV_LOCAL_MPC_NEIGHBOR_TRIGGER_M
         ):
             return True
     return False
@@ -296,6 +332,7 @@ def _apply_local_avoidance(
     *,
     tracking_target: Waypoint,
     obstacle_layout: ObstacleLayout | None,
+    wreck_zones: tuple[WreckZone, ...] = (),
 ) -> Waypoint:
     if agent.kind != "USV" or obstacle_layout is None:
         return tracking_target
@@ -306,6 +343,7 @@ def _apply_local_avoidance(
         tracking_target.y,
         obstacle_layout=obstacle_layout,
         clearance_m=USV_LOCAL_AVOIDANCE_CLEARANCE_M,
+        wreck_zones=wreck_zones,
     ):
         return tracking_target
 
@@ -339,6 +377,7 @@ def _apply_local_avoidance(
                     candidate_target.y,
                     obstacle_layout=obstacle_layout,
                     clearance_m=USV_LOCAL_AVOIDANCE_CLEARANCE_M,
+                    wreck_zones=wreck_zones,
                 ):
                     return candidate_target
     return tracking_target
@@ -356,6 +395,7 @@ def _segment_is_clear(
     *,
     obstacle_layout: ObstacleLayout,
     clearance_m: float,
+    wreck_zones: tuple[WreckZone, ...] = (),
 ) -> bool:
     travel_distance = hypot(end_x - start_x, end_y - start_y)
     if travel_distance <= 1e-9:
@@ -375,6 +415,7 @@ def _segment_is_clear(
             sample_y,
             obstacle_layout=obstacle_layout,
             clearance_m=clearance_m,
+            wreck_zones=wreck_zones,
         ):
             return False
     return True
@@ -386,6 +427,7 @@ def _sample_hits_hazard(
     *,
     obstacle_layout: ObstacleLayout,
     clearance_m: float,
+    wreck_zones: tuple[WreckZone, ...] = (),
 ) -> bool:
     for obstacle in obstacle_layout.risk_zone_obstacles:
         if _point_in_polygon(x, y, obstacle.points):
@@ -396,6 +438,9 @@ def _sample_hits_hazard(
         if feature.feature_type != "islet":
             continue
         if hypot(x - feature.x, y - feature.y) <= feature.radius + clearance_m:
+            return True
+    for wreck in wreck_zones:
+        if hypot(x - wreck.x, y - wreck.y) <= wreck.radius + clearance_m:
             return True
     return False
 
@@ -481,6 +526,7 @@ def _mode_for_stage(agent_kind: str, stage: ExecutionStage) -> TaskMode:
         ExecutionStage.GO_TO_TASK,
         ExecutionStage.GO_TO_RENDEZVOUS,
         ExecutionStage.RECOVERY,
+        ExecutionStage.YIELD,
     }:
         return TaskMode.CONFIRM if agent_kind == "USV" else TaskMode.INVESTIGATE
     if stage == ExecutionStage.ON_RECHARGE:
@@ -497,7 +543,7 @@ def _final_outcome_for_stage(stage: ExecutionStage) -> ExecutionOutcome:
         return ExecutionOutcome.PATROL_REJOINED
     if stage == ExecutionStage.PATROL:
         return ExecutionOutcome.WAYPOINT_REACHED
-    if stage == ExecutionStage.RECOVERY:
+    if stage in {ExecutionStage.RECOVERY, ExecutionStage.YIELD}:
         return ExecutionOutcome.ADVANCING
     if stage in {ExecutionStage.ON_TASK, ExecutionStage.ON_RECHARGE}:
         return ExecutionOutcome.TASK_FINISHED

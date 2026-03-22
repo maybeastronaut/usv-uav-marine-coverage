@@ -22,6 +22,14 @@ class TaskMode(StrEnum):
     CONFIRM = "confirm"
 
 
+class HealthStatus(StrEnum):
+    """Operational health state for one agent."""
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class AgentTaskState:
     """The basic task state carried by an agent."""
@@ -99,10 +107,16 @@ class AgentState:
     cruise_speed_mps: float = 0.0
     arrival_tolerance_m: float = 0.0
     platform_profile: PlatformProfile | None = None
+    health_status: HealthStatus = HealthStatus.HEALTHY
+    speed_multiplier: float = 1.0
+    turn_rate_multiplier: float = 1.0
+    is_operational: bool = True
 
     def __post_init__(self) -> None:
         profile = self.platform_profile or default_platform_profile(self.kind)
         object.__setattr__(self, "platform_profile", profile)
+        if not self.is_operational or self.health_status == HealthStatus.FAILED:
+            return
 
         if self.max_speed_mps <= 0.0:
             object.__setattr__(self, "max_speed_mps", profile.max_speed_mps)
@@ -390,6 +404,22 @@ def needs_uav_resupply(agent: AgentState) -> bool:
         agent.kind == "UAV"
         and agent.energy_capacity > 0.0
         and energy_ratio(agent) <= agent.minimum_reserve_ratio
+    )
+
+
+def is_operational_agent(agent: AgentState) -> bool:
+    """Return whether one agent can still participate in planning and execution."""
+
+    return agent.is_operational and agent.health_status != HealthStatus.FAILED
+
+
+def can_support_uav_resupply(agent: AgentState) -> bool:
+    """Return whether one USV can safely act as a UAV recharge support platform."""
+
+    return (
+        agent.kind == "USV"
+        and is_operational_agent(agent)
+        and agent.health_status == HealthStatus.HEALTHY
     )
 
 

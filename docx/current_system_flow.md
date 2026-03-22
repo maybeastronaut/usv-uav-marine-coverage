@@ -10,6 +10,7 @@
 - 只保留当前有效事实，不保留过时方案、备选路线和已放弃设想
 - 每次代码行为、系统结构、默认参数或回放表现发生变化时，都应同步覆盖更新本文件
 - 后续阶段的升级方向、方案权衡和研究决策统一写入 `discussion_notes.md`
+- 执行层长回放回归基线统一维护在 `execution_regression_checklist.md`
 
 补充说明：
 
@@ -64,6 +65,7 @@
 - 已经实现第一阶段闭环动力学、基础任务分配、`UAV/USV` 分工、会合补能与局部恢复机制
 - 已经进入更高级任务算法与规划算法对比阶段
 - 已经接入第一版执行层局部 `MPC`
+- 已经接入第一版 `USV` 动态受损事件与事件驱动重规划
 - 更高保真控制器与动力学建模当前仍未实现
 
 ## 2. 当前项目结构是什么意思
@@ -231,11 +233,79 @@
   - 现在只有在检测到局部风险时才启用 `MPC`
   - 无局部冲突时会退回原有路径跟踪
 - 当前 `risk_area` 也已经纳入局部 `MPC` 接管判定，不再只对多边形障碍和圆形孤立障碍生效
+- 当前执行层已经补入第一版窄通道有序通行机制：
+  - 只对 `ObstacleLayout.traversable_corridors` 生效
+  - 同一通道同一时刻只允许一艘 `USV` 持有通行权
+  - 未获通行权的 `USV` 会进入 `YIELD`，在通道入口前等待，而不是直接因 stalled 进入 `RECOVERY`
+- 当前执行层已经在固定 corridor 之外，再补入第一版**动态局部瓶颈区通行权管理**：
+  - 只对 `USV-USV` 生效
+  - 在一般狭窄会车区域里，会先预测局部冲突，再分配 `owner / yield`
+  - `yield` 原地位移到 hold point 或停住，不再把“谁先走”的问题丢给 `local_mpc`
+  - 该机制当前作为 corridor coordination 的第二优先级补充，不会覆盖固定 corridor owner 逻辑
+- 当前 `failed USV` 已不再被当作活跃邻近艇参与局部 `MPC` 避碰：
+  - 失效后会生成持续到仿真结束的 `wreck zone`
+  - 活跃 `USV` 会把该残骸当成静态 keepout 障碍，而不是会动的邻居
+- 当前若任务目标落入 `wreck keepout`，系统会直接把该任务置回 `REQUEUED`，并以 `wreck_keepout` 作为重排原因写入日志，而不是允许 `USV` 在残骸边缘反复 `GO_TO_TASK -> RECOVERY`
+- 当前 `local_mpc_execution + agent_failure(step600)` 的长回放复核表明：
+  - 原先 `USV-3` 在边界附近反复进入 `RETURN_TO_PATROL -> RECOVERY -> RETURN_TO_PATROL` 的循环已经被消掉
+  - `step 50` 附近两艇争抢同一窄通道时，当前会显式出现 `YIELD` 和 corridor owner，而不是双双减速后大绕行
+  - 当前又进一步把“非 corridor 狭窄会车”纳入动态 bottleneck owner/yield 管理，用于修复 `step 240-246` 这类互相别住后卡顿的问题
+  - `step 692` 附近的 `USV-3` 残骸边缘抖动问题也已经被压下；当前 `wreck_keepout` 重排在该回放中只触发一次
+  - 当前同条回放中的 `USV` 最小艇间距约为 `41m`，明显高于之前贴船状态
 
 这部分的作用是：
 
 - 为 `USV` 增加第一版实时避障能力
 - 给后续动态海浪区、临时危险区和事件触发局部重规划预留执行层入口
+
+### 2.5.2 动态事件与受损状态
+
+当前系统已经支持第一版静态配置注入的 `USV` 动态事件。
+
+当前已实现的事件类型包括：
+
+- `agent_failure`
+- `speed_degradation`
+- `turn_rate_degradation`
+
+当前这一版事件层的真实边界是：
+
+- 当前只支持对 `USV` 生效，`UAV` 事件尚未接入
+- 事件由实验配置中的 `[[events]]` 在固定 step 注入
+- 事件一旦触发会持续到仿真结束
+- 当前不做随机事件生成，也不做受损恢复
+- 对 `agent_failure` 而言，失效艇当前会进一步生成可观测的 `wreck zone`，并参与：
+  - 局部 `MPC` clearance
+  - 路径执行近程安全判断
+  - 任务侧 `wreck_keepout` 重排
+
+当前受损状态已经显式写入智能体状态：
+
+- `health_status = healthy / degraded / failed`
+- `speed_multiplier`
+- `turn_rate_multiplier`
+- `is_operational`
+
+当前各类事件的联动规则是：
+
+- `agent_failure`
+  - 当前 `USV` 立即标记为 `failed`
+  - 当前任务会被释放并重新进入待分配
+  - 分区层与任务层后续会自动跳过该 `USV`
+  - 执行层会清空 plan、停船并退出正常执行链
+- `speed_degradation`
+  - 当前 `USV` 保留已有任务
+  - 只降低 `cruise_speed / max_speed`
+  - 后续路径执行与局部 `MPC` 自然体现“同任务但更慢”的结果
+- `turn_rate_degradation`
+  - 当前 `USV` 保留已有任务
+  - 只降低最大转向能力
+  - 后续路径执行与局部 `MPC` 自然体现“同任务但更难转向”的结果
+
+这部分的作用是：
+
+- 打通“事件 -> 能力变化 -> 系统联动重规划”的第一版主链
+- 为后续海浪区、临时危险区和平台受损研究提供统一事件入口
 
 ### 2.6 离散栅格网络
 
@@ -362,6 +432,22 @@
   - `baseline_fixed_partition`：更偏热点确认，但 blocked 与规划负担高
   - `soft_partition_policy`：更偏整体 freshness 与稳定性
   - `weighted_voronoi_partition_policy`：当前最有潜力成为新的主推分区基线，因为它在热点确认、freshness 和 blocked 控制之间给出了更平衡的结果
+- 当前还新增了一套仅在 `agent_failure` 后启用的应急分区策略：`failure_triggered_hotspot_first_soft_partition_policy`
+  - 平时行为退化到 `weighted_voronoi_partition_policy`
+  - 一旦出现 failed `USV`，立即切到热点优先、负载均衡的动态软分区
+  - 当前应急模式已经进一步收紧为：只要热点 backlog 仍在，`baseline_service` 就会在分区层被直接压住，并且 `RHO` 不再继续保留已有 baseline 旧任务
+  - 当前又进一步补入“热点焦点簇优先”规则：
+    - 失效后会先从未完成热点里识别一个当前最值得清空的外海焦点簇
+    - 焦点簇内热点优先开放给剩余 `USV`
+    - 焦点簇外的零散热点会被暂时延后
+    - 但若某个焦点簇外热点长期未处理，且已经明显早于当前焦点簇中的新热点，则该陈旧孤立热点可以打破焦点簇压制重新进入候选
+  - 这使得剩余健康 `USV` 会更像围绕同一片外海热点簇协同清扫，而不是分散去追多个零散热点
+- 当前任务层还补入了一条失效应急下的热点 proximity override 规则：
+  - 平时 `RETURN_TO_PATROL` 且空闲的 `USV` 只是在近距离内允许进入普通任务候选
+  - 但一旦进入 `agent_failure` 后的应急模式，空闲 `PATROL / RETURN_TO_PATROL` `USV` 若足够靠近未完成热点，就会直接强制接管
+  - 这条规则优先级高于普通分区与任务层滚动排序，用来消除“热点就在 surviving USV 船边却迟迟不被接单”的低效行为
+  - 当前又进一步收紧为：若该 `USV` 只是被某个 `uav_resupply` 任务以 `ASSIGNED` 状态预留为支援艇，热点 proximity override 可以反压这条预留并把补能任务退回 `PENDING`
+  - 但如果补能已经进入 `IN_PROGRESS`，则不会被热点强制接管打断
 - 当前 `aoi_energy_auction_allocator` 已从“`hotspot_confirmation` 与 `baseline_service` 分层顺序分配”调整为“统一竞价池排序”：
   - 除 `uav_resupply` 外，其余任务现在会进入同一个 AoI-energy 市场统一比较
   - 这保证了 stale baseline 任务在结构上已经拥有和热点任务直接竞争的机会
@@ -386,7 +472,9 @@
   - `distributed_CBBA(bundle=2)` 已经可以作为正式分布式任务层进入对比实验
   - 但在当前主场景下，整体表现仍弱于 `cost_aware / RHO` 两种中心化方案
   - 当前分布式研究价值更偏向“去中心化可行性与架构对比”，而不是已达到性能最优
-- 当前任务层会将 `uav_resupply` 作为最高优先级紧急任务处理，并为低电量 `UAV` 选择最近 `USV` 作为会合补能对象
+- 当前任务层会将 `uav_resupply` 作为最高优先级紧急任务处理，但当前补能支援艇已经收紧为“**当前健康且真正空闲的 `USV`**”
+- 当前一旦某艘 `USV` 被某个 `uav_resupply` 任务挂成 `support_agent_id`，这艘 `USV` 就会被视作已占用资源，不再被普通 `baseline_service / hotspot_confirmation` 分配器当成可接新任务的空闲平台
+- 这意味着当前系统已经不再允许“同一艘 `USV` 一边作为 `UAV` 补能平台、一边又去执行普通热点/基础任务”的双占用行为
 - 当前 `uav_resupply` 触发阈值采用“到最近 `USV` 的预计可达能耗 + 45 单位安全余量”
 - 当前 `uav_resupply` 释放阈值采用“充到 `90%` 电量后脱离 `USV` 回到巡航”
 - 当前 `UAV` 补能速率为每步 `12` 单位能量
@@ -473,8 +561,19 @@
 - 当前 `outputs/` 目录仍是默认运行输出目录；batch 复现实验与未固化的中间产物继续写到这里
 - 若某轮实验结果被认定为正式合格数据集，可将其关键配置、代表性日志、汇总结果与回放副本同步固化到 `configs/experiment_datasets/`，但不应假定 `outputs/` 已失去复现用途
 - `simulation/simulation_core.py` 负责回放仿真的顶层时间步编排，并组织帧采集与日志采集
-- `simulation/simulation_agent_runtime.py` 负责智能体单步推进、路径执行、恢复动作执行与巡航回接点计算
+- `simulation/simulation_agent_runtime.py` 当前主要负责智能体单步推进编排、`YIELD` 执行和 progress 反馈评估，并调度执行层子 runtime
+- `execution/traffic_runtime.py` 负责 fixed corridor 与 dynamic bottleneck 的通行权管理
+- `execution/return_to_patrol_runtime.py` 负责 `RETURN_TO_PATROL` 的 access 选择、回巡航重规划与 patrol rejoin
+- `execution/recharge_runtime.py` 负责 `UAV <-> support USV` 的 rendezvous / dock / `ON_RECHARGE` 同步
+- `execution/recovery_runtime.py` 负责 `USV` 的 recovery motion、坏目标释放与 recovery 后回接逻辑
+- `execution/collision_guard.py` 负责 `USV` 的碰撞防护、wreck keepout 与近程几何安全判断
+- `execution/task_claim_runtime.py` 负责“任务层已分配 -> 执行层显式接单”的统一 claim 入口，定义当前哪一个任务才是该 agent 真正应接住的 claimable task
+- `execution/task_final_approach_runtime.py` 负责 `USV baseline_service / hotspot_confirmation` 的统一任务最终接近逻辑，包括邻域候选点生成、末段 through 性评分、失败预算、失败后候选轮换，以及进入 `ON_TASK` 的统一判定
+- 当前若同一 `USV` 对同一任务的最终接近候选在失败预算内被依次耗尽，执行层会释放该任务并回写 agent 级冷却，任务层后续若重分配会暂时避开同一 `USV-task` 组合
+- `execution/stage_runtime.py` 负责除 `YIELD` 外各 `ExecutionStage` 的主推进逻辑，并统一调用 execution 层其他 runtime
 - `execution/progress_feedback.py` 负责 `USV` 的执行反馈判定，包括无进展检测、坏目标冷却以及是否进入 `RECOVERY` / 是否允许重规划
+- `execution/task_approach.py` 当前只保留兼容入口；真正的任务最终接近逻辑已统一收口到 `task_final_approach_runtime.py`
+- `simulation/simulation_task_runtime.py` 当前只负责把执行事实投影回任务状态；正常情况下不再主动“猜测”一个刚分配的任务是否应该被回收到 `REQUEUED`
 - `simulation/simulation_policy.py` 负责当前 demo 智能体与默认 patrol 数据装配；`USV` 巡航环由 `planning/usv_patrol_planner.py` 生成，`USV` 任务/巡航路径规划可按实验配置在：
   - `planning/astar_path_planner.py`
   - `planning/astar_smoother_path_planner.py`
@@ -487,6 +586,7 @@
 - `simulation/simulation_task_runtime.py` 负责任务生命周期同步、任务关闭收尾与任务决策摘要适配
 - `simulation/simulation_logging.py` 负责结构化日志输出
 - `simulation/simulation_replay_view.py` 负责 HTML 回放页面生成
+- HTML 回放中的热点会直接显示稳定 `hotspot_id` 编号，且与 `events.jsonl` 里的 `task_layer.tasks[].hotspot_id`、`information_map.pending_hotspots/uav_checked_hotspots`、`hotspot_chain[].hotspot_id` 对应
 - `simulation/__init__.py` 仅作为对外稳定门面，统一暴露公开接口
 
 补充说明：
@@ -500,10 +600,14 @@
   - `uav_multi_region_coverage_planner`：远海固定四 AOI、多区域新鲜度优先排序、区域内割草机覆盖的第一版升级 planner
   - `uav_persistent_multi_region_coverage_planner`：远海固定四 AOI、freshness debt 优先、事件触发 AOI 重排、区域承诺覆盖的第二版升级 planner
 - 当前 `USV` 路径规划已具备三套可切换实现：
-  - `astar_path_planner`：当前 baseline，带朝向状态的风险加权网格 `A*`
+  - `astar_path_planner`：当前 baseline，带朝向状态的风险加权网格 `A*`，并已补入第一版轻量 traffic-aware cost
   - `astar_smoother_path_planner`：轻量升级版，保留 baseline `A*` 的状态空间和运动原语，只对 waypoint 链做后处理平滑，并加入最大平滑段长约束，避免把任务路径压缩成会触发连续 `GO_TO_TASK` 重规划的超长直段
   - `hybrid_astar_path_planner`：改进版，使用更丰富的转向原语、更细的碰撞采样和后处理平滑，目标是降低锯齿折返和局部保守 blocked
 - 当前 `USV` planner 切换已通过 `planning/usv_path_planner.py` 统一分发，任务层和 runtime 不再各自硬编码单一 `A*`
+- 当前规划层已新增 `planning/traffic_cost.py`：
+  - 会从其他 `USV` 当前 active plan 中提取未来格点占用与 traversable corridor 使用情况
+  - 并把这些信息转成轻量 traffic-aware cost 接入 `astar_path_planner`
+  - 当前目标不是替代执行层 owner/yield，而是先在规划层减少“多艇同时把同一条 corridor 当成最优路”的情况
 - 当前第一版 `uav_multi_region_coverage_planner` 不新增新的 UAV 执行状态，而是继续复用 `patrol_route_id + patrol_waypoint_index` 执行链；规划层会按当前信息地图动态重建跨 AOI 的 patrol route，并输出当前区域级航点段
 - 当前第二版 `uav_persistent_multi_region_coverage_planner` 已新增并行 `UavCoverageState`，用来记录当前 AOI、区域内 route、承诺剩余航点和最近重排原因；它不改 `AgentExecutionState`，而是通过 `simulation/uav_coverage_runtime.py` 与 runtime 协同工作
 - 当前第二版 `uav_persistent_multi_region_coverage_planner` 已进一步加入：
@@ -541,9 +645,18 @@
 - 当前 `USV` 已新增显式 `RECOVERY` 执行状态：当正常巡航、任务前往或回巡航阶段连续 `3` 步无进展，或连续 `2` 次被碰撞防护清空路径时，会进入局部脱困而不是继续全局重规划
 - 当前 `RECOVERY` 采用固定局部恢复动作序列：停车、短距离后撤、左右 `25°` 前推、再扩大到左右 `45°` 前推；若恢复成功则回到任务链路或局部巡航段接入，若失败则对坏目标进入冷却
 - 当前执行层已把“执行语义”和“反馈语义”拆开：`AgentExecutionState` 只保留阶段、任务、路径与巡航索引，`AgentProgressState` 专门维护 stalled steps、恢复尝试、冷却时间和坏目标记忆
-- 当前 `USV` 的回巡航逻辑已从“最近全局巡航点”改为“最近局部巡航段接入点”，避免在障碍边缘反复尝试同一个远处 patrol point
+- 当前 `USV` 的回巡航逻辑已进一步升级为“安全候选硬过滤 + 区域价值排序”的局部巡航段接入：
+  - 先过滤贴海图边界、贴 patrol 段端点、贴风险区/障碍、以及已知坏目标的 access
+  - 再在安全候选里按 `stale_pressure + hotspot_pressure - travel_cost` 排序
+  - 若严格过滤后无解，再依次退回“放宽端点过滤 -> 旧 local patrol access -> 最近 patrol waypoint”
+- 当前执行层日志已额外输出 `return_target_source`，用于区分：
+  - `safe_value_access`
+  - `fallback_relaxed_endpoint`
+  - `fallback_legacy_local`
+  - `fallback_patrol_waypoint`
 - 当前 `USV` 对失败返回目标默认设置 `8` 步冷却，并保留失败目标签名，避免 `RETURN_TO_PATROL` 连续对同一坏目标每步重跑高成本 `A*`
 - 当前结构化日志已补入 `A*` 规划诊断统计；每个 `step_snapshot` 的 `path_layer` 都会记录该步 `A*` 总调用次数、成功/blocked 次数，以及按 `allocator_reachability / runtime_patrol / runtime_go_to_task / runtime_return_to_patrol` 分组的展开节点数
+- 当前结构化日志的 `failure_recovery` 区块已不再空置，会记录本步触发的 `failure_events` 与由故障导致的 `reassignments`
 - 当前 `USV` 的局部避障与碰撞防护已从“质心点判定”升级为“带船体安全余量的判定”，避免出现质心未入障碍但船体轮廓已压入障碍边界的假安全
 - 当前 `USV` 障碍防护在截断平移时会保留本步更新后的航向，避免船体在障碍边缘因航向被冻结而长期零速卡死
 - 当前航点推进已加入“越点推进”判定；当前视跟踪让 `USV` 实际越过中间航点时，会沿路径段投影自动推进索引，避免拿着旧航点慢慢减速至停死
@@ -617,6 +730,7 @@
 7. 每个仿真步执行以下闭环：
    - 推进信息年龄，并按区域阈值更新 `valid/stale`
    - 维护近海基础任务点与海域 `12` 个热点源
+   - 在任务生成/分配前检查并应用当前 step 的静态配置事件
    - `UAV` 搜索并发现热点，`USV` 在任务点固定驻留 `5` 步完成确认
    - 低电量 `UAV` 生成 `uav_resupply`，前往最近 `USV` 会合补能
    - 任务层生成/排序/分配 `baseline_service + hotspot_confirmation + uav_resupply`

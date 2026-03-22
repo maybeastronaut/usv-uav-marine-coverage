@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from math import hypot
 
-from usv_uav_marine_coverage.agent_model import AgentState, has_completed_uav_resupply
+from usv_uav_marine_coverage.agent_model import (
+    AgentState,
+    has_completed_uav_resupply,
+    is_operational_agent,
+)
 from usv_uav_marine_coverage.execution.basic_state_machine import (
     transition_to_return_to_patrol,
 )
@@ -12,8 +17,12 @@ from usv_uav_marine_coverage.execution.execution_types import (
     AgentExecutionState,
     AgentProgressState,
     ExecutionStage,
+    WreckZone,
 )
 from usv_uav_marine_coverage.execution.progress_feedback import reset_progress_state
+from usv_uav_marine_coverage.execution.task_claim_runtime import (
+    select_claimable_task_for_agent,
+)
 from usv_uav_marine_coverage.information_map import HotspotKnowledgeState, InformationMap
 from usv_uav_marine_coverage.planning.usv_patrol_planner import (
     find_local_patrol_segment_access,
@@ -25,6 +34,11 @@ from usv_uav_marine_coverage.tasking.task_types import (
     TaskType,
 )
 
+# Wreck zones persist for the rest of the replay in the first event model,
+# so tasks inside the keep-out area should be held out of the market rather
+# than repeatedly re-assigned every few steps.
+WRECK_TASK_REQUEUE_COOLDOWN_STEPS = 10_000
+
 
 def select_assigned_task_for_agent(
     task_records: tuple[TaskRecord, ...],
@@ -32,17 +46,13 @@ def select_assigned_task_for_agent(
 ) -> TaskRecord | None:
     """Return the assigned in-flight task for one agent, if any."""
 
-    for task in task_records:
-        if task.assigned_agent_id != agent_id:
-            continue
-        if task.status in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}:
-            return task
-    return None
+    return select_claimable_task_for_agent(task_records, agent_id=agent_id)
 
 
 def sync_task_statuses(
     task_records: tuple[TaskRecord, ...],
     execution_states: dict[str, AgentExecutionState],
+    progress_states: dict[str, AgentProgressState],
 ) -> tuple[TaskRecord, ...]:
     """Sync task lifecycle states from the current execution states."""
 
@@ -56,8 +66,19 @@ def sync_task_statuses(
             continue
 
         execution_state = execution_states.get(task.assigned_agent_id)
+        progress_state = progress_states.get(task.assigned_agent_id)
         if execution_state is None:
             synced_tasks.append(replace(task, status=TaskStatus.REQUEUED, assigned_agent_id=None))
+            continue
+        if execution_state.stage == ExecutionStage.FAILED:
+            synced_tasks.append(
+                replace(
+                    task,
+                    status=TaskStatus.REQUEUED,
+                    assigned_agent_id=None,
+                    support_agent_id=None,
+                )
+            )
             continue
 
         if execution_state.active_task_id == task.task_id and execution_state.stage in {
@@ -76,11 +97,129 @@ def sync_task_statuses(
         if execution_state.active_task_id is None and execution_state.stage in {
             ExecutionStage.PATROL,
             ExecutionStage.RETURN_TO_PATROL,
+            ExecutionStage.YIELD,
         }:
-            synced_tasks.append(replace(task, status=TaskStatus.REQUEUED, assigned_agent_id=None))
+            retry_after_step = task.retry_after_step
+            agent_retry_after_steps = task.agent_retry_after_steps
+            if (
+                progress_state is not None
+                and progress_state.released_task_id == task.task_id
+                and progress_state.released_task_retry_until_step > 0
+            ):
+                retry_after_step, agent_retry_after_steps = _merge_agent_retry_cooldown(
+                    task,
+                    agent_id=task.assigned_agent_id,
+                    retry_until_step=progress_state.released_task_retry_until_step,
+                )
+                synced_tasks.append(
+                    replace(
+                        task,
+                        status=TaskStatus.REQUEUED,
+                        assigned_agent_id=None,
+                        retry_after_step=retry_after_step,
+                        agent_retry_after_steps=agent_retry_after_steps,
+                    )
+                )
+                continue
+            synced_tasks.append(replace(task, status=TaskStatus.ASSIGNED))
             continue
-        synced_tasks.append(task)
+        synced_tasks.append(replace(task, status=TaskStatus.ASSIGNED))
     return tuple(synced_tasks)
+
+
+def _merge_agent_retry_cooldown(
+    task: TaskRecord,
+    *,
+    agent_id: str | None,
+    retry_until_step: int,
+) -> tuple[int, tuple[tuple[str, int], ...]]:
+    if agent_id is None:
+        return (retry_until_step, task.agent_retry_after_steps)
+    retry_by_agent = {
+        retry_agent_id: retry_after for retry_agent_id, retry_after in task.agent_retry_after_steps
+    }
+    retry_by_agent[agent_id] = max(retry_by_agent.get(agent_id, 0), retry_until_step)
+    agent_retry_after_steps = tuple(sorted(retry_by_agent.items()))
+    return (
+        max(
+            retry_until_step,
+            *(retry_after for _, retry_after in agent_retry_after_steps),
+        ),
+        agent_retry_after_steps,
+    )
+
+
+def requeue_tasks_blocked_by_wrecks(
+    *,
+    task_records: tuple[TaskRecord, ...],
+    agents: tuple[AgentState, ...],
+    wreck_zones: tuple[WreckZone, ...],
+    step: int,
+) -> tuple[tuple[TaskRecord, ...], tuple[dict[str, object], ...]]:
+    """Requeue tasks whose targets fall inside failed-USV wreck keepout zones."""
+
+    if not wreck_zones:
+        return (task_records, ())
+
+    cooldown_until_step = step + WRECK_TASK_REQUEUE_COOLDOWN_STEPS
+    cooldown_agents = tuple(
+        sorted(
+            (
+                (agent.agent_id, cooldown_until_step)
+                for agent in agents
+                if agent.kind == "USV" and is_operational_agent(agent)
+            ),
+            key=lambda item: item[0],
+        )
+    )
+    updated_tasks: list[TaskRecord] = []
+    reassignments: list[dict[str, object]] = []
+    for task in task_records:
+        if task.task_type not in {TaskType.BASELINE_SERVICE, TaskType.HOTSPOT_CONFIRMATION}:
+            updated_tasks.append(task)
+            continue
+        blocking_wreck = _blocking_wreck_zone(task, wreck_zones)
+        if blocking_wreck is None:
+            updated_tasks.append(task)
+            continue
+        if (
+            task.assigned_agent_id is None
+            and task.retry_after_step is not None
+            and step < task.retry_after_step
+        ):
+            updated_tasks.append(task)
+            continue
+        updated_tasks.append(
+            replace(
+                task,
+                status=TaskStatus.REQUEUED,
+                assigned_agent_id=None,
+                support_agent_id=None,
+                retry_after_step=cooldown_until_step,
+                agent_retry_after_steps=cooldown_agents,
+            )
+        )
+        reassignments.append(
+            {
+                "step": step,
+                "agent_id": task.assigned_agent_id,
+                "task_id": task.task_id,
+                "task_type": task.task_type.value,
+                "reason": "wreck_keepout",
+                "source_agent_id": blocking_wreck.source_agent_id,
+            }
+        )
+    return (tuple(updated_tasks), tuple(reassignments))
+
+
+def _blocking_wreck_zone(
+    task: TaskRecord,
+    wreck_zones: tuple[WreckZone, ...],
+) -> WreckZone | None:
+    for wreck in wreck_zones:
+        if hypot(task.target_x - wreck.x, task.target_y - wreck.y) <= wreck.radius:
+            return wreck
+    return None
 
 
 def finalize_task_resolutions(
@@ -296,6 +435,8 @@ def _complete_task_and_return(
         task,
         status=TaskStatus.COMPLETED,
         completed_step=step,
+        assigned_agent_id=None,
+        support_agent_id=None,
     )
     if task.assigned_agent_id is None:
         return (completed_task, next_execution_states, next_progress_states)
@@ -318,16 +459,19 @@ def _complete_task_and_return(
         patrol_index = execution_state.patrol_waypoint_index
         return_x, return_y = patrol_route[patrol_index]
         rejoin_to_segment = False
+        return_target_source = "fallback_patrol_waypoint"
     else:
         patrol_index = access.segment_end_index
         return_x = access.access_x
         return_y = access.access_y
         rejoin_to_segment = True
+        return_target_source = "fallback_legacy_local"
     next_execution_states[task.assigned_agent_id] = transition_to_return_to_patrol(
         execution_state,
         return_target_x=return_x,
         return_target_y=return_y,
         patrol_waypoint_index=patrol_index,
+        return_target_source=return_target_source,
         rejoin_to_segment=rejoin_to_segment,
     )
     progress_state = next_progress_states.get(task.assigned_agent_id)

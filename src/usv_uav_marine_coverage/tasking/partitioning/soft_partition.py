@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from math import hypot
 
-from usv_uav_marine_coverage.agent_model import AgentState
+from usv_uav_marine_coverage.agent_model import AgentState, is_operational_agent
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState, ExecutionStage
 
 from ..task_types import TaskRecord, TaskType
@@ -42,6 +42,20 @@ def build_soft_task_partition(
             primary_usv_ids=baseline.primary_usv_ids,
             secondary_usv_ids=(),
             partition_reason="soft_partition_missing_agent_state_fallback_to_baseline",
+        )
+    if not is_operational_agent(secondary_agent):
+        return TaskPartitionView(
+            policy_name="soft_partition_policy",
+            primary_usv_ids=baseline.primary_usv_ids if is_operational_agent(primary_agent) else (),
+            secondary_usv_ids=(),
+            partition_reason="soft_partition_secondary_failed_fallback_to_primary",
+        )
+    if not is_operational_agent(primary_agent):
+        return TaskPartitionView(
+            policy_name="soft_partition_policy",
+            primary_usv_ids=(secondary_id,),
+            secondary_usv_ids=(),
+            partition_reason="soft_partition_promote_secondary_when_primary_failed",
         )
 
     primary_available = _is_available_for_new_assignment(execution_states.get(primary_id))

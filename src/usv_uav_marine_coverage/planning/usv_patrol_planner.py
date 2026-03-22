@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from math import hypot
 
 from usv_uav_marine_coverage.environment import SeaMap
+from usv_uav_marine_coverage.grid import GridMap
 
 
 @dataclass(frozen=True)
@@ -151,8 +152,32 @@ def find_progressive_patrol_segment_access(
 ) -> PatrolSegmentAccess | None:
     """Return a local patrol access that prefers forward patrol progression."""
 
-    if len(patrol_route) < 2:
+    candidate_accesses = build_progressive_patrol_segment_accesses(
+        agent_x=agent_x,
+        agent_y=agent_y,
+        patrol_route=patrol_route,
+        preferred_end_index=preferred_end_index,
+        blocked_goal_signature=blocked_goal_signature,
+        lookahead_segments=lookahead_segments,
+    )
+    if not candidate_accesses:
         return None
+    return candidate_accesses[0]
+
+
+def build_progressive_patrol_segment_accesses(
+    *,
+    agent_x: float,
+    agent_y: float,
+    patrol_route: tuple[tuple[float, float], ...],
+    preferred_end_index: int,
+    blocked_goal_signature: str | None = None,
+    lookahead_segments: int = 3,
+) -> tuple[PatrolSegmentAccess, ...]:
+    """Return forward-preferring segment accesses ordered by local preference."""
+
+    if len(patrol_route) < 2:
+        return ()
 
     route_length = len(patrol_route)
     candidate_accesses: list[tuple[int, PatrolSegmentAccess]] = []
@@ -181,12 +206,12 @@ def find_progressive_patrol_segment_access(
         candidate_accesses.append((offset, access))
 
     if not candidate_accesses:
-        return None
-    _, selected_access = min(
+        return ()
+    sorted_accesses = sorted(
         candidate_accesses,
         key=lambda item: (item[0], item[1].access_distance, item[1].segment_end_index),
     )
-    return selected_access
+    return tuple(access for _, access in sorted_accesses)
 
 
 def find_local_patrol_segment_access(
@@ -199,8 +224,30 @@ def find_local_patrol_segment_access(
 ) -> PatrolSegmentAccess | None:
     """Return the nearest local patrol-segment access point for one USV."""
 
-    if len(patrol_route) < 2:
+    candidate_accesses = build_local_patrol_segment_accesses(
+        agent_x=agent_x,
+        agent_y=agent_y,
+        patrol_route=patrol_route,
+        preferred_end_index=preferred_end_index,
+        blocked_goal_signature=blocked_goal_signature,
+    )
+    if not candidate_accesses:
         return None
+    return candidate_accesses[0]
+
+
+def build_local_patrol_segment_accesses(
+    *,
+    agent_x: float,
+    agent_y: float,
+    patrol_route: tuple[tuple[float, float], ...],
+    preferred_end_index: int = 0,
+    blocked_goal_signature: str | None = None,
+) -> tuple[PatrolSegmentAccess, ...]:
+    """Return all local patrol-segment accesses ordered by local preference."""
+
+    if len(patrol_route) < 2:
+        return ()
 
     candidate_accesses: list[tuple[int, PatrolSegmentAccess]] = []
     route_length = len(patrol_route)
@@ -229,12 +276,55 @@ def find_local_patrol_segment_access(
         candidate_accesses.append((cyclic_offset, access))
 
     if not candidate_accesses:
-        return None
-    _, selected_access = min(
+        return ()
+    sorted_accesses = sorted(
         candidate_accesses,
         key=lambda item: (item[1].access_distance, item[0], item[1].segment_end_index),
     )
-    return selected_access
+    return tuple(access for _, access in sorted_accesses)
+
+
+def distance_from_patrol_access_to_map_edge(
+    access: PatrolSegmentAccess,
+    *,
+    width: float,
+    height: float,
+) -> float:
+    """Return the minimum clearance from one access point to the map boundary."""
+
+    return min(access.access_x, width - access.access_x, access.access_y, height - access.access_y)
+
+
+def distance_from_patrol_access_to_segment_endpoints(
+    access: PatrolSegmentAccess,
+    *,
+    patrol_route: tuple[tuple[float, float], ...],
+) -> float:
+    """Return the minimum distance from one access point to the owning segment endpoints."""
+
+    start_x, start_y = patrol_route[access.segment_start_index]
+    end_x, end_y = patrol_route[access.segment_end_index]
+    return min(
+        hypot(access.access_x - start_x, access.access_y - start_y),
+        hypot(access.access_x - end_x, access.access_y - end_y),
+    )
+
+
+def distance_from_patrol_access_to_hazards(
+    access: PatrolSegmentAccess,
+    *,
+    grid_map: GridMap,
+) -> float:
+    """Return the minimum distance from one access point to obstacle or risk cells."""
+
+    min_distance: float | None = None
+    for cell in grid_map.flat_cells:
+        if not cell.has_obstacle and not cell.has_risk_area:
+            continue
+        distance = hypot(access.access_x - cell.center_x, access.access_y - cell.center_y)
+        if min_distance is None or distance < min_distance:
+            min_distance = distance
+    return float("inf") if min_distance is None else min_distance
 
 
 def _project_point_to_segment(
