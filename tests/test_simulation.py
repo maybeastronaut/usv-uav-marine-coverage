@@ -4,17 +4,28 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from usv_uav_marine_coverage.environment import build_default_sea_map, build_obstacle_layout
 from usv_uav_marine_coverage.execution.execution_types import (
     AgentExecutionState,
     ExecutionStage,
 )
+from usv_uav_marine_coverage.execution.progress_feedback import build_initial_progress_states
+from usv_uav_marine_coverage.grid import build_grid_map
+from usv_uav_marine_coverage.information_map import build_information_map
 from usv_uav_marine_coverage.simulation import (
     build_simulation_html,
     build_simulation_replay,
     write_simulation_artifacts,
 )
 from usv_uav_marine_coverage.simulation.simulation_core import _confirmation_indices_for_usv
-from usv_uav_marine_coverage.simulation.simulation_logging import build_event_totals
+from usv_uav_marine_coverage.simulation.simulation_logging import (
+    build_event_totals,
+    serialize_task_record,
+)
+from usv_uav_marine_coverage.simulation.replay_validation import (
+    build_step_validation_layer,
+    summarize_replay_validation,
+)
 from usv_uav_marine_coverage.simulation.simulation_policy import build_demo_agent_states
 from usv_uav_marine_coverage.simulation.simulation_replay_view import _build_frame_summaries
 from usv_uav_marine_coverage.tasking.task_types import (
@@ -143,6 +154,9 @@ class SimulationTestCase(unittest.TestCase):
             self.assertIn("execution_layer", step_records[-1])
             self.assertIn("hotspot_chain", step_records[-1])
             self.assertIn("failure_recovery", step_records[-1])
+            self.assertIn("validation_layer", step_records[-1])
+            self.assertIn("violation_count", step_records[-1]["validation_layer"])
+            self.assertIn("violations", step_records[-1]["validation_layer"])
             self.assertIn("task_decisions", step_records[-1]["task_layer"])
             self.assertIn("tasks", step_records[-1]["task_layer"])
             self.assertIn("retry_after_step", step_records[-1]["task_layer"]["tasks"][0])
@@ -181,6 +195,319 @@ class SimulationTestCase(unittest.TestCase):
             self.assertIn("astar_total_calls", summary["final_metrics"]["event_totals"])
             self.assertIn("astar_expanded_nodes", summary["final_metrics"]["event_totals"])
             self.assertIn("energy_level", summary["initial_agents"][0])
+            self.assertIn("validation", summary)
+            self.assertIn("step_violation_count", summary["validation"])
+            self.assertIn("flip_flop_count", summary["validation"])
+
+    def test_replay_validation_detects_flip_flop_pattern(self) -> None:
+        step_logs = (
+            {
+                "record_type": "step_snapshot",
+                "step": 10,
+                "task_layer": {
+                    "tasks": [
+                        {
+                            "task_id": "hotspot-confirmation-9-19",
+                            "task_type": "hotspot_confirmation",
+                            "status": "assigned",
+                            "assigned_agent_id": "USV-1",
+                        }
+                    ]
+                },
+            },
+            {
+                "record_type": "step_snapshot",
+                "step": 11,
+                "task_layer": {
+                    "tasks": [
+                        {
+                            "task_id": "hotspot-confirmation-9-19",
+                            "task_type": "hotspot_confirmation",
+                            "status": "requeued",
+                            "assigned_agent_id": None,
+                        }
+                    ]
+                },
+            },
+            {
+                "record_type": "step_snapshot",
+                "step": 12,
+                "task_layer": {
+                    "tasks": [
+                        {
+                            "task_id": "hotspot-confirmation-9-19",
+                            "task_type": "hotspot_confirmation",
+                            "status": "assigned",
+                            "assigned_agent_id": "USV-1",
+                        }
+                    ]
+                },
+            },
+        )
+
+        summary = summarize_replay_validation(step_logs)
+
+        self.assertEqual(summary["flip_flop_count"], 1)
+        self.assertEqual(summary["flip_flops"][0]["task_id"], "hotspot-confirmation-9-19")
+
+    def test_serialize_task_record_keeps_uav_resupply_claimed_until_support_on_task(
+        self,
+    ) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        info_map = build_information_map(build_grid_map(sea_map, obstacle_layout))
+        progress_states = build_initial_progress_states(build_demo_agent_states())
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=110.0,
+            target_y=180.0,
+            target_row=None,
+            target_col=None,
+            created_step=2,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+        )
+        owner_execution = AgentExecutionState(
+            agent_id="UAV-1",
+            stage=ExecutionStage.ON_RECHARGE,
+            active_task_id=task.task_id,
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="UAV-1",
+            patrol_waypoint_index=0,
+        )
+        support_execution = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.YIELD,
+            active_task_id=task.task_id,
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
+
+        serialized = serialize_task_record(
+            task,
+            step=2,
+            info_map=info_map,
+            execution_states={"UAV-1": owner_execution, "USV-1": support_execution},
+            progress_states=progress_states,
+        )
+        self.assertEqual(serialized["claim_status"], "claimed")
+
+        serialized = serialize_task_record(
+            task,
+            step=2,
+            info_map=info_map,
+            execution_states={
+                "UAV-1": owner_execution,
+                "USV-1": replace(support_execution, stage=ExecutionStage.ON_TASK),
+            },
+            progress_states=progress_states,
+        )
+        self.assertEqual(serialized["claim_status"], "executing")
+
+    def test_step_validation_flags_docked_resupply_support_mismatch(self) -> None:
+        step_log = {
+            "record_type": "step_snapshot",
+            "step": 142,
+            "agent_states": [
+                {
+                    "agent_id": "UAV-1",
+                    "x": 210.0,
+                    "y": 320.0,
+                    "speed_mps": 2.0,
+                    "turn_rate_degps": 0.0,
+                },
+                {
+                    "agent_id": "USV-1",
+                    "x": 210.0,
+                    "y": 320.0,
+                    "speed_mps": 3.0,
+                    "turn_rate_degps": 8.0,
+                },
+            ],
+            "task_layer": {
+                "tasks": [
+                    {
+                        "task_id": "uav-resupply-UAV-1",
+                        "task_type": "uav_resupply",
+                        "status": "in_progress",
+                        "assigned_agent_id": "UAV-1",
+                        "support_agent_id": "USV-1",
+                        "claim_status": "executing",
+                    }
+                ]
+            },
+            "execution_layer": {
+                "tracking_updates": [
+                    {
+                        "agent_id": "UAV-1",
+                        "execution_stage": "on_recharge",
+                        "active_task_id": "uav-resupply-UAV-1",
+                    },
+                    {
+                        "agent_id": "USV-1",
+                        "execution_stage": "go_to_task",
+                        "active_task_id": "uav-resupply-UAV-1",
+                    },
+                ]
+            },
+        }
+
+        validation_layer = build_step_validation_layer(step_log)
+
+        self.assertEqual(validation_layer["violation_count"], 3)
+        self.assertEqual(
+            {violation["code"] for violation in validation_layer["violations"]},
+            {
+                "uav_resupply_support_not_holding",
+                "uav_resupply_support_motion_mismatch",
+                "uav_resupply_docked_motion_desync",
+            },
+        )
+
+    def test_step_validation_flags_assigned_task_execution_desync(self) -> None:
+        step_log = {
+            "record_type": "step_snapshot",
+            "step": 569,
+            "task_layer": {
+                "tasks": [
+                    {
+                        "task_id": "hotspot-confirmation-9-19",
+                        "task_type": "hotspot_confirmation",
+                        "status": "assigned",
+                        "assigned_agent_id": "USV-1",
+                        "support_agent_id": None,
+                        "claim_status": "pending_claim",
+                    }
+                ],
+                "task_assignments": [
+                    {
+                        "agent_id": "USV-1",
+                        "execution_stage": "return_to_patrol",
+                        "active_task_id": "hotspot-confirmation-9-19",
+                        "pending_assigned_task_id": None,
+                        "claimed_task_id": None,
+                        "target_x": None,
+                        "target_y": None,
+                    }
+                ],
+            },
+            "execution_layer": {
+                "tracking_updates": [
+                    {
+                        "agent_id": "USV-1",
+                        "execution_stage": "return_to_patrol",
+                        "active_task_id": None,
+                    }
+                ]
+            },
+        }
+
+        validation_layer = build_step_validation_layer(step_log)
+
+        self.assertEqual(validation_layer["violation_count"], 1)
+        self.assertEqual(
+            validation_layer["violations"][0]["code"],
+            "assigned_task_owner_not_holding",
+        )
+
+    def test_step_validation_flags_assigned_resupply_support_desync(self) -> None:
+        step_log = {
+            "record_type": "step_snapshot",
+            "step": 123,
+            "task_layer": {
+                "tasks": [
+                    {
+                        "task_id": "uav-resupply-UAV-1",
+                        "task_type": "uav_resupply",
+                        "status": "assigned",
+                        "assigned_agent_id": "UAV-1",
+                        "support_agent_id": "USV-2",
+                        "claim_status": "claimed",
+                    }
+                ],
+                "task_assignments": [
+                    {
+                        "agent_id": "USV-2",
+                        "execution_stage": "return_to_patrol",
+                        "active_task_id": "uav-resupply-UAV-1",
+                        "pending_assigned_task_id": None,
+                        "claimed_task_id": None,
+                        "target_x": None,
+                        "target_y": None,
+                    }
+                ],
+            },
+            "execution_layer": {
+                "tracking_updates": [
+                    {
+                        "agent_id": "USV-2",
+                        "execution_stage": "return_to_patrol",
+                        "active_task_id": None,
+                    }
+                ]
+            },
+        }
+
+        validation_layer = build_step_validation_layer(step_log)
+
+        self.assertEqual(validation_layer["violation_count"], 1)
+        self.assertEqual(
+            validation_layer["violations"][0]["code"],
+            "uav_resupply_support_not_holding_assignment",
+        )
+
+    def test_step_validation_flags_active_transit_without_target(self) -> None:
+        step_log = {
+            "record_type": "step_snapshot",
+            "step": 285,
+            "task_layer": {
+                "tasks": [
+                    {
+                        "task_id": "uav-resupply-UAV-2",
+                        "task_type": "uav_resupply",
+                        "status": "assigned",
+                        "assigned_agent_id": "UAV-2",
+                        "support_agent_id": "USV-2",
+                        "claim_status": "claimed",
+                    }
+                ],
+                "task_assignments": [
+                    {
+                        "agent_id": "USV-2",
+                        "execution_stage": "go_to_task",
+                        "active_task_id": "uav-resupply-UAV-2",
+                        "pending_assigned_task_id": None,
+                        "claimed_task_id": None,
+                        "target_x": None,
+                        "target_y": None,
+                    }
+                ],
+            },
+            "execution_layer": {
+                "tracking_updates": [
+                    {
+                        "agent_id": "USV-2",
+                        "execution_stage": "go_to_task",
+                        "active_task_id": "uav-resupply-UAV-2",
+                    }
+                ]
+            },
+        }
+
+        validation_layer = build_step_validation_layer(step_log)
+
+        self.assertEqual(validation_layer["violation_count"], 1)
+        self.assertEqual(
+            validation_layer["violations"][0]["code"],
+            "active_transit_missing_target",
+        )
 
     def test_simulation_artifacts_can_load_experiment_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

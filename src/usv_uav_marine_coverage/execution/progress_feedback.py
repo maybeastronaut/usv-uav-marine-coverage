@@ -16,6 +16,8 @@ from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
 
 USV_TASK_REPLAN_GOAL_TOLERANCE_M = 1.0
 USV_TASK_REPLAN_DEVIATION_M = 60.0
+UAV_RESUPPLY_SUPPORT_REPLAN_GOAL_TOLERANCE_M = 40.0
+UAV_RESUPPLY_SUPPORT_REPLAN_DEVIATION_M = 100.0
 USV_STALL_DISTANCE_EPS_M = 1e-3
 USV_MIN_PROGRESS_DISTANCE_M = 0.5
 USV_STALL_TRIGGER_STEPS = 3
@@ -54,12 +56,16 @@ def reset_progress_state(progress_state: AgentProgressState) -> AgentProgressSta
         pre_recovery_stage=None,
         pre_recovery_task_id=None,
         task_final_approach_task_id=None,
+        task_final_approach_frozen_candidates=(),
         task_final_approach_candidate_index=-1,
         task_final_approach_candidate_x=None,
         task_final_approach_candidate_y=None,
+        task_final_approach_failed_candidate_indexes=(),
         task_final_approach_attempt_count=0,
         task_final_approach_status=None,
         released_task_id=None,
+        released_task_created_step=None,
+        released_task_step=-1,
         released_task_retry_until_step=0,
         released_task_reason=None,
         pending_assigned_task_id=None,
@@ -72,6 +78,8 @@ def record_released_task_feedback(
     progress_state: AgentProgressState,
     *,
     task_id: str,
+    task_created_step: int,
+    task_step: int,
     retry_until_step: int,
     reason: str,
 ) -> AgentProgressState:
@@ -81,6 +89,8 @@ def record_released_task_feedback(
     return replace(
         cleared_state,
         released_task_id=task_id,
+        released_task_created_step=task_created_step,
+        released_task_step=task_step,
         released_task_retry_until_step=retry_until_step,
         released_task_reason=reason,
     )
@@ -228,6 +238,11 @@ def should_replan_task(
     plan = execution_state.active_plan
     expected_goal_x = active_task.target_x if goal_x is None else goal_x
     expected_goal_y = active_task.target_y if goal_y is None else goal_y
+    goal_tolerance_m = USV_TASK_REPLAN_GOAL_TOLERANCE_M
+    deviation_tolerance_m = USV_TASK_REPLAN_DEVIATION_M
+    if agent.kind == "USV" and active_task.task_type == TaskType.UAV_RESUPPLY:
+        goal_tolerance_m = UAV_RESUPPLY_SUPPORT_REPLAN_GOAL_TOLERANCE_M
+        deviation_tolerance_m = UAV_RESUPPLY_SUPPORT_REPLAN_DEVIATION_M
     if plan is None:
         return True
     if plan.status != PathPlanStatus.PLANNED:
@@ -245,14 +260,18 @@ def should_replan_task(
     }:
         allowed_goal_offset = max(
             agent.coverage_radius - agent.arrival_tolerance_m,
-            USV_TASK_REPLAN_GOAL_TOLERANCE_M,
+            goal_tolerance_m,
         )
         goal_offset = hypot(plan.goal_x - expected_goal_x, plan.goal_y - expected_goal_y)
         if goal_offset > allowed_goal_offset:
             return True
+    elif agent.kind == "USV" and active_task.task_type == TaskType.UAV_RESUPPLY:
+        goal_offset = hypot(plan.goal_x - expected_goal_x, plan.goal_y - expected_goal_y)
+        if goal_offset > goal_tolerance_m:
+            return True
     elif (
-        abs(plan.goal_x - expected_goal_x) > USV_TASK_REPLAN_GOAL_TOLERANCE_M
-        or abs(plan.goal_y - expected_goal_y) > USV_TASK_REPLAN_GOAL_TOLERANCE_M
+        abs(plan.goal_x - expected_goal_x) > goal_tolerance_m
+        or abs(plan.goal_y - expected_goal_y) > goal_tolerance_m
     ):
         return True
     if agent.kind != "USV":
@@ -260,7 +279,7 @@ def should_replan_task(
     current_waypoint = plan.waypoints[execution_state.current_waypoint_index]
     return (
         hypot(current_waypoint.x - agent.x, current_waypoint.y - agent.y)
-        > USV_TASK_REPLAN_DEVIATION_M
+        > deviation_tolerance_m
     )
 
 

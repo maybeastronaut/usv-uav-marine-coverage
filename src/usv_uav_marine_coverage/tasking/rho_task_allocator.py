@@ -21,14 +21,18 @@ from .allocator_common import (
     allocate_hotspot_proximity_override_task,
     allocate_uav_resupply_task,
     can_keep_existing_assignment,
+    is_agent_task_in_cooldown,
+    is_task_waiting_for_retry,
     is_available_for_candidate_pool,
     is_available_for_new_assignment,
     release_preempted_uav_resupply_tasks,
     selection_score_for_task,
+    stabilize_uav_resupply_task,
     task_sort_key,
 )
 from .partitioning import build_task_partition
 from .partitioning.failure_hotspot_soft_partition import (
+    failed_neighbor_recovery_bonus,
     failure_hotspot_emergency_active,
     should_suppress_baseline_after_failure,
     should_suppress_non_focus_hotspot_after_failure,
@@ -60,6 +64,7 @@ class RhoCandidate:
     path_cost: float
     delay_penalty: float
     energy_penalty: float
+    failure_recovery_bonus: float
     partition_reason: str
 
 
@@ -94,6 +99,12 @@ def allocate_tasks_with_rho_policy(
         if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
             updated_tasks.append(task)
             continue
+        if is_task_waiting_for_retry(task, step=step) and (
+            task.status in {TaskStatus.PENDING, TaskStatus.REQUEUED}
+            or (task.task_type == TaskType.UAV_RESUPPLY and task.support_agent_id is None)
+        ):
+            updated_tasks.append(task)
+            continue
 
         proximity_override = allocate_hotspot_proximity_override_task(
             task,
@@ -101,6 +112,7 @@ def allocate_tasks_with_rho_policy(
             execution_states=execution_states,
             task_records=scheduled_tasks,
             reserved_agent_ids=reserved_agent_ids,
+            step=step,
         )
         if proximity_override is not None:
             updated_task, decision = proximity_override
@@ -132,16 +144,23 @@ def allocate_tasks_with_rho_policy(
                 task,
                 tasks=scheduled_tasks,
                 agents=agents,
+                step=step,
             )
         ):
             if task.assigned_agent_id is not None:
                 released_task_ids.add(task.task_id)
                 force_available_agent_ids.add(task.assigned_agent_id)
-            task = replace(
-                task,
-                status=TaskStatus.REQUEUED if task.assigned_agent_id else TaskStatus.PENDING,
-                assigned_agent_id=None,
-            )
+                task = _requeue_suppressed_task(
+                    task,
+                    step=step,
+                    released_agent_id=task.assigned_agent_id,
+                )
+            else:
+                task = replace(
+                    task,
+                    status=TaskStatus.PENDING,
+                    assigned_agent_id=None,
+                )
 
         if can_keep_existing_assignment(
             task,
@@ -149,10 +168,8 @@ def allocate_tasks_with_rho_policy(
             execution_states=execution_states,
         ):
             selected_agent = agent_by_id[task.assigned_agent_id or ""]
-            if task.task_type == TaskType.UAV_RESUPPLY and task.support_agent_id is not None:
-                support_agent = agent_by_id.get(task.support_agent_id)
-                if support_agent is not None:
-                    task = replace(task, target_x=support_agent.x, target_y=support_agent.y)
+            if task.task_type == TaskType.UAV_RESUPPLY:
+                task = stabilize_uav_resupply_task(task, selected_uav=selected_agent)
             selection_score = selection_score_for_task(
                 task,
                 selected_agent=selected_agent,
@@ -178,7 +195,10 @@ def allocate_tasks_with_rho_policy(
                 task,
                 agent_by_id=agent_by_id,
                 execution_states=execution_states,
+                grid_map=grid_map,
                 task_records=tuple(updated_tasks),
+                step=step,
+                usv_path_planner=usv_path_planner,
             )
             updated_tasks.append(updated_task)
             if decision is not None:
@@ -313,6 +333,7 @@ def _allocate_one_priority_layer(
                         "path_cost": round(candidate.path_cost, 3),
                         "delay_penalty": round(candidate.delay_penalty, 3),
                         "energy_penalty": round(candidate.energy_penalty, 3),
+                        "failure_recovery_bonus": round(candidate.failure_recovery_bonus, 3),
                         "partition_reason": candidate.partition_reason,
                     }
                     for candidate in candidate_pairs
@@ -335,6 +356,10 @@ def _allocate_one_priority_layer(
                     "path_cost": round(selected_candidate.path_cost, 3),
                     "delay_penalty": round(selected_candidate.delay_penalty, 3),
                     "energy_penalty": round(selected_candidate.energy_penalty, 3),
+                    "failure_recovery_bonus": round(
+                        selected_candidate.failure_recovery_bonus,
+                        3,
+                    ),
                     "partition_reason": selected_candidate.partition_reason,
                     "final_bid": round(selected_candidate.score, 3),
                 },
@@ -404,7 +429,7 @@ def _build_candidate_pairs(
                 task_records=task_context,
             ):
                 continue
-            if _is_agent_task_in_cooldown(task, agent_id=agent.agent_id, step=step):
+            if is_agent_task_in_cooldown(task, agent_id=agent.agent_id, step=step):
                 continue
             estimated_cost = _reachable_cost(
                 task,
@@ -423,6 +448,10 @@ def _build_candidate_pairs(
                     estimated_cost=estimated_cost,
                     info_map=info_map,
                     protected_support_usv_ids=protected_support_usv_ids,
+                    failure_recovery_bonus=failed_neighbor_recovery_bonus(
+                        task,
+                        agents=all_agents,
+                    ),
                     partition_reason=partition.partition_reason,
                 )
             )
@@ -436,6 +465,7 @@ def _build_rho_candidate(
     estimated_cost: float,
     info_map: InformationMap | None,
     protected_support_usv_ids: set[str],
+    failure_recovery_bonus: float,
     partition_reason: str,
 ) -> RhoCandidate:
     base_value = (
@@ -451,6 +481,7 @@ def _build_rho_candidate(
     score = round(
         base_value
         + aoi_reward
+        + failure_recovery_bonus
         - (estimated_cost * PATH_COST_WEIGHT)
         - delay_penalty
         - energy_penalty,
@@ -465,6 +496,7 @@ def _build_rho_candidate(
         path_cost=round(estimated_cost, 3),
         delay_penalty=round(delay_penalty, 3),
         energy_penalty=energy_penalty,
+        failure_recovery_bonus=round(failure_recovery_bonus, 3),
         partition_reason=partition_reason,
     )
 
@@ -585,13 +617,6 @@ def _reachable_cost(
     return plan.estimated_cost
 
 
-def _is_agent_task_in_cooldown(task: TaskRecord, *, agent_id: str, step: int) -> bool:
-    return any(
-        candidate_agent_id == agent_id and step < retry_after_step
-        for candidate_agent_id, retry_after_step in task.agent_retry_after_steps
-    )
-
-
 def _prune_expired_agent_retries(task: TaskRecord, step: int | None) -> TaskRecord:
     if step is None or not task.agent_retry_after_steps:
         return task
@@ -652,9 +677,42 @@ def _mark_task_unassigned(
         task,
         status=next_status,
         assigned_agent_id=None,
+        suppression_grace_until_step=None,
         retry_after_step=max(
             (retry_after for _, retry_after in agent_retry_after_steps),
             default=None,
         ),
         agent_retry_after_steps=agent_retry_after_steps,
+    )
+
+
+def _requeue_suppressed_task(
+    task: TaskRecord,
+    *,
+    step: int | None,
+    released_agent_id: str,
+) -> TaskRecord:
+    """Release one failure-suppressed task without immediately handing it back."""
+
+    if step is None:
+        return replace(
+            task,
+            status=TaskStatus.REQUEUED,
+            assigned_agent_id=None,
+            suppression_grace_until_step=None,
+        )
+    retry_by_agent = {
+        agent_id: retry_after for agent_id, retry_after in task.agent_retry_after_steps
+    }
+    retry_by_agent[released_agent_id] = max(
+        step + AGENT_TASK_BLOCKED_COOLDOWN_STEPS,
+        retry_by_agent.get(released_agent_id, 0),
+    )
+    return replace(
+        task,
+        status=TaskStatus.REQUEUED,
+        assigned_agent_id=None,
+        suppression_grace_until_step=None,
+        retry_after_step=task.retry_after_step,
+        agent_retry_after_steps=tuple(sorted(retry_by_agent.items())),
     )

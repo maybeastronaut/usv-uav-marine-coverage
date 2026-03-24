@@ -50,7 +50,7 @@ def select_claimable_task_for_agent(
     claimable = [
         task
         for task in task_records
-        if task.assigned_agent_id == agent_id
+        if (task.assigned_agent_id == agent_id or task.support_agent_id == agent_id)
         and task.status in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}
     ]
     if not claimable:
@@ -95,10 +95,16 @@ def claim_task_for_execution(
         and active_task is not None
     ):
         if active_task.task_type == TaskType.UAV_RESUPPLY:
-            next_execution_state = transition_to_rendezvous(
-                execution_state,
-                task_id=active_task.task_id,
-            )
+            if agent.kind == "UAV":
+                next_execution_state = transition_to_rendezvous(
+                    execution_state,
+                    task_id=active_task.task_id,
+                )
+            else:
+                next_execution_state = transition_to_task(
+                    execution_state,
+                    task_id=active_task.task_id,
+                )
         else:
             next_execution_state = transition_to_task(
                 execution_state,

@@ -28,6 +28,10 @@ from usv_uav_marine_coverage.grid import GridCoverageMap
 from usv_uav_marine_coverage.information_map import HotspotKnowledgeState, InformationMap
 from usv_uav_marine_coverage.planning.astar_path_planner import PlannerMetricsSnapshot
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskStatus, TaskType
+from usv_uav_marine_coverage.simulation.replay_validation import (
+    build_step_validation_layer,
+    summarize_replay_validation,
+)
 
 if TYPE_CHECKING:
     from .simulation_core import SimulationFrame, SimulationReplay
@@ -101,6 +105,7 @@ def build_summary_payload(replay: SimulationReplay) -> dict[str, object]:
     final_frame = replay.frames[-1]
     final_step_log = replay.step_logs[-1]
     final_coverage = final_step_log["coverage"]
+    validation_summary = summarize_replay_validation(replay.step_logs)
     return {
         "simulation": {
             "seed": replay.seed,
@@ -128,6 +133,7 @@ def build_summary_payload(replay: SimulationReplay) -> dict[str, object]:
             "event_totals": build_event_totals(replay.step_logs),
             "last_step_events": list(final_step_log["events"]),
         },
+        "validation": validation_summary,
     }
 
 
@@ -318,6 +324,7 @@ def build_step_log(
     )
     execution_updates = build_execution_updates(
         agents,
+        step=step,
         execution_states=execution_states,
         progress_states=progress_states,
         uav_coverage_states=uav_coverage_states,
@@ -327,7 +334,7 @@ def build_step_log(
         detected_by_agent=detected_by_agent,
         confirmations_by_agent=confirmations_by_agent,
     )
-    return {
+    step_log = {
         "record_type": "step_snapshot",
         "step": step,
         "agent_states": [serialize_agent_step(agent) for agent in agents],
@@ -356,6 +363,7 @@ def build_step_log(
             "tasks": [
                 serialize_task_record(
                     task,
+                    step=step,
                     info_map=info_map,
                     execution_states=execution_states,
                     progress_states=progress_states,
@@ -393,6 +401,8 @@ def build_step_log(
         },
         "events": list(events),
     }
+    step_log["validation_layer"] = build_step_validation_layer(step_log)
+    return step_log
 
 
 def count_active_ground_truth_hotspots(step_logs: tuple[dict[str, object], ...]) -> int:
@@ -526,6 +536,7 @@ def build_path_plan_logs(
 def build_execution_updates(
     agents: tuple[AgentState, ...],
     *,
+    step: int,
     execution_states: dict[str, AgentExecutionState],
     progress_states: dict[str, AgentProgressState],
     uav_coverage_states: dict[str, UavCoverageState] | None,
@@ -607,13 +618,20 @@ def build_execution_updates(
                 if progress_state is None
                 else progress_state.task_final_approach_status,
                 "released_task_id": None
-                if progress_state is None
+                if progress_state is None or progress_state.released_task_step != step
                 else progress_state.released_task_id,
+                "released_task_created_step": None
+                if progress_state is None or progress_state.released_task_step != step
+                else progress_state.released_task_created_step,
                 "released_task_retry_until_step": None
-                if progress_state is None or progress_state.released_task_retry_until_step <= 0
+                if (
+                    progress_state is None
+                    or progress_state.released_task_step != step
+                    or progress_state.released_task_retry_until_step <= 0
+                )
                 else progress_state.released_task_retry_until_step,
                 "released_task_reason": None
-                if progress_state is None
+                if progress_state is None or progress_state.released_task_step != step
                 else progress_state.released_task_reason,
                 "pending_assigned_task_id": None
                 if progress_state is None
@@ -723,6 +741,7 @@ def build_task_assignment_logs(
 def serialize_task_record(
     task: TaskRecord,
     *,
+    step: int,
     info_map: InformationMap,
     execution_states: dict[str, AgentExecutionState],
     progress_states: dict[str, AgentProgressState],
@@ -739,13 +758,25 @@ def serialize_task_record(
             execution_state = execution_states.get(owner_agent_id)
             progress_state = progress_states.get(owner_agent_id)
             if execution_state is not None and execution_state.active_task_id == task.task_id:
-                if execution_state.stage in {ExecutionStage.ON_TASK, ExecutionStage.ON_RECHARGE}:
+                if _task_claim_is_executing(
+                    task,
+                    execution_state=execution_state,
+                    execution_states=execution_states,
+                ):
                     claim_status = "executing"
                 else:
                     claim_status = "claimed"
             else:
                 claim_status = "pending_claim"
-            if progress_state is not None and progress_state.released_task_id == task.task_id:
+            if (
+                progress_state is not None
+                and progress_state.released_task_id == task.task_id
+                and progress_state.released_task_step == step
+                and (
+                    progress_state.released_task_created_step is None
+                    or progress_state.released_task_created_step == task.created_step
+                )
+            ):
                 release_reason = progress_state.released_task_reason
     else:
         release_reason = "completed" if task.status == TaskStatus.COMPLETED else "cancelled"
@@ -769,6 +800,7 @@ def serialize_task_record(
         "support_agent_id": task.support_agent_id,
         "completed_step": task.completed_step,
         "retry_after_step": task.retry_after_step,
+        "suppression_grace_until_step": task.suppression_grace_until_step,
         "agent_retry_after_steps": [
             {"agent_id": agent_id, "retry_after_step": retry_after_step}
             for agent_id, retry_after_step in task.agent_retry_after_steps
@@ -782,6 +814,25 @@ def serialize_task_record(
             for observer_agent_id, winner_agent_id, known_step in task.distributed_winner_memories
         ],
     }
+
+
+def _task_claim_is_executing(
+    task: TaskRecord,
+    *,
+    execution_state: AgentExecutionState,
+    execution_states: dict[str, AgentExecutionState],
+) -> bool:
+    if task.task_type != TaskType.UAV_RESUPPLY:
+        return execution_state.stage in {ExecutionStage.ON_TASK, ExecutionStage.ON_RECHARGE}
+    if execution_state.stage != ExecutionStage.ON_RECHARGE or task.support_agent_id is None:
+        return False
+    support_execution_state = execution_states.get(task.support_agent_id)
+    if support_execution_state is None:
+        return False
+    return (
+        support_execution_state.active_task_id == task.task_id
+        and support_execution_state.stage == ExecutionStage.ON_TASK
+    )
 
 
 def _task_hotspot_id(task: TaskRecord, *, info_map: InformationMap) -> int | None:

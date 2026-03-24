@@ -14,7 +14,6 @@ from .local_mpc import LOCAL_MPC_EDGE_CLEARANCE_M
 
 USV_TASK_EDGE_APPROACH_BUFFER_M = LOCAL_MPC_EDGE_CLEARANCE_M + 1.0
 TASK_FINAL_APPROACH_ANGLES_DEG = (0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0)
-TASK_FINAL_APPROACH_FAILURE_BUDGET = 3
 TASK_FINAL_APPROACH_RELEASE_COOLDOWN_STEPS = 180
 TASK_FINAL_APPROACH_SEGMENT_SAMPLES = 5
 
@@ -47,6 +46,8 @@ class TaskFinalApproachSelection:
     attempt_count: int
     status: str
     candidate_count: int
+    frozen_candidates: tuple[tuple[float, float], ...] = ()
+    failed_candidate_indexes: tuple[int, ...] = ()
 
 
 def build_task_final_approach(
@@ -107,8 +108,13 @@ def select_task_final_approach_candidate(
 ) -> TaskFinalApproachSelection:
     """Select the active approach candidate for the current task step."""
 
-    approach_plan = build_task_final_approach(agent, task=task, grid_map=grid_map)
-    candidate_count = len(approach_plan.candidates)
+    frozen_candidates = _resolve_frozen_task_final_approach_candidates(
+        agent,
+        task=task,
+        grid_map=grid_map,
+        progress_state=progress_state,
+    )
+    candidate_count = len(frozen_candidates)
     if candidate_count == 0:
         return TaskFinalApproachSelection(
             task_id=task.task_id,
@@ -118,26 +124,48 @@ def select_task_final_approach_candidate(
             attempt_count=0,
             status="active",
             candidate_count=0,
+            frozen_candidates=(),
+            failed_candidate_indexes=(),
         )
 
+    failed_candidate_indexes = _normalize_failed_candidate_indexes(
+        progress_state=progress_state,
+        task_id=task.task_id,
+        candidate_count=candidate_count,
+    )
     if progress_state.task_final_approach_task_id == task.task_id:
-        candidate_index = progress_state.task_final_approach_candidate_index
+        candidate_index = _find_next_available_candidate_index(
+            candidate_count,
+            failed_candidate_indexes=failed_candidate_indexes,
+            start_index=progress_state.task_final_approach_candidate_index,
+        )
         attempt_count = progress_state.task_final_approach_attempt_count
         status = progress_state.task_final_approach_status or "active"
     else:
-        candidate_index = 0
+        candidate_index = _find_next_available_candidate_index(
+            candidate_count,
+            failed_candidate_indexes=(),
+            start_index=0,
+        )
         attempt_count = 0
         status = "active"
-    candidate_index = min(max(candidate_index, 0), candidate_count - 1)
-    candidate = approach_plan.candidates[candidate_index]
+    if candidate_index is None:
+        candidate_index = min(
+            max(progress_state.task_final_approach_candidate_index, 0),
+            candidate_count - 1,
+        )
+        status = "exhausted"
+    candidate_x, candidate_y = frozen_candidates[candidate_index]
     return TaskFinalApproachSelection(
         task_id=task.task_id,
-        candidate_index=candidate.index,
-        candidate_x=candidate.x,
-        candidate_y=candidate.y,
+        candidate_index=candidate_index,
+        candidate_x=candidate_x,
+        candidate_y=candidate_y,
         attempt_count=attempt_count,
         status=status,
         candidate_count=candidate_count,
+        frozen_candidates=frozen_candidates,
+        failed_candidate_indexes=failed_candidate_indexes,
     )
 
 
@@ -151,9 +179,11 @@ def apply_task_final_approach_selection(
     return replace(
         progress_state,
         task_final_approach_task_id=selection.task_id,
+        task_final_approach_frozen_candidates=selection.frozen_candidates,
         task_final_approach_candidate_index=selection.candidate_index,
         task_final_approach_candidate_x=selection.candidate_x,
         task_final_approach_candidate_y=selection.candidate_y,
+        task_final_approach_failed_candidate_indexes=selection.failed_candidate_indexes,
         task_final_approach_attempt_count=selection.attempt_count,
         task_final_approach_status=selection.status,
     )
@@ -168,45 +198,103 @@ def advance_task_final_approach_after_failure(
 ) -> tuple[TaskFinalApproachSelection | None, bool]:
     """Rotate to the next candidate after one failed final-approach attempt."""
 
-    approach_plan = build_task_final_approach(agent, task=task, grid_map=grid_map)
-    candidate_count = len(approach_plan.candidates)
+    frozen_candidates = _resolve_frozen_task_final_approach_candidates(
+        agent,
+        task=task,
+        grid_map=grid_map,
+        progress_state=progress_state,
+    )
+    candidate_count = len(frozen_candidates)
     if candidate_count == 0:
         return (None, True)
     next_attempt_count = progress_state.task_final_approach_attempt_count + 1
+    failed_candidate_indexes = set(
+        _normalize_failed_candidate_indexes(
+            progress_state=progress_state,
+            task_id=task.task_id,
+            candidate_count=candidate_count,
+        )
+    )
     current_index = (
         progress_state.task_final_approach_candidate_index
         if progress_state.task_final_approach_task_id == task.task_id
         else 0
     )
-    next_index = current_index + 1
-    if next_attempt_count >= TASK_FINAL_APPROACH_FAILURE_BUDGET or next_index >= candidate_count:
+    current_index = min(max(current_index, 0), candidate_count - 1)
+    failed_candidate_indexes.add(current_index)
+    normalized_failed_candidate_indexes = tuple(sorted(failed_candidate_indexes))
+    next_index = _find_next_available_candidate_index(
+        candidate_count,
+        failed_candidate_indexes=normalized_failed_candidate_indexes,
+        start_index=current_index + 1,
+    )
+    if next_index is None:
         last_index = max(min(current_index, candidate_count - 1), 0)
-        last_candidate = approach_plan.candidates[last_index]
+        last_candidate_x, last_candidate_y = frozen_candidates[last_index]
         return (
             TaskFinalApproachSelection(
                 task_id=task.task_id,
-                candidate_index=max(current_index, 0),
-                candidate_x=last_candidate.x,
-                candidate_y=last_candidate.y,
+                candidate_index=last_index,
+                candidate_x=last_candidate_x,
+                candidate_y=last_candidate_y,
                 attempt_count=next_attempt_count,
                 status="exhausted",
                 candidate_count=candidate_count,
+                frozen_candidates=frozen_candidates,
+                failed_candidate_indexes=normalized_failed_candidate_indexes,
             ),
             True,
         )
-    candidate = approach_plan.candidates[next_index]
+    candidate_x, candidate_y = frozen_candidates[next_index]
     return (
         TaskFinalApproachSelection(
             task_id=task.task_id,
-            candidate_index=candidate.index,
-            candidate_x=candidate.x,
-            candidate_y=candidate.y,
+            candidate_index=next_index,
+            candidate_x=candidate_x,
+            candidate_y=candidate_y,
             attempt_count=next_attempt_count,
             status="rotated_after_recovery",
             candidate_count=candidate_count,
+            frozen_candidates=frozen_candidates,
+            failed_candidate_indexes=normalized_failed_candidate_indexes,
         ),
         False,
     )
+
+
+def _normalize_failed_candidate_indexes(
+    *,
+    progress_state: AgentProgressState,
+    task_id: str,
+    candidate_count: int,
+) -> tuple[int, ...]:
+    if progress_state.task_final_approach_task_id != task_id or candidate_count <= 0:
+        return ()
+    normalized_indexes: list[int] = []
+    seen_indexes: set[int] = set()
+    for index in progress_state.task_final_approach_failed_candidate_indexes:
+        if index < 0 or index >= candidate_count or index in seen_indexes:
+            continue
+        seen_indexes.add(index)
+        normalized_indexes.append(index)
+    return tuple(normalized_indexes)
+
+
+def _find_next_available_candidate_index(
+    candidate_count: int,
+    *,
+    failed_candidate_indexes: tuple[int, ...],
+    start_index: int,
+) -> int | None:
+    if candidate_count <= 0:
+        return None
+    blocked_indexes = set(failed_candidate_indexes)
+    normalized_start_index = max(start_index, 0) % candidate_count
+    for offset in range(candidate_count):
+        candidate_index = (normalized_start_index + offset) % candidate_count
+        if candidate_index not in blocked_indexes:
+            return candidate_index
+    return None
 
 
 def task_final_approach_satisfied(agent: AgentState, *, task: TaskRecord) -> bool:
@@ -357,6 +445,25 @@ def _rank_candidates(
         )
 
     return tuple(sorted(unique_candidates, key=_score))
+
+
+def _resolve_frozen_task_final_approach_candidates(
+    agent: AgentState,
+    *,
+    task: TaskRecord,
+    grid_map: GridMap,
+    progress_state: AgentProgressState,
+) -> tuple[tuple[float, float], ...]:
+    """Return the stable candidate set for one task episode."""
+
+    if (
+        progress_state.task_final_approach_task_id == task.task_id
+        and progress_state.task_final_approach_frozen_candidates
+    ):
+        return progress_state.task_final_approach_frozen_candidates
+
+    approach_plan = build_task_final_approach(agent, task=task, grid_map=grid_map)
+    return tuple((candidate.x, candidate.y) for candidate in approach_plan.candidates)
 
 
 def _approach_clearance(

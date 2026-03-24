@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from math import hypot
 
 from usv_uav_marine_coverage.agent_model import (
     AgentState,
@@ -31,12 +32,16 @@ from usv_uav_marine_coverage.execution.execution_types import (
     UavCoverageState,
     WreckZone,
 )
-from usv_uav_marine_coverage.execution.progress_feedback import should_replan_task
+from usv_uav_marine_coverage.execution.progress_feedback import (
+    UAV_RESUPPLY_SUPPORT_REPLAN_GOAL_TOLERANCE_M,
+    should_replan_task,
+)
 from usv_uav_marine_coverage.execution.recharge_runtime import (
     _dock_to_support_agent,
     _has_reached_rendezvous,
 )
 from usv_uav_marine_coverage.execution.recovery_runtime import (
+    blocked_task_release_retry_until_step,
     _release_blocked_usv_task,
     _run_usv_recovery_step,
 )
@@ -131,6 +136,30 @@ def _build_usv_traffic_cost_context(
     )
 
 
+def _resolve_uav_resupply_support_goal(
+    execution_state: AgentExecutionState,
+    *,
+    active_task: TaskRecord,
+) -> tuple[float | None, float | None]:
+    """Prefer the stable rendezvous anchor for one support-USV episode."""
+
+    anchor_x = active_task.rendezvous_anchor_x
+    anchor_y = active_task.rendezvous_anchor_y
+    if anchor_x is None or anchor_y is None:
+        anchor_x = active_task.target_x
+        anchor_y = active_task.target_y
+    plan = execution_state.active_plan
+    if (
+        plan is not None
+        and plan.status == PathPlanStatus.PLANNED
+        and plan.task_id == active_task.task_id
+        and hypot(plan.goal_x - anchor_x, plan.goal_y - anchor_y)
+        <= UAV_RESUPPLY_SUPPORT_REPLAN_GOAL_TOLERANCE_M
+    ):
+        return (plan.goal_x, plan.goal_y)
+    return (anchor_x, anchor_y)
+
+
 def run_agent_stage(
     agent: AgentState,
     *,
@@ -161,6 +190,7 @@ def run_agent_stage(
             agent,
             execution_state=execution_state,
             progress_state=progress_state,
+            active_task=active_task,
             context=context,
         )
     if execution_state.stage == ExecutionStage.ON_RECHARGE:
@@ -255,8 +285,15 @@ def _run_on_task_stage(
     *,
     execution_state: AgentExecutionState,
     progress_state: AgentProgressState,
+    active_task: TaskRecord | None,
     context: StageRuntimeContext,
 ) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
+    if active_task is not None and active_task.task_type == TaskType.UAV_RESUPPLY and agent.kind == "USV":
+        return (
+            context.stop_agent_motion(assign_agent_task(agent, TaskMode.IDLE)),
+            execution_state,
+            progress_state,
+        )
     confirm_agent = assign_agent_task(
         agent,
         TaskMode.CONFIRM if agent.kind == "USV" else TaskMode.INVESTIGATE,
@@ -306,6 +343,15 @@ def _run_go_to_task_stage(
     active_task: TaskRecord,
     context: StageRuntimeContext,
 ) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
+    rendezvous_target_uav: AgentState | None = None
+    if active_task.task_type == TaskType.UAV_RESUPPLY and agent.kind == "USV":
+        rendezvous_target_uav = context.agent_by_id.get(active_task.assigned_agent_id or "")
+        if rendezvous_target_uav is not None and _has_reached_rendezvous(agent, rendezvous_target_uav):
+            return (
+                context.stop_agent_motion(assign_agent_task(agent, TaskMode.IDLE)),
+                transition_to_on_task(execution_state),
+                progress_state,
+            )
     selection = (
         select_task_final_approach_candidate(
             agent,
@@ -313,7 +359,7 @@ def _run_go_to_task_stage(
             grid_map=context.grid_map,
             progress_state=progress_state,
         )
-        if agent.kind == "USV"
+        if agent.kind == "USV" and active_task.task_type != TaskType.UAV_RESUPPLY
         else None
     )
     if selection is not None:
@@ -324,8 +370,14 @@ def _run_go_to_task_stage(
         goal_x = selection.candidate_x
         goal_y = selection.candidate_y
     else:
-        goal_x = active_task.target_x
-        goal_y = active_task.target_y
+        if active_task.task_type == TaskType.UAV_RESUPPLY and agent.kind == "USV":
+            goal_x, goal_y = _resolve_uav_resupply_support_goal(
+                execution_state,
+                active_task=active_task,
+            )
+        else:
+            goal_x = active_task.target_x
+            goal_y = active_task.target_y
     if should_replan_task(
         agent,
         execution_state=execution_state,
@@ -367,27 +419,43 @@ def _run_go_to_task_stage(
     plan = execution_state.active_plan
     if plan is None:
         if agent.kind != "USV":
-            return (agent, execution_state, progress_state)
+            return (
+                assign_agent_task(agent, TaskMode.INVESTIGATE, goal_x, goal_y),
+                execution_state,
+                progress_state,
+            )
         return _release_blocked_usv_task(
             context.stop_agent_motion(assign_agent_task(agent, TaskMode.IDLE)),
+            step=context.step,
             execution_state=execution_state,
             progress_state=progress_state,
             patrol_routes=context.patrol_routes,
             grid_map=context.grid_map,
             info_map=context.info_map,
             task_records=context.task_records,
+            released_task=active_task,
+            release_retry_until_step=blocked_task_release_retry_until_step(context.step),
+            release_reason="task_plan_missing",
         )
     if plan.status != PathPlanStatus.PLANNED:
         if agent.kind != "USV":
-            return (agent, execution_state, progress_state)
+            return (
+                assign_agent_task(agent, TaskMode.INVESTIGATE, goal_x, goal_y),
+                execution_state,
+                progress_state,
+            )
         return _release_blocked_usv_task(
             agent,
+            step=context.step,
             execution_state=execution_state,
             progress_state=progress_state,
             patrol_routes=context.patrol_routes,
             grid_map=context.grid_map,
             info_map=context.info_map,
             task_records=context.task_records,
+            released_task=active_task,
+            release_retry_until_step=blocked_task_release_retry_until_step(context.step),
+            release_reason="task_plan_blocked",
         )
 
     advanced_agent, execution_state, outcome = context.advance_path_execution_step(
@@ -414,12 +482,25 @@ def _run_go_to_task_stage(
     ):
         return _release_blocked_usv_task(
             context.stop_agent_motion(assign_agent_task(advanced_agent, TaskMode.IDLE)),
+            step=context.step,
             execution_state=execution_state,
             progress_state=progress_state,
             patrol_routes=context.patrol_routes,
             grid_map=context.grid_map,
             info_map=context.info_map,
             task_records=context.task_records,
+            released_task=active_task,
+            release_retry_until_step=blocked_task_release_retry_until_step(context.step),
+            release_reason="task_progress_blocked",
+        )
+    if rendezvous_target_uav is not None and _has_reached_rendezvous(
+        advanced_agent,
+        rendezvous_target_uav,
+    ):
+        return (
+            context.stop_agent_motion(assign_agent_task(advanced_agent, TaskMode.IDLE)),
+            transition_to_on_task(execution_state),
+            progress_state,
         )
     if _should_enter_on_task(
         advanced_agent,
@@ -427,7 +508,16 @@ def _run_go_to_task_stage(
         outcome=outcome,
     ):
         return (advanced_agent, transition_to_on_task(execution_state), progress_state)
-    return (advanced_agent, execution_state, progress_state)
+    return (
+        assign_agent_task(
+            advanced_agent,
+            TaskMode.CONFIRM if agent.kind == "USV" else TaskMode.INVESTIGATE,
+            goal_x,
+            goal_y,
+        ),
+        execution_state,
+        progress_state,
+    )
 
 
 def _should_enter_on_task(
@@ -443,6 +533,8 @@ def _should_enter_on_task(
         TaskType.HOTSPOT_CONFIRMATION,
     }:
         return task_final_approach_satisfied(agent, task=active_task)
+    if active_task.task_type == TaskType.UAV_RESUPPLY and agent.kind == "USV":
+        return False
     if outcome == ExecutionOutcome.TASK_SITE_REACHED:
         return True
     return False
@@ -500,7 +592,11 @@ def _run_go_to_rendezvous_stage(
     ):
         docked_agent = _dock_to_support_agent(advanced_agent, support_agent)
         return (docked_agent, transition_to_recharge(execution_state), progress_state)
-    return (advanced_agent, execution_state, progress_state)
+    return (
+        assign_agent_task(advanced_agent, TaskMode.INVESTIGATE, support_agent.x, support_agent.y),
+        execution_state,
+        progress_state,
+    )
 
 
 def _run_return_to_patrol_stage(

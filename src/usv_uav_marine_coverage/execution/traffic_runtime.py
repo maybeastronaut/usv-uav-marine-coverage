@@ -133,10 +133,16 @@ def apply_bottleneck_directive(
     execution_state: AgentExecutionState,
     *,
     directive: BottleneckDirective | None,
+    step: int,
 ) -> AgentExecutionState:
     """Apply one dynamic bottleneck coordination decision."""
 
     if directive is None:
+        if (
+            execution_state.reserved_bottleneck_zone_id is not None
+            and step <= execution_state.bottleneck_reservation_until_step
+        ):
+            return execution_state
         if is_bottleneck_yield_state(execution_state):
             return transition_from_yield(execution_state)
         if (
@@ -148,16 +154,20 @@ def apply_bottleneck_directive(
             execution_state,
             reserved_bottleneck_zone_id=None,
             bottleneck_owner_agent_id=None,
+            bottleneck_reservation_until_step=-1,
         )
 
     if directive.should_yield:
-        return transition_to_yield(
-            execution_state,
-            yield_target_x=directive.hold_x,
-            yield_target_y=directive.hold_y,
-            yield_reason=directive.reason,
-            reserved_bottleneck_zone_id=directive.zone_id,
-            bottleneck_owner_agent_id=directive.owner_agent_id,
+        return replace(
+            transition_to_yield(
+                execution_state,
+                yield_target_x=directive.hold_x,
+                yield_target_y=directive.hold_y,
+                yield_reason=directive.reason,
+                reserved_bottleneck_zone_id=directive.zone_id,
+                bottleneck_owner_agent_id=directive.owner_agent_id,
+            ),
+            bottleneck_reservation_until_step=directive.expires_after_step,
         )
 
     base_state = (
@@ -169,6 +179,7 @@ def apply_bottleneck_directive(
         base_state,
         reserved_bottleneck_zone_id=directive.zone_id,
         bottleneck_owner_agent_id=directive.owner_agent_id,
+        bottleneck_reservation_until_step=directive.expires_after_step,
     )
 
 
@@ -452,13 +463,13 @@ def progress_target(
     patrol_route: tuple[tuple[float, float], ...],
 ) -> tuple[float | None, float | None]:
     """Resolve the current execution-time progress target for one agent."""
-
-    del agent  # kept in the signature for call-site symmetry across runtime modules
     plan = execution_state.active_plan
     if plan is not None and execution_state.current_waypoint_index < len(plan.waypoints):
         waypoint = plan.waypoints[execution_state.current_waypoint_index]
         return (waypoint.x, waypoint.y)
     if execution_state.stage == ExecutionStage.GO_TO_TASK and active_task is not None:
+        if agent.task.target_x is not None and agent.task.target_y is not None:
+            return (agent.task.target_x, agent.task.target_y)
         return (active_task.target_x, active_task.target_y)
     if execution_state.stage == ExecutionStage.RETURN_TO_PATROL:
         return (execution_state.return_target_x, execution_state.return_target_y)

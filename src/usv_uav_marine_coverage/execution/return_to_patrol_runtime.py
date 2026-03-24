@@ -568,10 +568,15 @@ def _plan_patrol_path(
         )
         if plan.status == PathPlanStatus.PLANNED:
             return candidate_state
-        if blocked_state is None:
+        if blocked_state is None and not allow_patrol_index_advance:
             blocked_state = candidate_state
 
-    return blocked_state or replace(execution_state, active_plan=None, current_waypoint_index=0)
+    return blocked_state or replace(
+        execution_state,
+        active_plan=None,
+        current_waypoint_index=0,
+        last_patrol_plan_step=step,
+    )
 
 
 def _plan_return_to_patrol_path(
@@ -695,7 +700,7 @@ def _plan_return_to_patrol_path(
         )
         if plan.status == PathPlanStatus.PLANNED:
             return candidate_state
-        if blocked_state is None:
+        if blocked_state is None and not allow_patrol_index_advance:
             blocked_state = candidate_state
 
     access = _find_local_patrol_access(
@@ -733,10 +738,15 @@ def _plan_return_to_patrol_path(
         )
         if plan.status == PathPlanStatus.PLANNED:
             return candidate_state
-        if blocked_state is None:
+        if blocked_state is None and not allow_patrol_index_advance:
             blocked_state = candidate_state
 
-    return blocked_state or replace(execution_state, active_plan=None, current_waypoint_index=0)
+    return blocked_state or replace(
+        execution_state,
+        active_plan=None,
+        current_waypoint_index=0,
+        last_return_plan_step=step,
+    )
 
 
 def _build_planned_local_patrol_return_transition(

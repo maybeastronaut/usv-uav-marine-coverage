@@ -28,6 +28,8 @@ FAILURE_SOFT_FOCUS_HOTSPOT_SECONDARY_MARGIN = 220.0
 FAILURE_SOFT_CLUSTER_LINK_DISTANCE_M = 180.0
 FAILURE_SOFT_MIN_FOCUS_CLUSTER_SIZE = 2
 FAILURE_SOFT_AGED_ISOLATED_HOTSPOT_RELEASE_STEPS = 180
+FAILURE_SOFT_FAILED_NEIGHBOR_RECOVERY_RADIUS_M = 140.0
+FAILURE_SOFT_FAILED_NEIGHBOR_RECOVERY_SCORE_BONUS = 60.0
 
 
 def build_failure_hotspot_first_soft_partition(
@@ -36,6 +38,7 @@ def build_failure_hotspot_first_soft_partition(
     tasks: tuple[TaskRecord, ...],
     agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
+    step: int | None = None,
 ) -> TaskPartitionView:
     """Return a failure-mode soft partition when at least one USV has failed."""
 
@@ -69,7 +72,12 @@ def build_failure_hotspot_first_soft_partition(
             secondary_usv_ids=(),
             partition_reason="failure_mode_baseline_suppressed_for_hotspot_backlog",
         )
-    if should_suppress_non_focus_hotspot_after_failure(task, tasks=tasks, agents=agents):
+    if should_suppress_non_focus_hotspot_after_failure(
+        task,
+        tasks=tasks,
+        agents=agents,
+        step=step,
+    ):
         return TaskPartitionView(
             policy_name="failure_triggered_hotspot_first_soft_partition_policy",
             primary_usv_ids=(),
@@ -184,10 +192,21 @@ def should_suppress_non_focus_hotspot_after_failure(
     *,
     tasks: tuple[TaskRecord, ...],
     agents: tuple[AgentState, ...],
+    step: int | None = None,
 ) -> bool:
     """Return whether one hotspot task should yield to the active focus cluster."""
 
     if task.task_type != TaskType.HOTSPOT_CONFIRMATION:
+        return False
+    if is_failed_neighbor_recovery_hotspot(task, agents=agents):
+        return False
+    if (
+        step is not None
+        and task.suppression_grace_until_step is not None
+        and step < task.suppression_grace_until_step
+    ):
+        return False
+    if task.status == TaskStatus.IN_PROGRESS:
         return False
     hotspot_tasks = tuple(
         candidate
@@ -208,6 +227,7 @@ def should_suppress_non_focus_hotspot_after_failure(
         clusters=clusters,
         focus_task_ids=focus_task_ids,
         tasks=hotspot_tasks,
+        step=step,
     )
 
 
@@ -229,6 +249,48 @@ def failure_hotspot_focus_task_ids(
     )
     clusters = _build_hotspot_clusters(hotspot_tasks)
     return _focus_task_ids_from_clusters(clusters=clusters, tasks=hotspot_tasks, agents=agents)
+
+
+def is_failed_neighbor_recovery_hotspot(
+    task: TaskRecord,
+    *,
+    agents: tuple[AgentState, ...],
+) -> bool:
+    """Return whether one hotspot sits inside the failed-USV recovery neighborhood."""
+
+    return failed_neighbor_recovery_bonus(task, agents=agents) > 0.0
+
+
+def failed_neighbor_recovery_bonus(
+    task: TaskRecord,
+    *,
+    agents: tuple[AgentState, ...],
+) -> float:
+    """Return the extra recovery weight for one hotspot near a failed USV."""
+
+    if task.task_type != TaskType.HOTSPOT_CONFIRMATION:
+        return 0.0
+    if task.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+        return 0.0
+    failed_usvs = tuple(
+        agent
+        for agent in agents
+        if agent.kind == "USV" and agent.health_status == HealthStatus.FAILED
+    )
+    if not failed_usvs:
+        return 0.0
+    nearest_failed_distance = min(
+        hypot(task.target_x - agent.x, task.target_y - agent.y) for agent in failed_usvs
+    )
+    if nearest_failed_distance > FAILURE_SOFT_FAILED_NEIGHBOR_RECOVERY_RADIUS_M:
+        return 0.0
+    proximity_ratio = 1.0 - (
+        nearest_failed_distance / FAILURE_SOFT_FAILED_NEIGHBOR_RECOVERY_RADIUS_M
+    )
+    return round(
+        FAILURE_SOFT_FAILED_NEIGHBOR_RECOVERY_SCORE_BONUS * (0.5 + (0.5 * proximity_ratio)),
+        3,
+    )
 
 
 def _has_hotspot_backlog(tasks: tuple[TaskRecord, ...]) -> bool:
@@ -297,10 +359,11 @@ def _should_release_aged_isolated_hotspot(
     clusters: tuple[tuple[TaskRecord, ...], ...],
     focus_task_ids: frozenset[str],
     tasks: tuple[TaskRecord, ...],
+    step: int | None,
 ) -> bool:
     """Return whether one old isolated hotspot can escape focus-cluster suppression."""
 
-    if task.status not in {TaskStatus.PENDING, TaskStatus.REQUEUED}:
+    if task.status not in {TaskStatus.PENDING, TaskStatus.REQUEUED, TaskStatus.ASSIGNED}:
         return False
     task_cluster = next(
         (
@@ -315,10 +378,17 @@ def _should_release_aged_isolated_hotspot(
     focus_tasks = tuple(candidate for candidate in tasks if candidate.task_id in focus_task_ids)
     if not focus_tasks:
         return False
-    newest_focus_created_step = max(candidate.created_step for candidate in focus_tasks)
+    current_reference_step = (
+        step if step is not None else max(candidate.created_step for candidate in focus_tasks)
+    )
+    age_anchor_step = (
+        task.retry_after_step
+        if task.status == TaskStatus.REQUEUED and task.retry_after_step is not None
+        else task.created_step
+    )
     return (
-        task.created_step + FAILURE_SOFT_AGED_ISOLATED_HOTSPOT_RELEASE_STEPS
-        <= newest_focus_created_step
+        age_anchor_step + FAILURE_SOFT_AGED_ISOLATED_HOTSPOT_RELEASE_STEPS
+        <= current_reference_step
     )
 
 

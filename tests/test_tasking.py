@@ -42,6 +42,9 @@ from usv_uav_marine_coverage.tasking.partitioning import (
     build_baseline_task_partition,
     build_task_partition,
 )
+from usv_uav_marine_coverage.tasking.partitioning.failure_hotspot_soft_partition import (
+    should_suppress_non_focus_hotspot_after_failure,
+)
 from usv_uav_marine_coverage.tasking.rho_task_allocator import (
     AGENT_TASK_BLOCKED_COOLDOWN_STEPS as RHO_AGENT_TASK_BLOCKED_COOLDOWN_STEPS,
 )
@@ -105,8 +108,10 @@ class TaskingTestCase(unittest.TestCase):
 
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].task_type, TaskType.UAV_RESUPPLY)
-        self.assertEqual(tasks[0].target_x, 600.0)
+        self.assertEqual(tasks[0].target_x, 0.0)
         self.assertEqual(tasks[0].target_y, 0.0)
+        self.assertEqual(tasks[0].rendezvous_anchor_x, 0.0)
+        self.assertEqual(tasks[0].rendezvous_anchor_y, 0.0)
 
     def test_build_uav_resupply_tasks_rebinds_existing_task_to_uav(self) -> None:
         agents = tuple(
@@ -140,6 +145,7 @@ class TaskingTestCase(unittest.TestCase):
             replace(agent, energy_level=20.0) if agent.agent_id == "UAV-2" else agent
             for agent in build_demo_agent_states()
         )
+        uav = next(agent for agent in agents if agent.agent_id == "UAV-2")
         existing_task = TaskRecord(
             task_id="uav-resupply-UAV-2",
             task_type=TaskType.UAV_RESUPPLY,
@@ -161,6 +167,69 @@ class TaskingTestCase(unittest.TestCase):
         self.assertEqual(tasks[0].assigned_agent_id, "UAV-2")
         self.assertEqual(tasks[0].status, TaskStatus.PENDING)
         self.assertIsNone(tasks[0].support_agent_id)
+        self.assertEqual(tasks[0].target_x, uav.x)
+        self.assertEqual(tasks[0].target_y, uav.y)
+        self.assertEqual(tasks[0].rendezvous_anchor_x, uav.x)
+        self.assertEqual(tasks[0].rendezvous_anchor_y, uav.y)
+
+    def test_build_uav_resupply_tasks_preserves_active_rendezvous_anchor(self) -> None:
+        agents = tuple(
+            replace(agent, x=545.0, y=255.0, energy_level=20.0)
+            if agent.agent_id == "UAV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        existing_task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=520.0,
+            target_y=240.0,
+            target_row=None,
+            target_col=None,
+            created_step=5,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+            rendezvous_anchor_x=520.0,
+            rendezvous_anchor_y=240.0,
+        )
+
+        tasks = build_uav_resupply_tasks(agents, step=7, existing_tasks=(existing_task,))
+
+        self.assertEqual(tasks[0].target_x, 520.0)
+        self.assertEqual(tasks[0].target_y, 240.0)
+        self.assertEqual(tasks[0].rendezvous_anchor_x, 520.0)
+        self.assertEqual(tasks[0].rendezvous_anchor_y, 240.0)
+
+    def test_build_uav_resupply_tasks_preserves_retry_cooldown_on_requeued_episode(self) -> None:
+        agents = tuple(
+            replace(agent, energy_level=30.0) if agent.agent_id == "UAV-1" else agent
+            for agent in build_demo_agent_states()
+        )
+        existing_task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.REQUEUED,
+            priority=20,
+            target_x=100.0,
+            target_y=200.0,
+            target_row=None,
+            target_col=None,
+            created_step=5,
+            assigned_agent_id="UAV-1",
+            support_agent_id=None,
+            retry_after_step=40,
+            agent_retry_after_steps=(("USV-1", 40),),
+        )
+
+        tasks = build_uav_resupply_tasks(agents, step=7, existing_tasks=(existing_task,))
+
+        self.assertEqual(tasks[0].status, TaskStatus.PENDING)
+        self.assertEqual(tasks[0].retry_after_step, 40)
+        self.assertEqual(tasks[0].agent_retry_after_steps, (("USV-1", 40),))
 
     def test_return_to_patrol_usv_can_pick_up_nearby_hotspot(self) -> None:
         agents = tuple(
@@ -1182,6 +1251,136 @@ class TaskingTestCase(unittest.TestCase):
             "failure_mode_hotspot_outside_focus_cluster_deferred",
         )
 
+    def test_failure_hotspot_soft_partition_releases_requeued_isolated_hotspot_by_current_step(
+        self,
+    ) -> None:
+        agents = tuple(
+            replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+            )
+            if agent.agent_id == "USV-2"
+            else replace(agent, x=700.0, y=860.0)
+            if agent.agent_id == "USV-3"
+            else replace(agent, x=520.0, y=520.0)
+            if agent.agent_id == "USV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        focus_hotspot_a = TaskRecord(
+            task_id="focus-hotspot-a",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=900.0,
+            target_y=650.0,
+            target_row=26,
+            target_col=36,
+            created_step=590,
+        )
+        focus_hotspot_b = replace(
+            focus_hotspot_a,
+            task_id="focus-hotspot-b",
+            target_x=940.0,
+            target_y=690.0,
+            target_col=37,
+            created_step=591,
+        )
+        requeued_isolated_hotspot = replace(
+            focus_hotspot_a,
+            task_id="requeued-isolated-hotspot",
+            status=TaskStatus.REQUEUED,
+            target_x=687.5,
+            target_y=887.5,
+            target_row=35,
+            target_col=27,
+            created_step=580,
+            retry_after_step=600,
+        )
+
+        partition = build_task_partition(
+            requeued_isolated_hotspot,
+            policy_name="failure_triggered_hotspot_first_soft_partition_policy",
+            tasks=(focus_hotspot_a, focus_hotspot_b, requeued_isolated_hotspot),
+            agents=agents,
+            execution_states=execution_states,
+            step=900,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-3",))
+        self.assertNotEqual(
+            partition.partition_reason,
+            "failure_mode_hotspot_outside_focus_cluster_deferred",
+        )
+
+    def test_failure_hotspot_soft_partition_keeps_failed_neighbor_hotspot_open(
+        self,
+    ) -> None:
+        agents = tuple(
+            replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+                x=875.411,
+                y=679.671,
+            )
+            if agent.agent_id == "USV-2"
+            else replace(agent, x=780.0, y=820.0)
+            if agent.agent_id == "USV-3"
+            else replace(agent, x=500.0, y=520.0)
+            if agent.agent_id == "USV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        focus_hotspot_a = TaskRecord(
+            task_id="focus-hotspot-a",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=560.0,
+            target_y=120.0,
+            target_row=4,
+            target_col=22,
+            created_step=700,
+        )
+        focus_hotspot_b = replace(
+            focus_hotspot_a,
+            task_id="focus-hotspot-b",
+            target_x=610.0,
+            target_y=150.0,
+            target_col=24,
+            created_step=701,
+        )
+        failed_neighbor_hotspot = replace(
+            focus_hotspot_a,
+            task_id="failed-neighbor-hotspot",
+            target_x=937.5,
+            target_y=662.5,
+            target_row=26,
+            target_col=37,
+            created_step=702,
+        )
+
+        partition = build_task_partition(
+            failed_neighbor_hotspot,
+            policy_name="failure_triggered_hotspot_first_soft_partition_policy",
+            tasks=(focus_hotspot_a, focus_hotspot_b, failed_neighbor_hotspot),
+            agents=agents,
+            execution_states=execution_states,
+            step=702,
+        )
+
+        self.assertEqual(partition.primary_usv_ids, ("USV-3",))
+        self.assertNotEqual(
+            partition.partition_reason,
+            "failure_mode_hotspot_outside_focus_cluster_deferred",
+        )
+
     def test_failure_hotspot_soft_partition_opens_focus_cluster_secondary(
         self,
     ) -> None:
@@ -1464,9 +1663,104 @@ class TaskingTestCase(unittest.TestCase):
 
         self.assertEqual(updated_tasks[0].assigned_agent_id, "UAV-1")
         self.assertEqual(updated_tasks[0].support_agent_id, "USV-1")
+        self.assertEqual(updated_tasks[0].target_x, task.target_x)
+        self.assertEqual(updated_tasks[0].target_y, task.target_y)
         self.assertEqual(decisions[0].agent_id, "UAV-1")
         self.assertEqual(decisions[0].support_agent_id, "USV-1")
         self.assertEqual(decisions[0].selection_reason, "nearest_usv_rendezvous_for_uav_resupply")
+
+    def test_allocator_keeps_existing_uav_resupply_anchor_target(self) -> None:
+        agents = tuple(
+            replace(agent, x=560.0, y=260.0)
+            if agent.agent_id == "UAV-1"
+            else replace(agent, x=480.0, y=220.0)
+            if agent.agent_id == "USV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=520.0,
+            target_y=240.0,
+            target_row=None,
+            target_col=None,
+            created_step=5,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+            rendezvous_anchor_x=520.0,
+            rendezvous_anchor_y=240.0,
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_basic_policy(
+            (task,),
+            agents=agents,
+            execution_states=execution_states,
+            grid_map=self._build_runtime_grid_map(),
+        )
+
+        self.assertEqual(updated_tasks[0].target_x, 520.0)
+        self.assertEqual(updated_tasks[0].target_y, 240.0)
+        self.assertEqual(updated_tasks[0].support_agent_id, "USV-1")
+        self.assertEqual(decisions[0].selection_reason, "keep_existing_assignment")
+
+    def test_allocator_uses_rendezvous_anchor_for_uav_resupply_support_reachability(self) -> None:
+        agents = tuple(
+            replace(agent, x=140.0, y=260.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=220.0, y=260.0)
+            if agent.agent_id == "USV-2"
+            else replace(agent, energy_level=30.0, x=600.0, y=300.0)
+            if agent.agent_id == "UAV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.PENDING,
+            priority=20,
+            target_x=150.0,
+            target_y=260.0,
+            target_row=None,
+            target_col=None,
+            created_step=5,
+            assigned_agent_id="UAV-1",
+            rendezvous_anchor_x=150.0,
+            rendezvous_anchor_y=260.0,
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.allocator_common.build_usv_path_plan"
+        ) as planner:
+            planner.return_value = PathPlan(
+                plan_id="support-usv-1-planned",
+                planner_name="astar_path_planner",
+                agent_id="USV-1",
+                task_id=task.task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=145.0, y=260.0), Waypoint(x=150.0, y=260.0)),
+                goal_x=150.0,
+                goal_y=260.0,
+                estimated_cost=10.0,
+            )
+            updated_tasks, decisions = allocate_tasks_with_basic_policy(
+                (task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+            )
+
+        self.assertEqual(planner.call_args.kwargs["goal_x"], 150.0)
+        self.assertEqual(planner.call_args.kwargs["goal_y"], 260.0)
+        self.assertEqual(updated_tasks[0].support_agent_id, "USV-1")
+        self.assertEqual(decisions[0].support_agent_id, "USV-1")
 
     def test_allocator_skips_degraded_usv_for_uav_resupply_support(self) -> None:
         agents = tuple(
@@ -1555,6 +1849,70 @@ class TaskingTestCase(unittest.TestCase):
         self.assertEqual(updated_tasks[0].assigned_agent_id, "UAV-1")
         self.assertEqual(updated_tasks[0].support_agent_id, "USV-2")
         self.assertEqual(decisions[0].support_agent_id, "USV-2")
+
+    def test_allocator_skips_unreachable_nearest_usv_for_uav_resupply_support(self) -> None:
+        agents = tuple(
+            replace(agent, x=140.0, y=260.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=220.0, y=260.0)
+            if agent.agent_id == "USV-2"
+            else replace(agent, energy_level=30.0, x=150.0, y=260.0)
+            if agent.agent_id == "UAV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.PENDING,
+            priority=20,
+            target_x=150.0,
+            target_y=260.0,
+            target_row=None,
+            target_col=None,
+            created_step=5,
+            assigned_agent_id="UAV-1",
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.allocator_common.build_usv_path_plan"
+        ) as planner:
+            planner.side_effect = [
+                PathPlan(
+                    plan_id="support-usv-1-blocked",
+                    planner_name="astar_path_planner",
+                    agent_id="USV-1",
+                    task_id=task.task_id,
+                    status=PathPlanStatus.BLOCKED,
+                    waypoints=(),
+                    goal_x=150.0,
+                    goal_y=260.0,
+                    estimated_cost=float("inf"),
+                ),
+                PathPlan(
+                    plan_id="support-usv-2-planned",
+                    planner_name="astar_path_planner",
+                    agent_id="USV-2",
+                    task_id=task.task_id,
+                    status=PathPlanStatus.PLANNED,
+                    waypoints=(Waypoint(x=220.0, y=260.0), Waypoint(x=150.0, y=260.0)),
+                    goal_x=150.0,
+                    goal_y=260.0,
+                    estimated_cost=70.0,
+                ),
+            ]
+            updated_tasks, decisions = allocate_tasks_with_basic_policy(
+                (task,),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+            )
+
+        self.assertEqual(updated_tasks[0].support_agent_id, "USV-2")
+        self.assertEqual(decisions[0].support_agent_id, "USV-2")
+        self.assertEqual(planner.call_count, 2)
 
     def test_allocator_allows_returning_usv_with_completed_task_to_support_uav(self) -> None:
         agents = tuple(
@@ -1653,12 +2011,26 @@ class TaskingTestCase(unittest.TestCase):
             created_step=6,
         )
 
-        updated_tasks, decisions = allocate_tasks_with_cost_aware_policy(
-            (uav_resupply_task, hotspot_task),
-            agents=agents,
-            execution_states=execution_states,
-            grid_map=self._build_runtime_grid_map(),
-        )
+        with patch(
+            "usv_uav_marine_coverage.tasking.allocator_common.build_usv_path_plan"
+        ) as planner:
+            planner.return_value = PathPlan(
+                plan_id="support-usv-2-planned",
+                planner_name="astar_path_planner",
+                agent_id="USV-2",
+                task_id=uav_resupply_task.task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=520.0, y=320.0), Waypoint(x=640.0, y=320.0)),
+                goal_x=640.0,
+                goal_y=320.0,
+                estimated_cost=120.0,
+            )
+            updated_tasks, decisions = allocate_tasks_with_cost_aware_policy(
+                (uav_resupply_task, hotspot_task),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=self._build_runtime_grid_map(),
+            )
 
         updated_by_id = {task.task_id: task for task in updated_tasks}
         self.assertEqual(updated_by_id["uav-resupply-UAV-1"].support_agent_id, "USV-2")
@@ -3027,6 +3399,73 @@ class TaskingTestCase(unittest.TestCase):
         self.assertEqual(updated_tasks[0].status, TaskStatus.PENDING)
         self.assertEqual(decisions, ())
 
+    def test_rho_holds_requeued_hotspot_until_global_retry_expires(self) -> None:
+        task = TaskRecord(
+            task_id="hotspot-confirmation-rho-global-retry",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.REQUEUED,
+            priority=10,
+            target_x=700.0,
+            target_y=320.0,
+            target_row=10,
+            target_col=28,
+            created_step=5,
+            retry_after_step=40,
+            agent_retry_after_steps=(("USV-2", 40),),
+        )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.rho_task_allocator.build_usv_path_plan"
+        ) as planner:
+            updated_tasks, decisions = allocate_tasks_with_rho_policy(
+                (task,),
+                agents=build_demo_agent_states(),
+                execution_states=self._build_idle_execution_states(build_demo_agent_states()),
+                grid_map=self._build_runtime_grid_map(),
+                info_map=build_information_map(self._build_runtime_grid_map()),
+                step=30,
+            )
+
+        self.assertEqual(planner.call_count, 0)
+        self.assertEqual(updated_tasks[0].status, TaskStatus.REQUEUED)
+        self.assertIsNone(updated_tasks[0].assigned_agent_id)
+        self.assertEqual(updated_tasks[0].retry_after_step, 40)
+        self.assertEqual(decisions, ())
+
+    def test_rho_holds_supportless_uav_resupply_until_global_retry_expires(self) -> None:
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.REQUEUED,
+            priority=20,
+            target_x=400.0,
+            target_y=500.0,
+            target_row=None,
+            target_col=None,
+            created_step=88,
+            assigned_agent_id="UAV-1",
+            support_agent_id=None,
+            retry_after_step=40,
+            agent_retry_after_steps=(("USV-1", 40),),
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_rho_policy(
+            (task,),
+            agents=build_demo_agent_states(),
+            execution_states=self._build_idle_execution_states(build_demo_agent_states()),
+            grid_map=self._build_runtime_grid_map(),
+            info_map=build_information_map(self._build_runtime_grid_map()),
+            step=30,
+        )
+
+        self.assertEqual(updated_tasks[0].status, TaskStatus.REQUEUED)
+        self.assertEqual(updated_tasks[0].assigned_agent_id, "UAV-1")
+        self.assertIsNone(updated_tasks[0].support_agent_id)
+        self.assertEqual(updated_tasks[0].retry_after_step, 40)
+        self.assertEqual(decisions, ())
+
     def test_rho_releases_existing_baseline_when_failure_hotspot_backlog_exists(self) -> None:
         agents = tuple(
             replace(
@@ -3218,6 +3657,667 @@ class TaskingTestCase(unittest.TestCase):
         self.assertTrue(
             any(
                 decision.task_id in {"focus-hotspot-a", "focus-hotspot-b"} for decision in decisions
+            )
+        )
+
+    def test_rho_failure_suppression_cools_down_released_agent_before_reassigning(self) -> None:
+        agents = tuple(
+            replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+            )
+            if agent.agent_id == "USV-2"
+            else replace(agent, x=560.0, y=120.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=860.0, y=720.0)
+            if agent.agent_id == "USV-3"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-1"] = replace(
+            execution_states["USV-1"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="outside-hotspot-held",
+        )
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        outside_hotspot = TaskRecord(
+            task_id="outside-hotspot-held",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.ASSIGNED,
+            priority=10,
+            target_x=560.0,
+            target_y=120.0,
+            target_row=4,
+            target_col=22,
+            created_step=5,
+            assigned_agent_id="USV-1",
+        )
+        focus_hotspot_a = TaskRecord(
+            task_id="focus-hotspot-a",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=900.0,
+            target_y=650.0,
+            target_row=26,
+            target_col=36,
+            created_step=20,
+        )
+        focus_hotspot_b = replace(
+            focus_hotspot_a,
+            task_id="focus-hotspot-b",
+            target_x=940.0,
+            target_y=690.0,
+            target_col=37,
+            created_step=21,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=30.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.rho_task_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            first_tasks, _ = allocate_tasks_with_rho_policy(
+                (outside_hotspot, focus_hotspot_a, focus_hotspot_b),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=30,
+                zone_partition_policy="failure_triggered_hotspot_first_soft_partition_policy",
+            )
+            second_execution_states = self._build_idle_execution_states(agents)
+            second_tasks, _ = allocate_tasks_with_rho_policy(
+                first_tasks,
+                agents=agents,
+                execution_states=second_execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=31,
+                zone_partition_policy="failure_triggered_hotspot_first_soft_partition_policy",
+            )
+
+        first_by_id = {task.task_id: task for task in first_tasks}
+        second_by_id = {task.task_id: task for task in second_tasks}
+        self.assertIn(("USV-1", 42), first_by_id["outside-hotspot-held"].agent_retry_after_steps)
+        self.assertNotEqual(second_by_id["outside-hotspot-held"].assigned_agent_id, "USV-1")
+
+    def test_rho_assigns_aged_requeued_isolated_hotspot_after_failure(self) -> None:
+        agents = tuple(
+            replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+            )
+            if agent.agent_id == "USV-2"
+            else replace(agent, x=560.0, y=120.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=700.0, y=860.0)
+            if agent.agent_id == "USV-3"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        requeued_hotspot = TaskRecord(
+            task_id="requeued-isolated-hotspot",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.REQUEUED,
+            priority=10,
+            target_x=687.5,
+            target_y=887.5,
+            target_row=35,
+            target_col=27,
+            created_step=580,
+            retry_after_step=600,
+        )
+        focus_hotspot_a = TaskRecord(
+            task_id="focus-hotspot-a",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=900.0,
+            target_y=650.0,
+            target_row=26,
+            target_col=36,
+            created_step=590,
+        )
+        focus_hotspot_b = replace(
+            focus_hotspot_a,
+            task_id="focus-hotspot-b",
+            target_x=940.0,
+            target_y=690.0,
+            target_col=37,
+            created_step=591,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=30.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.rho_task_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_rho_policy(
+                (requeued_hotspot, focus_hotspot_a, focus_hotspot_b),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=900,
+                zone_partition_policy="failure_triggered_hotspot_first_soft_partition_policy",
+            )
+
+        updated_by_id = {task.task_id: task for task in updated_tasks}
+        self.assertEqual(
+            updated_by_id["requeued-isolated-hotspot"].assigned_agent_id,
+            "USV-3",
+        )
+        self.assertEqual(
+            updated_by_id["requeued-isolated-hotspot"].status,
+            TaskStatus.ASSIGNED,
+        )
+        self.assertTrue(
+            any(decision.task_id == "requeued-isolated-hotspot" for decision in decisions)
+        )
+
+    def test_rho_keeps_assigned_aged_isolated_hotspot_claimed_after_failure(self) -> None:
+        agents = tuple(
+            replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+            )
+            if agent.agent_id == "USV-2"
+            else replace(agent, x=560.0, y=120.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=860.0, y=720.0)
+            if agent.agent_id == "USV-3"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-1"] = replace(
+            execution_states["USV-1"],
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="requeued-isolated-hotspot",
+        )
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        assigned_hotspot = TaskRecord(
+            task_id="requeued-isolated-hotspot",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.ASSIGNED,
+            priority=10,
+            target_x=487.5,
+            target_y=237.5,
+            target_row=9,
+            target_col=19,
+            created_step=100,
+            assigned_agent_id="USV-1",
+            retry_after_step=600,
+        )
+        focus_hotspot_a = TaskRecord(
+            task_id="focus-hotspot-a",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=900.0,
+            target_y=650.0,
+            target_row=26,
+            target_col=36,
+            created_step=590,
+        )
+        focus_hotspot_b = replace(
+            focus_hotspot_a,
+            task_id="focus-hotspot-b",
+            target_x=940.0,
+            target_y=690.0,
+            target_col=37,
+            created_step=591,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=30.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.rho_task_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_rho_policy(
+                (assigned_hotspot, focus_hotspot_a, focus_hotspot_b),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=681,
+                zone_partition_policy="failure_triggered_hotspot_first_soft_partition_policy",
+            )
+
+        updated_by_id = {task.task_id: task for task in updated_tasks}
+        self.assertEqual(
+            updated_by_id["requeued-isolated-hotspot"].assigned_agent_id,
+            "USV-1",
+        )
+        self.assertEqual(
+            updated_by_id["requeued-isolated-hotspot"].status,
+            TaskStatus.ASSIGNED,
+        )
+        self.assertTrue(
+            any(
+                decision.task_id == "requeued-isolated-hotspot"
+                and decision.selection_reason == "keep_existing_assignment"
+                for decision in decisions
+            )
+        )
+
+    def test_failure_hotspot_soft_partition_does_not_suppress_in_progress_hotspot(
+        self,
+    ) -> None:
+        agents = tuple(
+            replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+            )
+            if agent.agent_id == "USV-2"
+            else replace(agent, x=506.166, y=285.464)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=860.0, y=720.0)
+            if agent.agent_id == "USV-3"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        in_progress_hotspot = TaskRecord(
+            task_id="outside-hotspot-in-progress",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.IN_PROGRESS,
+            priority=10,
+            target_x=487.5,
+            target_y=237.5,
+            target_row=9,
+            target_col=19,
+            created_step=100,
+            assigned_agent_id="USV-1",
+        )
+        focus_hotspot_a = TaskRecord(
+            task_id="focus-hotspot-a",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=900.0,
+            target_y=650.0,
+            target_row=26,
+            target_col=36,
+            created_step=590,
+        )
+        focus_hotspot_b = replace(
+            focus_hotspot_a,
+            task_id="focus-hotspot-b",
+            target_x=940.0,
+            target_y=690.0,
+            target_col=37,
+            created_step=591,
+        )
+
+        self.assertFalse(
+            should_suppress_non_focus_hotspot_after_failure(
+                in_progress_hotspot,
+                tasks=(in_progress_hotspot, focus_hotspot_a, focus_hotspot_b),
+                agents=agents,
+                step=696,
+            )
+        )
+
+    def test_rho_prioritizes_failed_neighbor_recovery_hotspot(self) -> None:
+        agents = tuple(
+            replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+                x=875.411,
+                y=679.671,
+            )
+            if agent.agent_id == "USV-2"
+            else replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+            )
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=780.0, y=820.0)
+            if agent.agent_id == "USV-3"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        tasks = (
+            TaskRecord(
+                task_id="failed-neighbor-hotspot",
+                task_type=TaskType.HOTSPOT_CONFIRMATION,
+                source=TaskSource.UAV_INSPECTED,
+                status=TaskStatus.PENDING,
+                priority=10,
+                target_x=937.5,
+                target_y=662.5,
+                target_row=26,
+                target_col=37,
+                created_step=802,
+            ),
+            TaskRecord(
+                task_id="farther-safe-hotspot",
+                task_type=TaskType.HOTSPOT_CONFIRMATION,
+                source=TaskSource.UAV_INSPECTED,
+                status=TaskStatus.PENDING,
+                priority=10,
+                target_x=660.0,
+                target_y=940.0,
+                target_row=37,
+                target_col=26,
+                created_step=803,
+            ),
+        )
+
+        updated_tasks, decisions = allocate_tasks_with_rho_policy(
+            tasks,
+            agents=agents,
+            execution_states=self._build_idle_execution_states(agents),
+            grid_map=None,
+            info_map=None,
+            step=803,
+            zone_partition_policy="failure_triggered_hotspot_first_soft_partition_policy",
+        )
+
+        updated_by_id = {task.task_id: task for task in updated_tasks}
+        self.assertEqual(
+            updated_by_id["failed-neighbor-hotspot"].assigned_agent_id,
+            "USV-3",
+        )
+        self.assertEqual(
+            updated_by_id["failed-neighbor-hotspot"].status,
+            TaskStatus.ASSIGNED,
+        )
+        self.assertIsNone(updated_by_id["farther-safe-hotspot"].assigned_agent_id)
+        self.assertTrue(
+            any(
+                decision.task_id == "failed-neighbor-hotspot"
+                and decision.selection_reason == "nearby_hotspot_proximity_takeover"
+                and (decision.selection_details or {}).get("override_radius_m", 0.0) > 120.0
+                for decision in decisions
+            )
+        )
+
+    def test_rho_keeps_in_progress_isolated_hotspot_claimed_after_failure(self) -> None:
+        agents = tuple(
+            replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+            )
+            if agent.agent_id == "USV-2"
+            else replace(agent, x=506.166, y=285.464)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=860.0, y=720.0)
+            if agent.agent_id == "USV-3"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-1"] = replace(
+            execution_states["USV-1"],
+            stage=ExecutionStage.ON_TASK,
+            active_task_id="outside-hotspot-in-progress",
+        )
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        in_progress_hotspot = TaskRecord(
+            task_id="outside-hotspot-in-progress",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.IN_PROGRESS,
+            priority=10,
+            target_x=487.5,
+            target_y=237.5,
+            target_row=9,
+            target_col=19,
+            created_step=100,
+            assigned_agent_id="USV-1",
+        )
+        focus_hotspot_a = TaskRecord(
+            task_id="focus-hotspot-a",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=900.0,
+            target_y=650.0,
+            target_row=26,
+            target_col=36,
+            created_step=590,
+        )
+        focus_hotspot_b = replace(
+            focus_hotspot_a,
+            task_id="focus-hotspot-b",
+            target_x=940.0,
+            target_y=690.0,
+            target_col=37,
+            created_step=591,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=30.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.rho_task_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            updated_tasks, decisions = allocate_tasks_with_rho_policy(
+                (in_progress_hotspot, focus_hotspot_a, focus_hotspot_b),
+                agents=agents,
+                execution_states=execution_states,
+                grid_map=grid_map,
+                info_map=info_map,
+                step=696,
+                zone_partition_policy="failure_triggered_hotspot_first_soft_partition_policy",
+            )
+
+        updated_by_id = {task.task_id: task for task in updated_tasks}
+        self.assertEqual(
+            updated_by_id["outside-hotspot-in-progress"].assigned_agent_id,
+            "USV-1",
+        )
+        self.assertEqual(
+            updated_by_id["outside-hotspot-in-progress"].status,
+            TaskStatus.IN_PROGRESS,
+        )
+        self.assertTrue(
+            any(
+                decision.task_id == "outside-hotspot-in-progress"
+                and decision.selection_reason == "keep_existing_assignment"
+                for decision in decisions
+            )
+        )
+
+    def test_rho_keeps_proximity_override_hotspot_claimed_during_grace_window(self) -> None:
+        agents = tuple(
+            replace(
+                agent,
+                health_status=HealthStatus.FAILED,
+                is_operational=False,
+            )
+            if agent.agent_id == "USV-2"
+            else replace(agent, x=506.166, y=285.464)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=860.0, y=720.0)
+            if agent.agent_id == "USV-3"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        grid_map = self._build_runtime_grid_map()
+        info_map = build_information_map(grid_map)
+        focus_hotspot_a = TaskRecord(
+            task_id="focus-hotspot-a",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=900.0,
+            target_y=650.0,
+            target_row=26,
+            target_col=36,
+            created_step=590,
+        )
+        focus_hotspot_b = replace(
+            focus_hotspot_a,
+            task_id="focus-hotspot-b",
+            target_x=940.0,
+            target_y=690.0,
+            target_col=37,
+            created_step=591,
+        )
+        nearby_hotspot = TaskRecord(
+            task_id="outside-hotspot-grace",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.REQUEUED,
+            priority=10,
+            target_x=487.5,
+            target_y=237.5,
+            target_row=9,
+            target_col=19,
+            created_step=600,
+        )
+
+        def _mock_plan(agent, *, goal_x, goal_y, planner_name, task_id, **_kwargs):
+            return PathPlan(
+                plan_id=f"{agent.agent_id}-{task_id}",
+                planner_name=planner_name,
+                agent_id=agent.agent_id,
+                task_id=task_id,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=agent.x, y=agent.y), Waypoint(x=goal_x, y=goal_y)),
+                goal_x=goal_x,
+                goal_y=goal_y,
+                estimated_cost=30.0,
+            )
+
+        with patch(
+            "usv_uav_marine_coverage.tasking.rho_task_allocator.build_usv_path_plan",
+            side_effect=_mock_plan,
+        ):
+            first_tasks, first_decisions = allocate_tasks_with_rho_policy(
+                (nearby_hotspot, focus_hotspot_a, focus_hotspot_b),
+                agents=agents,
+                execution_states={
+                    **self._build_idle_execution_states(agents),
+                    "USV-1": replace(
+                        self._build_idle_execution_states(agents)["USV-1"],
+                        stage=ExecutionStage.RETURN_TO_PATROL,
+                    ),
+                },
+                grid_map=grid_map,
+                info_map=info_map,
+                step=639,
+                zone_partition_policy="failure_triggered_hotspot_first_soft_partition_policy",
+            )
+
+            claimed_hotspot = next(
+                task for task in first_tasks if task.task_id == "outside-hotspot-grace"
+            )
+            second_tasks, second_decisions = allocate_tasks_with_rho_policy(
+                (claimed_hotspot, focus_hotspot_a, focus_hotspot_b),
+                agents=agents,
+                execution_states={
+                    **self._build_idle_execution_states(agents),
+                    "USV-1": replace(
+                        self._build_idle_execution_states(agents)["USV-1"],
+                        stage=ExecutionStage.GO_TO_TASK,
+                        active_task_id="outside-hotspot-grace",
+                    ),
+                },
+                grid_map=grid_map,
+                info_map=info_map,
+                step=640,
+                zone_partition_policy="failure_triggered_hotspot_first_soft_partition_policy",
+            )
+
+        self.assertTrue(
+            any(
+                decision.task_id == "outside-hotspot-grace"
+                and decision.selection_reason == "nearby_hotspot_proximity_takeover"
+                for decision in first_decisions
+            )
+        )
+        self.assertIsNotNone(claimed_hotspot.suppression_grace_until_step)
+        assert claimed_hotspot.suppression_grace_until_step is not None
+        self.assertGreater(claimed_hotspot.suppression_grace_until_step, 640)
+        updated_by_id = {task.task_id: task for task in second_tasks}
+        self.assertEqual(
+            updated_by_id["outside-hotspot-grace"].status,
+            TaskStatus.ASSIGNED,
+        )
+        self.assertEqual(
+            updated_by_id["outside-hotspot-grace"].assigned_agent_id,
+            "USV-1",
+        )
+        self.assertTrue(
+            any(
+                decision.task_id == "outside-hotspot-grace"
+                and decision.selection_reason == "keep_existing_assignment"
+                for decision in second_decisions
             )
         )
 

@@ -18,6 +18,7 @@ from usv_uav_marine_coverage.agent_model import (
 )
 from usv_uav_marine_coverage.environment import ObstacleLayout
 from usv_uav_marine_coverage.execution.basic_state_machine import (
+    transition_to_on_task,
     transition_to_recovery,
     transition_to_rendezvous,
     transition_to_task,
@@ -43,6 +44,8 @@ from usv_uav_marine_coverage.execution.progress_feedback import (
     reset_progress_state,
 )
 from usv_uav_marine_coverage.execution.recharge_runtime import (
+    _dock_to_support_agent,
+    _has_reached_rendezvous,
     _sync_recharging_uavs_to_support_agents,
 )
 from usv_uav_marine_coverage.execution.stage_runtime import (
@@ -71,7 +74,7 @@ from usv_uav_marine_coverage.execution.traffic_runtime import (
 )
 from usv_uav_marine_coverage.grid import GridMap
 from usv_uav_marine_coverage.information_map import InformationMap
-from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
+from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskStatus, TaskType
 
 USV_STALL_DISTANCE_EPS_M = 1e-3
 WRECK_KEEP_OUT_RADIUS_M = USV_COLLISION_CLEARANCE_M * 1.5
@@ -238,6 +241,7 @@ def advance_agents_one_step(
         execution_state = _apply_bottleneck_directive(
             execution_state,
             directive=bottleneck_directives.get(agent.agent_id),
+            step=step,
         )
         updated_agent, updated_execution_state, updated_progress_state = _run_agent_stage(
             agent,
@@ -277,7 +281,17 @@ def advance_agents_one_step(
         execution_states=next_execution_states,
         task_records=task_records,
     )
-    return (synced_agents, next_execution_states, next_progress_states)
+    (
+        stabilized_agents,
+        stabilized_execution_states,
+        stabilized_progress_states,
+    ) = _stabilize_support_usvs_after_rendezvous_sync(
+        synced_agents,
+        execution_states=next_execution_states,
+        progress_states=next_progress_states,
+        task_records=task_records,
+    )
+    return (stabilized_agents, stabilized_execution_states, stabilized_progress_states)
 
 
 def _pre_step_transition(
@@ -476,6 +490,74 @@ def _agent_moved(previous_agent: AgentState, advanced_agent: AgentState) -> bool
 
 def _stop_agent_motion(agent: AgentState) -> AgentState:
     return replace(agent, speed_mps=0.0, turn_rate_degps=0.0)
+
+
+def _stabilize_support_usvs_after_rendezvous_sync(
+    agents: tuple[AgentState, ...],
+    *,
+    execution_states: dict[str, AgentExecutionState],
+    progress_states: dict[str, AgentProgressState],
+    task_records: tuple[TaskRecord, ...],
+) -> tuple[
+    tuple[AgentState, ...],
+    dict[str, AgentExecutionState],
+    dict[str, AgentProgressState],
+]:
+    agent_by_id = {agent.agent_id: agent for agent in agents}
+    next_agents = dict(agent_by_id)
+    next_execution_states = dict(execution_states)
+    next_progress_states = dict(progress_states)
+
+    for task in task_records:
+        if task.task_type != TaskType.UAV_RESUPPLY or task.support_agent_id is None:
+            continue
+        if task.status not in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}:
+            continue
+        uav_execution_state = (
+            None if task.assigned_agent_id is None else next_execution_states.get(task.assigned_agent_id)
+        )
+        if uav_execution_state is None or uav_execution_state.stage != ExecutionStage.ON_RECHARGE:
+            continue
+        uav_agent = None if task.assigned_agent_id is None else next_agents.get(task.assigned_agent_id)
+        support_agent = next_agents.get(task.support_agent_id)
+        support_execution_state = next_execution_states.get(task.support_agent_id)
+        if uav_agent is None or support_agent is None or support_execution_state is None:
+            continue
+        if not _has_reached_rendezvous(uav_agent, support_agent):
+            continue
+        if support_execution_state.stage == ExecutionStage.ON_TASK:
+            stationary_support_agent = _stop_agent_motion(assign_agent_task(support_agent, TaskMode.IDLE))
+            next_agents[task.support_agent_id] = stationary_support_agent
+            if task.assigned_agent_id is not None:
+                next_agents[task.assigned_agent_id] = _dock_to_support_agent(
+                    uav_agent,
+                    stationary_support_agent,
+                )
+            continue
+        if support_execution_state.stage not in {
+            ExecutionStage.GO_TO_TASK,
+            ExecutionStage.RETURN_TO_PATROL,
+        }:
+            continue
+        stationary_support_agent = _stop_agent_motion(
+            assign_agent_task(support_agent, TaskMode.IDLE)
+        )
+        next_agents[task.support_agent_id] = stationary_support_agent
+        if task.assigned_agent_id is not None:
+            next_agents[task.assigned_agent_id] = _dock_to_support_agent(
+                uav_agent,
+                stationary_support_agent,
+            )
+        next_execution_states[task.support_agent_id] = transition_to_on_task(support_execution_state)
+        next_progress_states[task.support_agent_id] = reset_progress_state(
+            next_progress_states[task.support_agent_id]
+        )
+
+    return (
+        tuple(next_agents[agent.agent_id] for agent in agents),
+        next_execution_states,
+        next_progress_states,
+    )
 
 
 def _evaluate_agent_progress(

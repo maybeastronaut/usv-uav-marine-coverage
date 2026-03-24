@@ -62,6 +62,7 @@ def build_task_partition(
             tasks=tasks,
             agents=agents,
             execution_states=execution_states or {},
+            step=step,
         )
     raise ValueError(f"Unsupported zone partition policy {policy_name!r}")
 

@@ -56,6 +56,7 @@ class AgentExecutionState:
     corridor_reservation_until_step: int = -1
     reserved_bottleneck_zone_id: str | None = None
     bottleneck_owner_agent_id: str | None = None
+    bottleneck_reservation_until_step: int = -1
     pre_yield_stage: ExecutionStage | None = None
     last_return_plan_step: int = -1
     last_patrol_plan_step: int = -1
@@ -86,12 +87,16 @@ class AgentProgressState:
     pre_recovery_stage: ExecutionStage | None = None
     pre_recovery_task_id: str | None = None
     task_final_approach_task_id: str | None = None
+    task_final_approach_frozen_candidates: tuple[tuple[float, float], ...] = ()
     task_final_approach_candidate_index: int = -1
     task_final_approach_candidate_x: float | None = None
     task_final_approach_candidate_y: float | None = None
+    task_final_approach_failed_candidate_indexes: tuple[int, ...] = ()
     task_final_approach_attempt_count: int = 0
     task_final_approach_status: str | None = None
     released_task_id: str | None = None
+    released_task_created_step: int | None = None
+    released_task_step: int = -1
     released_task_retry_until_step: int = 0
     released_task_reason: str | None = None
     pending_assigned_task_id: str | None = None

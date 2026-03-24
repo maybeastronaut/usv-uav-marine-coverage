@@ -588,7 +588,7 @@ class PlanningTestCase(unittest.TestCase):
         )
 
         traffic_cost_context = build_traffic_cost_context(
-            agent_id="USV-1",
+            agent_id="USV-3",
             reference_plans=(reference_plan,),
             grid_map=grid_map,
             obstacle_layout=obstacle_layout,
@@ -626,14 +626,14 @@ class PlanningTestCase(unittest.TestCase):
             task_id="peer-traffic-task",
         )
         traffic_cost_context = build_traffic_cost_context(
-            agent_id="USV-1",
+            agent_id="USV-3",
             reference_plans=(reference_plan,),
             grid_map=grid_map,
             obstacle_layout=obstacle_layout,
         )
 
         plan = build_astar_path_plan(
-            next(agent for agent in agents if agent.agent_id == "USV-1"),
+            next(agent for agent in agents if agent.agent_id == "USV-3"),
             grid_map=grid_map,
             obstacle_layout=obstacle_layout,
             goal_x=87.5,

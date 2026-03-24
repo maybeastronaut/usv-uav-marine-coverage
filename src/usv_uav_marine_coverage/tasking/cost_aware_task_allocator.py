@@ -18,6 +18,7 @@ from .allocator_common import (
     is_available_for_new_assignment,
     release_preempted_uav_resupply_tasks,
     selection_score_for_task,
+    stabilize_uav_resupply_task,
     task_sort_key,
 )
 from .partitioning import build_task_partition
@@ -64,6 +65,7 @@ def allocate_tasks_with_cost_aware_policy(
             execution_states=execution_states,
             task_records=scheduled_tasks,
             reserved_agent_ids=reserved_agent_ids,
+            step=step,
         )
         if proximity_override is not None:
             updated_task, decision = proximity_override
@@ -89,14 +91,8 @@ def allocate_tasks_with_cost_aware_policy(
             task, agent_by_id=agent_by_id, execution_states=execution_states
         ):
             selected_agent = agent_by_id[task.assigned_agent_id or ""]
-            if task.task_type == TaskType.UAV_RESUPPLY and task.support_agent_id is not None:
-                support_agent = agent_by_id.get(task.support_agent_id)
-                if support_agent is not None:
-                    task = replace(
-                        task,
-                        target_x=support_agent.x,
-                        target_y=support_agent.y,
-                    )
+            if task.task_type == TaskType.UAV_RESUPPLY:
+                task = stabilize_uav_resupply_task(task, selected_uav=selected_agent)
             selection_score = selection_score_for_task(
                 task,
                 selected_agent=selected_agent,
@@ -122,7 +118,9 @@ def allocate_tasks_with_cost_aware_policy(
                 task,
                 agent_by_id=agent_by_id,
                 execution_states=execution_states,
+                grid_map=grid_map,
                 task_records=tuple(updated_tasks),
+                usv_path_planner=usv_path_planner,
             )
             updated_tasks.append(updated_task)
             if decision is not None:

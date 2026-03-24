@@ -13,6 +13,7 @@ from usv_uav_marine_coverage.agent_model import (
     advance_agent_towards_task,
     advance_agent_with_control,
     assign_agent_task,
+    shortest_heading_delta_deg,
 )
 from usv_uav_marine_coverage.planning.path_types import Waypoint
 
@@ -51,7 +52,10 @@ def follow_path_step(
     if plan is None or not plan.waypoints:
         if execution_state.stage in {ExecutionStage.ON_TASK, ExecutionStage.ON_RECHARGE}:
             return (
-                assign_agent_task(agent, _mode_for_stage(agent.kind, execution_state.stage)),
+                _stop_and_clear_target(
+                    agent,
+                    _mode_for_stage(agent.kind, execution_state.stage),
+                ),
                 execution_state,
                 ExecutionOutcome.ADVANCING,
             )
@@ -59,10 +63,12 @@ def follow_path_step(
 
     waypoint_index = _skip_reached_waypoints(agent, execution_state)
     if waypoint_index >= len(plan.waypoints):
-        return (
-            assign_agent_task(agent, _mode_for_stage(agent.kind, execution_state.stage)),
-            replace(execution_state, current_waypoint_index=waypoint_index),
-            _final_outcome_for_stage(execution_state.stage),
+        mode = _mode_for_stage(agent.kind, execution_state.stage)
+        return _finish_path_step(
+            agent,
+            mode=mode,
+            updated_state=replace(execution_state, current_waypoint_index=waypoint_index),
+            outcome=_final_outcome_for_stage(execution_state.stage),
         )
 
     tracking_target = _build_tracking_target(
@@ -91,10 +97,11 @@ def follow_path_step(
 
     updated_state = replace(execution_state, current_waypoint_index=next_waypoint_index)
     if next_waypoint_index >= len(plan.waypoints):
-        return (
+        return _finish_path_step(
             advanced_agent,
-            updated_state,
-            _final_outcome_for_stage(execution_state.stage),
+            mode=mode,
+            updated_state=updated_state,
+            outcome=_final_outcome_for_stage(execution_state.stage),
         )
     if next_waypoint_index > waypoint_index:
         return (advanced_agent, updated_state, ExecutionOutcome.WAYPOINT_REACHED)
@@ -127,7 +134,10 @@ def follow_path_step_with_local_mpc(
     if plan is None or not plan.waypoints:
         if execution_state.stage in {ExecutionStage.ON_TASK, ExecutionStage.ON_RECHARGE}:
             return (
-                assign_agent_task(agent, _mode_for_stage(agent.kind, execution_state.stage)),
+                _stop_and_clear_target(
+                    agent,
+                    _mode_for_stage(agent.kind, execution_state.stage),
+                ),
                 execution_state,
                 ExecutionOutcome.ADVANCING,
             )
@@ -135,10 +145,12 @@ def follow_path_step_with_local_mpc(
 
     waypoint_index = _skip_reached_waypoints(agent, execution_state)
     if waypoint_index >= len(plan.waypoints):
-        return (
-            assign_agent_task(agent, _mode_for_stage(agent.kind, execution_state.stage)),
-            replace(execution_state, current_waypoint_index=waypoint_index),
-            _final_outcome_for_stage(execution_state.stage),
+        mode = _mode_for_stage(agent.kind, execution_state.stage)
+        return _finish_path_step(
+            agent,
+            mode=mode,
+            updated_state=replace(execution_state, current_waypoint_index=waypoint_index),
+            outcome=_final_outcome_for_stage(execution_state.stage),
         )
 
     tracking_target = _build_tracking_target(
@@ -199,14 +211,33 @@ def follow_path_step_with_local_mpc(
 
     updated_state = replace(execution_state, current_waypoint_index=next_waypoint_index)
     if next_waypoint_index >= len(plan.waypoints):
-        return (
+        return _finish_path_step(
             advanced_agent,
-            updated_state,
-            _final_outcome_for_stage(execution_state.stage),
+            mode=mode,
+            updated_state=updated_state,
+            outcome=_final_outcome_for_stage(execution_state.stage),
         )
     if next_waypoint_index > waypoint_index:
         return (advanced_agent, updated_state, ExecutionOutcome.WAYPOINT_REACHED)
     return (advanced_agent, updated_state, ExecutionOutcome.ADVANCING)
+
+
+def _finish_path_step(
+    agent: AgentState,
+    *,
+    mode: TaskMode,
+    updated_state: AgentExecutionState,
+    outcome: ExecutionOutcome,
+) -> tuple[AgentState, AgentExecutionState, ExecutionOutcome]:
+    return (_stop_and_clear_target(agent, mode), updated_state, outcome)
+
+
+def _stop_and_clear_target(agent: AgentState, mode: TaskMode) -> AgentState:
+    return replace(
+        assign_agent_task(agent, mode),
+        speed_mps=0.0,
+        turn_rate_degps=0.0,
+    )
 
 
 def _should_activate_local_mpc(
@@ -364,7 +395,10 @@ def _apply_local_avoidance(
             candidate_distance * distance_scale,
         )
         for offset_deg in USV_LOCAL_AVOIDANCE_ANGLES_DEG:
-            for signed_offset_deg in (offset_deg, -offset_deg):
+            err_pos = abs(shortest_heading_delta_deg(agent.heading_deg, base_heading_deg + offset_deg))
+            err_neg = abs(shortest_heading_delta_deg(agent.heading_deg, base_heading_deg - offset_deg))
+            ordered_offsets = (offset_deg, -offset_deg) if err_pos <= err_neg else (-offset_deg, offset_deg)
+            for signed_offset_deg in ordered_offsets:
                 candidate_heading_deg = base_heading_deg + signed_offset_deg
                 candidate_target = Waypoint(
                     x=agent.x + cos(radians(candidate_heading_deg)) * scaled_distance,

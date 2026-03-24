@@ -62,7 +62,7 @@ from usv_uav_marine_coverage.tasking.hotspot_task_generator import sync_hotspot_
 from usv_uav_marine_coverage.tasking.rho_task_allocator import (
     allocate_tasks_with_rho_policy,
 )
-from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
+from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskStatus, TaskType
 from usv_uav_marine_coverage.tasking.uav_resupply_task_generator import (
     build_uav_resupply_tasks,
 )
@@ -222,6 +222,11 @@ def build_simulation_replay(
     )
 
     for step in range(1, effective_steps + 1):
+        if step % 10 == 0 or step == effective_steps:
+            print(f"\r[INFO] Simulating... Step {step}/{effective_steps} ({step/effective_steps:.1%})", end="", flush=True)
+            if step == effective_steps:
+                print("", flush=True)
+                
         reset_planner_metrics()
         events: list[str] = []
         stale_before = set(_collect_stale_cells(info_map))
@@ -295,7 +300,11 @@ def build_simulation_replay(
             grid_map=grid_map,
             info_map=info_map,
         )
-        if any(task.task_type == TaskType.UAV_RESUPPLY for task in task_records):
+        _ACTIVE_TASK_STATUSES = {TaskStatus.PENDING, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}
+        if any(
+            task.task_type == TaskType.UAV_RESUPPLY and task.status in _ACTIVE_TASK_STATUSES
+            for task in task_records
+        ):
             events.append("Low-energy UAV rendezvous task active")
 
         previous_agents = agents
@@ -318,7 +327,12 @@ def build_simulation_replay(
             uav_search_planner=effective_config.algorithms.uav_search_planner,
             execution_policy=effective_config.algorithms.execution_policy,
         )
-        task_records = sync_task_statuses(task_records, execution_states, progress_states)
+        task_records = sync_task_statuses(
+            task_records,
+            execution_states,
+            progress_states,
+            step=step,
+        )
 
         observed_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
         uav_checked_by_agent: dict[str, tuple[tuple[int, int], ...]] = {}
@@ -376,7 +390,12 @@ def build_simulation_replay(
             info_map=info_map,
             step=step,
         )
-        task_records = sync_task_statuses(task_records, execution_states, progress_states)
+        task_records = sync_task_statuses(
+            task_records,
+            execution_states,
+            progress_states,
+            step=step,
+        )
 
         frames.append(
             _capture_frame(

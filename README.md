@@ -15,6 +15,7 @@ module execution, and future tests.
 ```text
 .
 |-- AGENTS.md
+|-- BUGFIX.md
 |-- README.md
 |-- configs/
 |   |-- cost_aware_allocator.toml
@@ -87,6 +88,8 @@ module execution, and future tests.
 |-- outputs/
 |   `-- ...
 |-- pyproject.toml
+|-- scripts/
+|   `-- check_replay_logs.py
 |-- src/
 |   `-- usv_uav_marine_coverage/
 |       |-- __init__.py
@@ -138,6 +141,7 @@ module execution, and future tests.
 |       |   |-- simulation_core.py
 |       |   |-- simulation_logging.py
 |       |   |-- simulation_policy.py
+|       |   |-- replay_validation.py
 |       |   |-- simulation_replay_view.py
 |       |   |-- simulation_task_runtime.py
 |       |   `-- uav_coverage_runtime.py
@@ -182,6 +186,7 @@ module execution, and future tests.
 ## File Roles
 
 - `AGENTS.md`: Codex 在本仓库中的开发约束、编码规范、文档同步规则和协作方式说明。
+- `BUGFIX.md`: 基于最新仿真输出日志整理的已确认缺陷记录，包含异常现象、step 范围和当前判断。
 - `README.md`: 项目总览、环境配置方式、运行方式、测试方式和工程结构说明。
 - `configs/phase_one_baseline.toml`: 当前第一阶段 baseline 的统一实验配置样例，集中定义仿真步数、随机种子、算法选择和信息地图参数。
 - `configs/cost_aware_allocator.toml`: 当前第一版 `cost-aware centralized allocator` 的实验配置样例，用于与 baseline 任务分配器做直接对比。
@@ -231,6 +236,7 @@ module execution, and future tests.
 - `docx/generated/simulation_replay_summary.json`: 当前回放式仿真同步生成的最终汇总日志文件，适合快速评估覆盖率、热点处理和路径长度等结果。
 - `outputs/`: 默认输出目录。未显式指定 `--output` 时，静态海图和回放式仿真产物都会写到这里。
 - `pyproject.toml`: Python 项目配置、依赖声明、`pytest` 和 `ruff` 的工具配置入口。
+- `scripts/check_replay_logs.py`: 回放日志校验脚本，会扫描 `*_events.jsonl` 中的 step 级状态不变量和任务状态 flip-flop，并在发现异常时返回非零退出码。
 - `src/usv_uav_marine_coverage/__init__.py`: 项目包入口与基础版本信息。
 - `src/usv_uav_marine_coverage/__main__.py`: 命令行运行入口，用于生成静态海图或回放式仿真预览 HTML，并设置页面初始显示模式。
 - `src/usv_uav_marine_coverage/agent_model.py`: `USV/UAV` 的第一阶段闭环数学模型，包含平台参数、任务到参考目标转换、轻量控制指令、受约束航向/速度更新、`UAV` 能量消耗/补能约束以及探测/覆盖半径判定，也是当前覆盖方法研究默认采用的动力学基线。
@@ -272,6 +278,7 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/simulation/experiment_config.py`: 统一实验配置层，负责 baseline 配置 dataclass、TOML 加载、CLI 覆盖与配置摘要序列化，为后续算法对比与批量实验提供统一入口。
 - `src/usv_uav_marine_coverage/simulation/experiment_batch.py`: 批量实验入口，负责加载 batch TOML、顺序运行多组配置，并输出统一的 `batch_results.jsonl` 与 `batch_summary.json`；当前每次 batch 运行都会在配置指定目录名后自动追加时间戳，写入一个全新的输出目录，避免旧结果与新结果混杂。
 - `src/usv_uav_marine_coverage/simulation/scenario_catalog.py`: 可复用实验场景目录，统一维护 `baseline_patrol / planner_path_stress / return_to_patrol_stress / offshore_hotspot_pressure / distributed_overlap_pressure / nearshore_baseline_pressure / mixed_task_pressure` 等场景预设；实验配置与 batch 运行通过场景名复用这些预设，而不是重复拷贝整套参数。
+- `src/usv_uav_marine_coverage/simulation/replay_validation.py`: replay 校验模块，统一定义 step 级状态不变量检查和多步任务状态 flip-flop 扫描规则，供 summary 和独立脚本共用。
 - `src/usv_uav_marine_coverage/simulation/simulation_agent_runtime.py`: 回放式仿真的智能体运行时编排模块，当前主要负责每步 orchestration、显式 task claim、`YIELD` 执行、progress 评估与执行层子模块的调用；`traffic / return_to_patrol / recharge / recovery / collision_guard / stage_runtime / task_claim_runtime` 已从这里拆回 `execution/`。
 - `src/usv_uav_marine_coverage/simulation/simulation_core.py`: 回放式仿真的顶层编排流程，负责按时间步组织任务层、规划层、执行层、覆盖更新、信息刷新和回放帧采集。
 - `src/usv_uav_marine_coverage/simulation/simulation_logging.py`: 回放式仿真的结构化日志层，负责 `events.jsonl`、`summary.json`、任务决策摘要、路径摘要、执行偏差、热点处理链以及实验配置摘要记录。
@@ -539,6 +546,20 @@ If `pytest` is not installed in the current environment yet, install project dev
 
 ```bash
 pip install -e ".[dev]"
+```
+
+## Check Replay Logs
+
+对最新 replay 日志做状态不变量和抖动扫描：
+
+```bash
+PYTHONPATH=src python scripts/check_replay_logs.py
+```
+
+指定其他 `*_events.jsonl` 日志：
+
+```bash
+PYTHONPATH=src python scripts/check_replay_logs.py outputs/usv_uav_simulation_replay_events.jsonl
 ```
 
 ## Run Lint

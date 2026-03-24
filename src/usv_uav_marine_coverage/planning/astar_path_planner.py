@@ -503,11 +503,20 @@ def _point_has_clearance(
     sample_cell = grid_map.locate_cell(x, y)
     if sample_cell.has_obstacle:
         return False
-    for cell in grid_map.flat_cells:
-        if not cell.has_obstacle:
-            continue
-        if _distance_to_cell_bounds(x, y, cell) <= clearance_m:
-            return False
+        
+    search_radius_cells = int(clearance_m / grid_map.cell_size) + 1
+    min_row = max(0, sample_cell.row - search_radius_cells)
+    max_row = min(grid_map.rows - 1, sample_cell.row + search_radius_cells)
+    min_col = max(0, sample_cell.col - search_radius_cells)
+    max_col = min(grid_map.cols - 1, sample_cell.col + search_radius_cells)
+    
+    for r in range(min_row, max_row + 1):
+        for c in range(min_col, max_col + 1):
+            cell = grid_map.cell_at(r, c)
+            if not cell.has_obstacle:
+                continue
+            if _distance_to_cell_bounds(x, y, cell) <= clearance_m:
+                return False
     return True
 
 

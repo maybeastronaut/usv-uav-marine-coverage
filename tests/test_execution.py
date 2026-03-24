@@ -131,7 +131,7 @@ class ExecutionTestCase(unittest.TestCase):
             patrol_waypoint_index=0,
         )
 
-        _, updated_state, outcome = follow_path_step(
+        advanced_agent, updated_state, outcome = follow_path_step(
             agent,
             state,
             dt_seconds=1.0,
@@ -139,6 +139,47 @@ class ExecutionTestCase(unittest.TestCase):
 
         self.assertEqual(outcome, ExecutionOutcome.TASK_SITE_REACHED)
         self.assertEqual(updated_state.current_waypoint_index, 2)
+        self.assertEqual(advanced_agent.speed_mps, 0.0)
+        self.assertEqual(advanced_agent.turn_rate_degps, 0.0)
+        self.assertFalse(advanced_agent.task.has_target)
+
+    def test_path_follower_stops_agent_when_plan_is_already_consumed(self) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-3")
+        agent = replace(agent, speed_mps=0.933, turn_rate_degps=28.0)
+        state = AgentExecutionState(
+            agent_id=agent.agent_id,
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="task-stall-finish",
+            active_plan=PathPlan(
+                plan_id="plan-finished",
+                planner_name="astar_path_planner",
+                agent_id=agent.agent_id,
+                task_id="task-stall-finish",
+                status=PathPlanStatus.PLANNED,
+                waypoints=(
+                    Waypoint(x=agent.x - 20.0, y=agent.y - 20.0),
+                    Waypoint(x=agent.x - 10.0, y=agent.y - 10.0),
+                ),
+                goal_x=agent.x - 10.0,
+                goal_y=agent.y - 10.0,
+                estimated_cost=28.0,
+            ),
+            current_waypoint_index=2,
+            patrol_route_id=agent.agent_id,
+            patrol_waypoint_index=0,
+        )
+
+        advanced_agent, updated_state, outcome = follow_path_step(
+            agent,
+            state,
+            dt_seconds=1.0,
+        )
+
+        self.assertEqual(outcome, ExecutionOutcome.TASK_SITE_REACHED)
+        self.assertEqual(updated_state.current_waypoint_index, 2)
+        self.assertEqual(advanced_agent.speed_mps, 0.0)
+        self.assertEqual(advanced_agent.turn_rate_degps, 0.0)
+        self.assertFalse(advanced_agent.task.has_target)
 
     def test_path_follower_keeps_patrol_advancing_after_start_waypoint_skip(self) -> None:
         agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "UAV-1")

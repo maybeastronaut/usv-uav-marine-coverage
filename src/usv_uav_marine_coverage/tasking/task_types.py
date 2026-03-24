@@ -51,8 +51,11 @@ class TaskRecord:
     created_step: int
     assigned_agent_id: str | None = None
     support_agent_id: str | None = None
+    rendezvous_anchor_x: float | None = None
+    rendezvous_anchor_y: float | None = None
     completed_step: int | None = None
     retry_after_step: int | None = None
+    suppression_grace_until_step: int | None = None
     agent_retry_after_steps: tuple[tuple[str, int], ...] = ()
     distributed_winner_memories: tuple[tuple[str, str | None, int], ...] = ()
 

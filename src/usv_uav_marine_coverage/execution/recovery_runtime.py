@@ -17,7 +17,7 @@ from usv_uav_marine_coverage.grid import GridMap
 from usv_uav_marine_coverage.information_map import InformationMap
 from usv_uav_marine_coverage.planning.path_types import Waypoint
 from usv_uav_marine_coverage.planning.traffic_cost import TrafficCostContext
-from usv_uav_marine_coverage.tasking.task_types import TaskRecord
+from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
 
 from .collision_guard import _apply_collision_guard_with_optional_wrecks
 from .execution_types import (
@@ -42,11 +42,13 @@ USV_MAX_RECOVERY_ATTEMPTS = 2
 USV_RECOVERY_REVERSE_DISTANCE_M = 18.0
 USV_RECOVERY_FORWARD_DISTANCE_M = 26.0
 USV_RECOVERY_CLEARANCE_IMPROVEMENT_M = 0.5
+BLOCKED_TASK_RELEASE_COOLDOWN_STEPS = 12
 
 
 def _release_blocked_usv_task(
     agent: AgentState,
     *,
+    step: int,
     execution_state: AgentExecutionState,
     progress_state: AgentProgressState,
     patrol_routes: dict[str, tuple[tuple[float, float], ...]],
@@ -72,10 +74,22 @@ def _release_blocked_usv_task(
         next_progress_state = record_released_task_feedback(
             progress_state,
             task_id=released_task.task_id,
+            task_created_step=released_task.created_step,
+            task_step=step,
             retry_until_step=release_retry_until_step,
             reason=release_reason,
         )
-    return (assign_agent_task(agent, TaskMode.IDLE), next_execution_state, next_progress_state)
+    return (
+        _stop_agent_motion(assign_agent_task(agent, TaskMode.IDLE)),
+        next_execution_state,
+        next_progress_state,
+    )
+
+
+def blocked_task_release_retry_until_step(step: int) -> int:
+    """Return the next step until which one blocked task should stay off this USV."""
+
+    return step + BLOCKED_TASK_RELEASE_COOLDOWN_STEPS
 
 
 def _run_usv_recovery_step(
@@ -135,6 +149,10 @@ def _run_usv_recovery_step(
         if (
             progress_state.pre_recovery_stage == ExecutionStage.GO_TO_TASK
             and active_task is not None
+            and active_task.task_type in {
+                TaskType.BASELINE_SERVICE,
+                TaskType.HOTSPOT_CONFIRMATION,
+            }
         ):
             next_selection, exhausted = advance_task_final_approach_after_failure(
                 recovered_agent,
@@ -145,6 +163,7 @@ def _run_usv_recovery_step(
             if exhausted:
                 return _release_blocked_usv_task(
                     _stop_agent_motion(assign_agent_task(recovered_agent, TaskMode.IDLE)),
+                    step=step,
                     execution_state=execution_state,
                     progress_state=progress_state,
                     patrol_routes={agent.agent_id: patrol_route},
@@ -159,7 +178,12 @@ def _run_usv_recovery_step(
                 )
             assert next_selection is not None
             return (
-                assign_agent_task(recovered_agent, TaskMode.CONFIRM),
+                assign_agent_task(
+                    recovered_agent,
+                    TaskMode.CONFIRM,
+                    next_selection.candidate_x,
+                    next_selection.candidate_y,
+                ),
                 replace(
                     execution_state,
                     stage=ExecutionStage.GO_TO_TASK,
@@ -171,6 +195,26 @@ def _run_usv_recovery_step(
                     reset_progress_state(progress_state),
                     selection=next_selection,
                 ),
+            )
+        if (
+            progress_state.pre_recovery_stage == ExecutionStage.GO_TO_TASK
+            and active_task is not None
+        ):
+            return (
+                assign_agent_task(
+                    recovered_agent,
+                    TaskMode.CONFIRM if recovered_agent.kind == "USV" else TaskMode.INVESTIGATE,
+                    active_task.target_x,
+                    active_task.target_y,
+                ),
+                replace(
+                    execution_state,
+                    stage=ExecutionStage.GO_TO_TASK,
+                    active_task_id=active_task.task_id,
+                    active_plan=None,
+                    current_waypoint_index=0,
+                ),
+                reset_progress_state(progress_state),
             )
         return (
             recovered_agent,
@@ -207,12 +251,18 @@ def _run_usv_recovery_step(
     ):
         return _release_blocked_usv_task(
             _stop_agent_motion(assign_agent_task(recovered_agent, TaskMode.IDLE)),
+            step=step,
             execution_state=execution_state,
             progress_state=replace(progress_state, recovery_attempts=recovery_attempts),
             patrol_routes={agent.agent_id: patrol_route},
             grid_map=grid_map,
             info_map=info_map,
             task_records=task_records,
+            released_task=active_task,
+            release_retry_until_step=(
+                0 if active_task is None else blocked_task_release_retry_until_step(step)
+            ),
+            release_reason="recovery_exhausted",
         )
     return (
         _stop_agent_motion(recovered_agent),

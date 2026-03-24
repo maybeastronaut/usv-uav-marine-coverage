@@ -36,6 +36,7 @@ def build_traffic_cost_context(
     for plan in reference_plans:
         if (
             plan.agent_id == agent_id
+            or plan.agent_id > agent_id
             or plan.status != PathPlanStatus.PLANNED
             or len(plan.waypoints) < 2
         ):

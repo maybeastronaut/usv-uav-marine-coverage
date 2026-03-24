@@ -26,6 +26,7 @@ from usv_uav_marine_coverage.execution.path_follower import (
 )
 from usv_uav_marine_coverage.execution.progress_feedback import (
     build_initial_progress_states,
+    should_replan_task,
 )
 from usv_uav_marine_coverage.execution.return_to_patrol_runtime import (
     _build_local_patrol_return_transition,
@@ -42,7 +43,10 @@ from usv_uav_marine_coverage.execution.task_claim_runtime import (
     select_claimable_task_for_agent,
 )
 from usv_uav_marine_coverage.execution.task_final_approach_runtime import (
+    build_task_final_approach,
     advance_task_final_approach_after_failure,
+    apply_task_final_approach_selection,
+    select_task_final_approach_candidate,
     task_final_approach_release_cooldown_steps,
     task_final_approach_satisfied,
 )
@@ -56,6 +60,7 @@ from usv_uav_marine_coverage.planning.astar_path_planner import build_astar_path
 from usv_uav_marine_coverage.planning.path_types import PathPlan, PathPlanStatus, Waypoint
 from usv_uav_marine_coverage.planning.usv_patrol_planner import PatrolSegmentAccess
 from usv_uav_marine_coverage.simulation.simulation_agent_runtime import (
+    _apply_bottleneck_directive,
     _apply_corridor_directive,
     _build_corridor_directives,
     _build_dynamic_bottleneck_directives,
@@ -1127,6 +1132,62 @@ class SimulationRuntimeTestCase(unittest.TestCase):
 
         self.assertEqual(directives, {})
 
+    def test_apply_bottleneck_directive_keeps_yield_state_until_sticky_expiry(self) -> None:
+        state = AgentExecutionState(
+            agent_id="USV-3",
+            stage=ExecutionStage.YIELD,
+            active_task_id="hotspot-3",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-3",
+            patrol_waypoint_index=0,
+            yield_target_x=688.0,
+            yield_target_y=873.0,
+            yield_reason="dynamic_bottleneck_wait_for_owner",
+            reserved_bottleneck_zone_id="zone-edge-1",
+            bottleneck_owner_agent_id="USV-1",
+            bottleneck_reservation_until_step=246,
+            pre_yield_stage=ExecutionStage.GO_TO_TASK,
+        )
+
+        updated_state = _apply_bottleneck_directive(
+            state,
+            directive=None,
+            step=244,
+        )
+
+        self.assertEqual(updated_state.stage, ExecutionStage.YIELD)
+        self.assertEqual(updated_state.reserved_bottleneck_zone_id, "zone-edge-1")
+        self.assertEqual(updated_state.bottleneck_owner_agent_id, "USV-1")
+
+    def test_apply_bottleneck_directive_releases_yield_after_sticky_expiry(self) -> None:
+        state = AgentExecutionState(
+            agent_id="USV-3",
+            stage=ExecutionStage.YIELD,
+            active_task_id="hotspot-3",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-3",
+            patrol_waypoint_index=0,
+            yield_target_x=688.0,
+            yield_target_y=873.0,
+            yield_reason="dynamic_bottleneck_wait_for_owner",
+            reserved_bottleneck_zone_id="zone-edge-1",
+            bottleneck_owner_agent_id="USV-1",
+            bottleneck_reservation_until_step=246,
+            pre_yield_stage=ExecutionStage.GO_TO_TASK,
+        )
+
+        updated_state = _apply_bottleneck_directive(
+            state,
+            directive=None,
+            step=247,
+        )
+
+        self.assertEqual(updated_state.stage, ExecutionStage.GO_TO_TASK)
+        self.assertIsNone(updated_state.reserved_bottleneck_zone_id)
+        self.assertIsNone(updated_state.bottleneck_owner_agent_id)
+
     def test_advance_agents_one_step_clamps_local_mpc_usv_inside_map_bounds(self) -> None:
         agents = build_demo_agent_states()
         execution_states = build_initial_execution_states(agents)
@@ -1289,6 +1350,54 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         )
 
         self.assertEqual(updated_progress_state, AgentProgressState(agent_id="USV-3"))
+
+    def test_evaluate_agent_progress_enters_recovery_for_stalled_uav_support_transit(
+        self,
+    ) -> None:
+        agent = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-3")
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-2",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=512.5,
+            target_y=662.5,
+            target_row=None,
+            target_col=None,
+            created_step=88,
+            assigned_agent_id="UAV-2",
+            support_agent_id="USV-3",
+        )
+        execution_state = AgentExecutionState(
+            agent_id="USV-3",
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id=task.task_id,
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-3",
+            patrol_waypoint_index=2,
+        )
+        progress_state = AgentProgressState(
+            agent_id="USV-3",
+            stalled_steps=2,
+            last_target_distance=hypot(task.target_x - agent.x, task.target_y - agent.y),
+        )
+        patrol_route = build_patrol_routes()["USV-3"]
+
+        updated_execution_state, updated_progress_state = _evaluate_agent_progress(
+            agent,
+            updated_agent=agent,
+            execution_state=execution_state,
+            progress_state=progress_state,
+            active_task=task,
+            patrol_routes={"USV-3": patrol_route},
+            step=285,
+        )
+
+        self.assertEqual(updated_execution_state.stage, ExecutionStage.RECOVERY)
+        self.assertEqual(updated_progress_state.pre_recovery_stage, ExecutionStage.GO_TO_TASK)
+        self.assertEqual(updated_progress_state.pre_recovery_task_id, task.task_id)
 
     def test_advance_agents_one_step_can_use_hybrid_astar_for_usv_patrol(self) -> None:
         agents = build_demo_agent_states()
@@ -1747,6 +1856,178 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         self.assertIs(usv_state.active_plan, plan)
         self.assertGreaterEqual(usv_state.current_waypoint_index, 3)
 
+    def test_should_replan_task_tolerates_small_uav_resupply_support_goal_drift(self) -> None:
+        usv = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=520.0,
+            target_y=240.0,
+            target_row=None,
+            target_col=None,
+            created_step=3,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+            rendezvous_anchor_x=520.0,
+            rendezvous_anchor_y=240.0,
+        )
+        plan = PathPlan(
+            plan_id="plan-uav-resupply-small-drift",
+            planner_name="astar_path_planner",
+            agent_id="USV-1",
+            task_id=task.task_id,
+            status=PathPlanStatus.PLANNED,
+            waypoints=(Waypoint(x=160.0, y=180.0), Waypoint(x=200.0, y=210.0)),
+            goal_x=520.0,
+            goal_y=240.0,
+            estimated_cost=85.0,
+        )
+        execution_state = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id=task.task_id,
+            active_plan=plan,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
+
+        should_replan = should_replan_task(
+            usv,
+            execution_state=execution_state,
+            active_task=task,
+            goal_x=545.0,
+            goal_y=255.0,
+        )
+
+        self.assertFalse(should_replan)
+
+    def test_should_replan_task_replans_uav_resupply_support_after_large_goal_drift(
+        self,
+    ) -> None:
+        usv = next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1")
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=520.0,
+            target_y=240.0,
+            target_row=None,
+            target_col=None,
+            created_step=3,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+            rendezvous_anchor_x=520.0,
+            rendezvous_anchor_y=240.0,
+        )
+        plan = PathPlan(
+            plan_id="plan-uav-resupply-large-drift",
+            planner_name="astar_path_planner",
+            agent_id="USV-1",
+            task_id=task.task_id,
+            status=PathPlanStatus.PLANNED,
+            waypoints=(Waypoint(x=160.0, y=180.0), Waypoint(x=200.0, y=210.0)),
+            goal_x=520.0,
+            goal_y=240.0,
+            estimated_cost=85.0,
+        )
+        execution_state = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id=task.task_id,
+            active_plan=plan,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
+
+        should_replan = should_replan_task(
+            usv,
+            execution_state=execution_state,
+            active_task=task,
+            goal_x=565.0,
+            goal_y=290.0,
+        )
+
+        self.assertTrue(should_replan)
+
+    def test_advance_agents_one_step_keeps_uav_resupply_support_plan_for_small_uav_drift(
+        self,
+    ) -> None:
+        base_agents = tuple(
+            replace(agent, x=545.0, y=255.0, energy_level=20.0)
+            if agent.agent_id == "UAV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        grid_map = _build_runtime_grid_map()
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=520.0,
+            target_y=240.0,
+            target_row=None,
+            target_col=None,
+            created_step=3,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+            rendezvous_anchor_x=520.0,
+            rendezvous_anchor_y=240.0,
+        )
+        original_usv = next(agent for agent in base_agents if agent.agent_id == "USV-1")
+        plan = build_astar_path_plan(
+            original_usv,
+            grid_map=grid_map,
+            goal_x=520.0,
+            goal_y=240.0,
+            planner_name="astar_path_planner",
+            task_id=task.task_id,
+        )
+        self.assertGreater(len(plan.waypoints), 4)
+        progressed_agent = replace(
+            original_usv,
+            x=plan.waypoints[2].x,
+            y=plan.waypoints[2].y,
+        )
+        agents = tuple(
+            progressed_agent if agent.agent_id == "USV-1" else agent for agent in base_agents
+        )
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id=task.task_id,
+            active_plan=plan,
+            current_waypoint_index=3,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
+
+        updated_agents, updated_execution_states, _ = advance_agents_one_step(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            task_records=(task,),
+            patrol_routes=build_patrol_routes(),
+            grid_map=grid_map,
+            dt_seconds=1.0,
+        )
+
+        usv_state = updated_execution_states["USV-1"]
+        usv_after = next(agent for agent in updated_agents if agent.agent_id == "USV-1")
+        self.assertIs(usv_state.active_plan, plan)
+        self.assertEqual(usv_after.task.target_x, plan.goal_x)
+        self.assertEqual(usv_after.task.target_y, plan.goal_y)
+
     def test_advance_agents_one_step_transitions_low_energy_uav_to_rendezvous(self) -> None:
         agents = tuple(
             replace(agent, energy_level=30.0) if agent.agent_id == "UAV-1" else agent
@@ -1810,6 +2091,15 @@ class SimulationRuntimeTestCase(unittest.TestCase):
             patrol_route_id="UAV-1",
             patrol_waypoint_index=0,
         )
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.ON_TASK,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
         task = TaskRecord(
             task_id="uav-resupply-UAV-1",
             task_type=TaskType.UAV_RESUPPLY,
@@ -1842,6 +2132,124 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         self.assertEqual(uav_after.heading_deg, usv_after.heading_deg)
         self.assertEqual(uav_after.speed_mps, usv_after.speed_mps)
         self.assertGreater(uav_after.energy_level, 20.0)
+
+    def test_advance_agents_one_step_holds_support_usv_stationary_during_uav_resupply(
+        self,
+    ) -> None:
+        agents = tuple(
+            replace(agent, x=210.0, y=320.0, speed_mps=4.0, turn_rate_degps=6.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=216.0, y=320.0, energy_level=20.0)
+            if agent.agent_id == "UAV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.IN_PROGRESS,
+            priority=20,
+            target_x=210.0,
+            target_y=320.0,
+            target_row=None,
+            target_col=None,
+            created_step=3,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+        )
+
+        updated_agents, updated_execution_states, _ = advance_agents_one_step(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            task_records=(task,),
+            patrol_routes=build_patrol_routes(),
+            grid_map=_build_runtime_grid_map(),
+            dt_seconds=1.0,
+        )
+
+        usv_after = next(agent for agent in updated_agents if agent.agent_id == "USV-1")
+        self.assertEqual(updated_execution_states["USV-1"].stage, ExecutionStage.ON_TASK)
+        self.assertEqual(usv_after.task.mode, TaskMode.IDLE)
+        self.assertEqual(usv_after.speed_mps, 0.0)
+        self.assertEqual(usv_after.turn_rate_degps, 0.0)
+
+    def test_advance_agents_one_step_stabilizes_support_usv_after_recharge_snap(
+        self,
+    ) -> None:
+        agents = tuple(
+            replace(agent, x=210.0, y=320.0, speed_mps=4.0, turn_rate_degps=6.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=260.0, y=320.0, energy_level=20.0)
+            if agent.agent_id == "UAV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
+        execution_states["UAV-1"] = AgentExecutionState(
+            agent_id="UAV-1",
+            stage=ExecutionStage.ON_RECHARGE,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="UAV-1",
+            patrol_waypoint_index=0,
+        )
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.IN_PROGRESS,
+            priority=20,
+            target_x=210.0,
+            target_y=320.0,
+            target_row=None,
+            target_col=None,
+            created_step=3,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+        )
+
+        updated_agents, updated_execution_states, _ = advance_agents_one_step(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            task_records=(task,),
+            patrol_routes=build_patrol_routes(),
+            grid_map=_build_runtime_grid_map(),
+            dt_seconds=1.0,
+        )
+
+        uav_after = next(agent for agent in updated_agents if agent.agent_id == "UAV-1")
+        usv_after = next(agent for agent in updated_agents if agent.agent_id == "USV-1")
+        self.assertEqual((uav_after.x, uav_after.y), (usv_after.x, usv_after.y))
+        self.assertEqual(updated_execution_states["UAV-1"].stage, ExecutionStage.ON_RECHARGE)
+        self.assertEqual(updated_execution_states["USV-1"].stage, ExecutionStage.ON_TASK)
+        self.assertEqual(usv_after.task.mode, TaskMode.IDLE)
+        self.assertEqual(usv_after.speed_mps, 0.0)
+        self.assertEqual(usv_after.turn_rate_degps, 0.0)
 
     def test_advance_agents_one_step_does_not_rendezvous_with_degraded_support_usv(self) -> None:
         agents = tuple(
@@ -2237,7 +2645,7 @@ class SimulationRuntimeTestCase(unittest.TestCase):
                 estimated_cost=0.0,
             ),
         ):
-            _, updated_execution_states, _ = advance_agents_one_step(
+            updated_agents, updated_execution_states, updated_progress_states = advance_agents_one_step(
                 agents=agents,
                 execution_states=execution_states,
                 progress_states=progress_states,
@@ -2248,10 +2656,19 @@ class SimulationRuntimeTestCase(unittest.TestCase):
                 dt_seconds=1.0,
             )
 
+        updated_agent = next(agent for agent in updated_agents if agent.agent_id == "USV-1")
         updated_state = updated_execution_states["USV-1"]
         self.assertEqual(updated_state.stage, ExecutionStage.RETURN_TO_PATROL)
         self.assertIsNone(updated_state.active_task_id)
         self.assertIsNone(updated_state.active_plan)
+        self.assertEqual(updated_agent.speed_mps, 0.0)
+        self.assertEqual(updated_agent.turn_rate_degps, 0.0)
+        self.assertEqual(updated_progress_states["USV-1"].released_task_id, task.task_id)
+        self.assertEqual(
+            updated_progress_states["USV-1"].released_task_reason,
+            "task_plan_blocked",
+        )
+        self.assertGreater(updated_progress_states["USV-1"].released_task_retry_until_step, 0)
 
     def test_advance_agents_one_step_releases_stalled_usv_task_after_collision_guard(
         self,
@@ -2481,7 +2898,7 @@ class SimulationRuntimeTestCase(unittest.TestCase):
             "usv_uav_marine_coverage.execution.recovery_runtime._execute_recovery_motion",
             return_value=(recovered_agent, True),
         ):
-            _, updated_states, updated_progress_states = advance_agents_one_step(
+            updated_agents, updated_states, updated_progress_states = advance_agents_one_step(
                 agents=agents,
                 execution_states=execution_states,
                 progress_states=progress_states,
@@ -2493,6 +2910,7 @@ class SimulationRuntimeTestCase(unittest.TestCase):
                 step=10,
             )
 
+        updated_agent = next(agent for agent in updated_agents if agent.agent_id == "USV-1")
         updated_state = updated_states["USV-1"]
         updated_progress = updated_progress_states["USV-1"]
         self.assertEqual(updated_state.stage, ExecutionStage.GO_TO_TASK)
@@ -2503,8 +2921,91 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         self.assertGreaterEqual(updated_progress.task_final_approach_candidate_index, 0)
         self.assertIsNotNone(updated_progress.task_final_approach_candidate_x)
         self.assertIsNotNone(updated_progress.task_final_approach_candidate_y)
+        self.assertEqual(
+            updated_agent.task.target_x,
+            updated_progress.task_final_approach_candidate_x,
+        )
+        self.assertEqual(
+            updated_agent.task.target_y,
+            updated_progress.task_final_approach_candidate_y,
+        )
 
-    def test_advance_task_final_approach_after_failure_exhausts_on_failure_budget(self) -> None:
+    def test_recovery_success_returns_uav_resupply_support_without_final_approach_release(
+        self,
+    ) -> None:
+        agents = tuple(
+            replace(agent, energy_level=20.0) if agent.agent_id == "UAV-1" else agent
+            for agent in build_demo_agent_states()
+        )
+        usv = next(agent for agent in agents if agent.agent_id == "USV-1")
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.RECOVERY,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
+        progress_states["USV-1"] = AgentProgressState(
+            agent_id="USV-1",
+            pre_recovery_stage=ExecutionStage.GO_TO_TASK,
+            pre_recovery_task_id="uav-resupply-UAV-1",
+            recovery_step_index=2,
+            blocked_goal_signature="task:uav-resupply-UAV-1",
+        )
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=110.0,
+            target_y=180.0,
+            target_row=None,
+            target_col=None,
+            created_step=5,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+        )
+
+        recovered_agent = replace(usv, x=usv.x + 12.0, y=usv.y + 4.0)
+        with patch(
+            "usv_uav_marine_coverage.execution.recovery_runtime._execute_recovery_motion",
+            return_value=(recovered_agent, True),
+        ), patch(
+            "usv_uav_marine_coverage.execution.recovery_runtime.advance_task_final_approach_after_failure",
+            side_effect=AssertionError("uav_resupply should not use task final approach recovery"),
+        ):
+            updated_agents, updated_states, updated_progress_states = advance_agents_one_step(
+                agents=agents,
+                execution_states=execution_states,
+                progress_states=progress_states,
+                task_records=(task,),
+                patrol_routes=build_patrol_routes(),
+                grid_map=_build_runtime_grid_map(),
+                obstacle_layout=build_obstacle_layout(build_default_sea_map(), seed=20260314),
+                dt_seconds=1.0,
+                step=10,
+            )
+
+        updated_agent = next(agent for agent in updated_agents if agent.agent_id == "USV-1")
+        updated_state = updated_states["USV-1"]
+        updated_progress = updated_progress_states["USV-1"]
+        self.assertEqual(updated_state.stage, ExecutionStage.GO_TO_TASK)
+        self.assertEqual(updated_state.active_task_id, task.task_id)
+        self.assertIsNone(updated_state.active_plan)
+        self.assertIsNone(updated_progress.pre_recovery_stage)
+        self.assertIsNone(updated_progress.released_task_id)
+        self.assertIsNone(updated_progress.released_task_reason)
+        self.assertIsNone(updated_progress.task_final_approach_task_id)
+        self.assertEqual(updated_agent.task.mode, TaskMode.CONFIRM)
+
+    def test_advance_task_final_approach_after_failure_exhausts_after_all_frozen_candidates_fail(
+        self,
+    ) -> None:
         grid_map = _build_runtime_grid_map()
         usv = replace(
             next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-3"),
@@ -2528,7 +3029,13 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         progress_state = AgentProgressState(
             agent_id="USV-3",
             task_final_approach_task_id=task.task_id,
+            task_final_approach_frozen_candidates=(
+                (824.5, 687.5),
+                (837.5, 674.5),
+                (850.5, 687.5),
+            ),
             task_final_approach_candidate_index=2,
+            task_final_approach_failed_candidate_indexes=(0, 1),
             task_final_approach_attempt_count=2,
         )
 
@@ -2542,9 +3049,242 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         self.assertTrue(exhausted)
         assert selection is not None
         self.assertEqual(selection.status, "exhausted")
+        self.assertEqual(selection.failed_candidate_indexes, (0, 1, 2))
         self.assertEqual(
             task_final_approach_release_cooldown_steps(task),
             180,
+        )
+
+    def test_task_final_approach_selection_keeps_frozen_candidates_across_agent_motion(self) -> None:
+        grid_map = _build_runtime_grid_map()
+        task = TaskRecord(
+            task_id="hotspot-confirmation-stable",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.ASSIGNED,
+            priority=10,
+            target_x=487.5,
+            target_y=237.5,
+            target_row=9,
+            target_col=19,
+            created_step=100,
+            assigned_agent_id="USV-1",
+        )
+        initial_agent = replace(
+            next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1"),
+            x=561.121,
+            y=469.844,
+            heading_deg=-129.409,
+            task=AgentTaskState(mode=TaskMode.CONFIRM, target_x=task.target_x, target_y=task.target_y),
+        )
+        moved_agent = replace(
+            initial_agent,
+            x=537.266,
+            y=427.654,
+            heading_deg=-115.0,
+        )
+        initial_progress = AgentProgressState(agent_id="USV-1")
+        initial_selection = select_task_final_approach_candidate(
+            initial_agent,
+            task=task,
+            grid_map=grid_map,
+            progress_state=initial_progress,
+        )
+        dynamic_after_motion = build_task_final_approach(
+            moved_agent,
+            task=task,
+            grid_map=grid_map,
+        )
+
+        frozen_progress = apply_task_final_approach_selection(
+            initial_progress,
+            selection=initial_selection,
+        )
+        frozen_selection = select_task_final_approach_candidate(
+            moved_agent,
+            task=task,
+            grid_map=grid_map,
+            progress_state=frozen_progress,
+        )
+
+        self.assertNotEqual(
+            (dynamic_after_motion.candidates[0].x, dynamic_after_motion.candidates[0].y),
+            (initial_selection.candidate_x, initial_selection.candidate_y),
+        )
+        self.assertEqual(
+            (frozen_selection.candidate_x, frozen_selection.candidate_y),
+            (initial_selection.candidate_x, initial_selection.candidate_y),
+        )
+        self.assertEqual(
+            frozen_selection.frozen_candidates,
+            frozen_progress.task_final_approach_frozen_candidates,
+        )
+
+    def test_advance_task_final_approach_after_failure_uses_frozen_candidate_order(self) -> None:
+        grid_map = _build_runtime_grid_map()
+        task = TaskRecord(
+            task_id="hotspot-confirmation-rotate",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.ASSIGNED,
+            priority=10,
+            target_x=487.5,
+            target_y=237.5,
+            target_row=9,
+            target_col=19,
+            created_step=100,
+            assigned_agent_id="USV-1",
+        )
+        initial_agent = replace(
+            next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1"),
+            x=561.121,
+            y=469.844,
+            heading_deg=-129.409,
+            task=AgentTaskState(mode=TaskMode.CONFIRM, target_x=task.target_x, target_y=task.target_y),
+        )
+        moved_agent = replace(
+            initial_agent,
+            x=509.633,
+            y=333.288,
+            heading_deg=-79.611,
+        )
+        initial_progress = AgentProgressState(agent_id="USV-1")
+        initial_selection = select_task_final_approach_candidate(
+            initial_agent,
+            task=task,
+            grid_map=grid_map,
+            progress_state=initial_progress,
+        )
+        frozen_progress = apply_task_final_approach_selection(
+            initial_progress,
+            selection=initial_selection,
+        )
+        dynamic_after_motion = build_task_final_approach(
+            moved_agent,
+            task=task,
+            grid_map=grid_map,
+        )
+
+        rotated_selection, exhausted = advance_task_final_approach_after_failure(
+            moved_agent,
+            task=task,
+            grid_map=grid_map,
+            progress_state=frozen_progress,
+        )
+
+        self.assertFalse(exhausted)
+        assert rotated_selection is not None
+        self.assertEqual(rotated_selection.candidate_index, 1)
+        self.assertEqual(rotated_selection.failed_candidate_indexes, (0,))
+        self.assertEqual(
+            (rotated_selection.candidate_x, rotated_selection.candidate_y),
+            frozen_progress.task_final_approach_frozen_candidates[1],
+        )
+        self.assertNotEqual(
+            (dynamic_after_motion.candidates[1].x, dynamic_after_motion.candidates[1].y),
+            (rotated_selection.candidate_x, rotated_selection.candidate_y),
+        )
+
+    def test_advance_task_final_approach_after_failure_wraps_to_next_unfailed_candidate(self) -> None:
+        grid_map = _build_runtime_grid_map()
+        task = TaskRecord(
+            task_id="hotspot-confirmation-wrap",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.ASSIGNED,
+            priority=10,
+            target_x=487.5,
+            target_y=237.5,
+            target_row=9,
+            target_col=19,
+            created_step=100,
+            assigned_agent_id="USV-1",
+        )
+        agent = replace(
+            next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1"),
+            x=509.633,
+            y=333.288,
+            heading_deg=-79.611,
+            task=AgentTaskState(mode=TaskMode.CONFIRM, target_x=task.target_x, target_y=task.target_y),
+        )
+        frozen_candidates = tuple(
+            (candidate.x, candidate.y)
+            for candidate in build_task_final_approach(agent, task=task, grid_map=grid_map).candidates[:4]
+        )
+        progress_state = AgentProgressState(
+            agent_id="USV-1",
+            task_final_approach_task_id=task.task_id,
+            task_final_approach_frozen_candidates=frozen_candidates,
+            task_final_approach_candidate_index=2,
+            task_final_approach_candidate_x=frozen_candidates[2][0],
+            task_final_approach_candidate_y=frozen_candidates[2][1],
+            task_final_approach_failed_candidate_indexes=(0, 2, 3),
+            task_final_approach_attempt_count=3,
+        )
+
+        rotated_selection, exhausted = advance_task_final_approach_after_failure(
+            agent,
+            task=task,
+            grid_map=grid_map,
+            progress_state=progress_state,
+        )
+
+        self.assertFalse(exhausted)
+        assert rotated_selection is not None
+        self.assertEqual(rotated_selection.candidate_index, 1)
+        self.assertEqual(rotated_selection.failed_candidate_indexes, (0, 2, 3))
+
+    def test_select_task_final_approach_candidate_skips_failed_current_candidate(self) -> None:
+        grid_map = _build_runtime_grid_map()
+        task = TaskRecord(
+            task_id="hotspot-confirmation-skip-failed",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskStatus.ASSIGNED,
+            priority=10,
+            target_x=487.5,
+            target_y=237.5,
+            target_row=9,
+            target_col=19,
+            created_step=100,
+            assigned_agent_id="USV-1",
+        )
+        agent = replace(
+            next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1"),
+            x=537.266,
+            y=427.654,
+            heading_deg=-115.0,
+            task=AgentTaskState(mode=TaskMode.CONFIRM, target_x=task.target_x, target_y=task.target_y),
+        )
+        initial_selection = select_task_final_approach_candidate(
+            agent,
+            task=task,
+            grid_map=grid_map,
+            progress_state=AgentProgressState(agent_id="USV-1"),
+        )
+        progress_state = AgentProgressState(
+            agent_id="USV-1",
+            task_final_approach_task_id=task.task_id,
+            task_final_approach_frozen_candidates=initial_selection.frozen_candidates,
+            task_final_approach_candidate_index=initial_selection.candidate_index,
+            task_final_approach_candidate_x=initial_selection.candidate_x,
+            task_final_approach_candidate_y=initial_selection.candidate_y,
+            task_final_approach_failed_candidate_indexes=(initial_selection.candidate_index,),
+            task_final_approach_attempt_count=1,
+            task_final_approach_status="rotated_after_recovery",
+        )
+
+        selection = select_task_final_approach_candidate(
+            agent,
+            task=task,
+            grid_map=grid_map,
+            progress_state=progress_state,
+        )
+
+        self.assertNotEqual(selection.candidate_index, initial_selection.candidate_index)
+        self.assertEqual(
+            selection.failed_candidate_indexes,
+            (initial_selection.candidate_index,),
         )
 
     def test_recovery_success_rejoins_local_patrol_segment(self) -> None:
@@ -2719,6 +3459,15 @@ class SimulationRuntimeTestCase(unittest.TestCase):
             patrol_route_id="UAV-1",
             patrol_waypoint_index=0,
         )
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.ON_TASK,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
         sea_map = build_default_sea_map()
         obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
         grid_map = build_grid_map(sea_map, obstacle_layout)
@@ -2773,6 +3522,15 @@ class SimulationRuntimeTestCase(unittest.TestCase):
             patrol_route_id="UAV-1",
             patrol_waypoint_index=0,
         )
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.ON_TASK,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
         sea_map = build_default_sea_map()
         obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
         grid_map = build_grid_map(sea_map, obstacle_layout)
@@ -2803,6 +3561,68 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         )
 
         self.assertEqual(resolved_tasks[0].status, TaskStatus.IN_PROGRESS)
+        self.assertEqual(updated_execution_states["UAV-1"].stage, ExecutionStage.ON_RECHARGE)
+
+    def test_finalize_task_resolutions_keeps_uav_resupply_active_until_support_on_task(
+        self,
+    ) -> None:
+        agents = tuple(
+            replace(agent, energy_level=agent.energy_capacity * 0.95)
+            if agent.agent_id == "UAV-1"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        patrol_routes = build_patrol_routes()
+        execution_states = build_initial_execution_states(agents)
+        progress_states = build_initial_progress_states(agents)
+        execution_states["UAV-1"] = AgentExecutionState(
+            agent_id="UAV-1",
+            stage=ExecutionStage.ON_RECHARGE,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="UAV-1",
+            patrol_waypoint_index=0,
+        )
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.YIELD,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
+            patrol_waypoint_index=0,
+        )
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        info_map = build_information_map(grid_map)
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=110.0,
+            target_y=180.0,
+            target_row=None,
+            target_col=None,
+            created_step=2,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+        )
+
+        resolved_tasks, updated_execution_states, _ = finalize_task_resolutions(
+            agents=agents,
+            execution_states=execution_states,
+            progress_states=progress_states,
+            task_records=(task,),
+            patrol_routes=patrol_routes,
+            info_map=info_map,
+            step=6,
+        )
+
+        self.assertEqual(resolved_tasks[0].status, TaskStatus.ASSIGNED)
         self.assertEqual(updated_execution_states["UAV-1"].stage, ExecutionStage.ON_RECHARGE)
 
     def test_sync_task_statuses_covers_assigned_in_progress_requeued_and_completed(
@@ -2942,6 +3762,317 @@ class SimulationRuntimeTestCase(unittest.TestCase):
         self.assertEqual(synced_tasks[0].status, TaskStatus.ASSIGNED)
         self.assertEqual(synced_tasks[0].assigned_agent_id, "USV-3")
 
+    def test_sync_task_statuses_keeps_supportless_uav_resupply_pending(self) -> None:
+        execution_states = {
+            "UAV-2": AgentExecutionState(
+                agent_id="UAV-2",
+                stage=ExecutionStage.PATROL,
+                active_task_id=None,
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="UAV-2",
+                patrol_waypoint_index=0,
+            )
+        }
+        progress_states = {"UAV-2": AgentProgressState(agent_id="UAV-2")}
+        task_records = (
+            TaskRecord(
+                task_id="uav-resupply-UAV-2",
+                task_type=TaskType.UAV_RESUPPLY,
+                source=TaskSource.SYSTEM_LOW_BATTERY,
+                status=TaskStatus.ASSIGNED,
+                priority=20,
+                target_x=513.562,
+                target_y=677.26,
+                target_row=None,
+                target_col=None,
+                created_step=88,
+                assigned_agent_id="UAV-2",
+                support_agent_id=None,
+            ),
+        )
+
+        synced_tasks = sync_task_statuses(task_records, execution_states, progress_states)
+
+        self.assertEqual(synced_tasks[0].status, TaskStatus.PENDING)
+        self.assertEqual(synced_tasks[0].assigned_agent_id, "UAV-2")
+        self.assertIsNone(synced_tasks[0].support_agent_id)
+
+    def test_sync_task_statuses_requeues_blocked_uav_support_assignment(self) -> None:
+        execution_states = {
+            "UAV-1": AgentExecutionState(
+                agent_id="UAV-1",
+                stage=ExecutionStage.GO_TO_RENDEZVOUS,
+                active_task_id="uav-resupply-UAV-1",
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="UAV-1",
+                patrol_waypoint_index=0,
+            ),
+            "USV-1": AgentExecutionState(
+                agent_id="USV-1",
+                stage=ExecutionStage.RETURN_TO_PATROL,
+                active_task_id=None,
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="USV-1",
+                patrol_waypoint_index=0,
+            ),
+        }
+        progress_states = {
+            "UAV-1": AgentProgressState(agent_id="UAV-1"),
+            "USV-1": AgentProgressState(
+                agent_id="USV-1",
+                released_task_id="uav-resupply-UAV-1",
+                released_task_created_step=88,
+                released_task_retry_until_step=24,
+                released_task_reason="task_plan_blocked",
+            ),
+        }
+        task_records = (
+            TaskRecord(
+                task_id="uav-resupply-UAV-1",
+                task_type=TaskType.UAV_RESUPPLY,
+                source=TaskSource.SYSTEM_LOW_BATTERY,
+                status=TaskStatus.ASSIGNED,
+                priority=20,
+                target_x=400.0,
+                target_y=500.0,
+                target_row=None,
+                target_col=None,
+                created_step=88,
+                assigned_agent_id="UAV-1",
+                support_agent_id="USV-1",
+            ),
+        )
+
+        synced_tasks = sync_task_statuses(task_records, execution_states, progress_states)
+
+        self.assertEqual(synced_tasks[0].status, TaskStatus.REQUEUED)
+        self.assertEqual(synced_tasks[0].assigned_agent_id, "UAV-1")
+        self.assertIsNone(synced_tasks[0].support_agent_id)
+        self.assertEqual(synced_tasks[0].retry_after_step, 24)
+        self.assertEqual(
+            synced_tasks[0].agent_retry_after_steps,
+            (("USV-1", 24),),
+        )
+
+    def test_sync_task_statuses_consumes_release_only_on_matching_step(self) -> None:
+        execution_states = {
+            "UAV-1": AgentExecutionState(
+                agent_id="UAV-1",
+                stage=ExecutionStage.GO_TO_RENDEZVOUS,
+                active_task_id="uav-resupply-UAV-1",
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="UAV-1",
+                patrol_waypoint_index=0,
+            ),
+            "USV-1": AgentExecutionState(
+                agent_id="USV-1",
+                stage=ExecutionStage.RETURN_TO_PATROL,
+                active_task_id=None,
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="USV-1",
+                patrol_waypoint_index=0,
+            ),
+        }
+        progress_states = {
+            "UAV-1": AgentProgressState(agent_id="UAV-1"),
+            "USV-1": AgentProgressState(
+                agent_id="USV-1",
+                released_task_id="uav-resupply-UAV-1",
+                released_task_created_step=88,
+                released_task_step=24,
+                released_task_retry_until_step=36,
+                released_task_reason="task_plan_blocked",
+            ),
+        }
+        task_records = (
+            TaskRecord(
+                task_id="uav-resupply-UAV-1",
+                task_type=TaskType.UAV_RESUPPLY,
+                source=TaskSource.SYSTEM_LOW_BATTERY,
+                status=TaskStatus.ASSIGNED,
+                priority=20,
+                target_x=400.0,
+                target_y=500.0,
+                target_row=None,
+                target_col=None,
+                created_step=88,
+                assigned_agent_id="UAV-1",
+                support_agent_id="USV-1",
+            ),
+        )
+
+        stale_sync = sync_task_statuses(
+            task_records,
+            execution_states,
+            progress_states,
+            step=25,
+        )
+        fresh_sync = sync_task_statuses(
+            task_records,
+            execution_states,
+            progress_states,
+            step=24,
+        )
+
+        self.assertEqual(stale_sync[0].status, TaskStatus.REQUEUED)
+        self.assertIsNone(stale_sync[0].support_agent_id)
+        self.assertIsNone(stale_sync[0].retry_after_step)
+        self.assertEqual(fresh_sync[0].status, TaskStatus.REQUEUED)
+        self.assertIsNone(fresh_sync[0].support_agent_id)
+
+    def test_sync_task_statuses_ignores_stale_uav_support_release_from_old_episode(self) -> None:
+        execution_states = {
+            "UAV-1": AgentExecutionState(
+                agent_id="UAV-1",
+                stage=ExecutionStage.GO_TO_RENDEZVOUS,
+                active_task_id="uav-resupply-UAV-1",
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="UAV-1",
+                patrol_waypoint_index=0,
+            ),
+            "USV-1": AgentExecutionState(
+                agent_id="USV-1",
+                stage=ExecutionStage.GO_TO_TASK,
+                active_task_id="uav-resupply-UAV-1",
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="USV-1",
+                patrol_waypoint_index=0,
+            ),
+        }
+        progress_states = {
+            "UAV-1": AgentProgressState(agent_id="UAV-1"),
+            "USV-1": AgentProgressState(
+                agent_id="USV-1",
+                released_task_id="uav-resupply-UAV-1",
+                released_task_created_step=88,
+                released_task_retry_until_step=24,
+                released_task_reason="task_plan_blocked",
+            ),
+        }
+        task_records = (
+            TaskRecord(
+                task_id="uav-resupply-UAV-1",
+                task_type=TaskType.UAV_RESUPPLY,
+                source=TaskSource.SYSTEM_LOW_BATTERY,
+                status=TaskStatus.ASSIGNED,
+                priority=20,
+                target_x=400.0,
+                target_y=500.0,
+                target_row=None,
+                target_col=None,
+                created_step=120,
+                assigned_agent_id="UAV-1",
+                support_agent_id="USV-1",
+            ),
+        )
+
+        synced_tasks = sync_task_statuses(task_records, execution_states, progress_states)
+
+        self.assertEqual(synced_tasks[0].status, TaskStatus.ASSIGNED)
+        self.assertEqual(synced_tasks[0].support_agent_id, "USV-1")
+        self.assertIsNone(synced_tasks[0].retry_after_step)
+
+    def test_sync_task_statuses_keeps_uav_resupply_assigned_until_support_on_task(self) -> None:
+        execution_states = {
+            "UAV-1": AgentExecutionState(
+                agent_id="UAV-1",
+                stage=ExecutionStage.ON_RECHARGE,
+                active_task_id="uav-resupply-UAV-1",
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="UAV-1",
+                patrol_waypoint_index=0,
+            ),
+            "USV-1": AgentExecutionState(
+                agent_id="USV-1",
+                stage=ExecutionStage.YIELD,
+                active_task_id="uav-resupply-UAV-1",
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="USV-1",
+                patrol_waypoint_index=0,
+            ),
+        }
+        progress_states = {
+            "UAV-1": AgentProgressState(agent_id="UAV-1"),
+            "USV-1": AgentProgressState(agent_id="USV-1"),
+        }
+        task_records = (
+            TaskRecord(
+                task_id="uav-resupply-UAV-1",
+                task_type=TaskType.UAV_RESUPPLY,
+                source=TaskSource.SYSTEM_LOW_BATTERY,
+                status=TaskStatus.ASSIGNED,
+                priority=20,
+                target_x=400.0,
+                target_y=500.0,
+                target_row=None,
+                target_col=None,
+                created_step=88,
+                assigned_agent_id="UAV-1",
+                support_agent_id="USV-1",
+            ),
+        )
+
+        synced_tasks = sync_task_statuses(task_records, execution_states, progress_states)
+
+        self.assertEqual(synced_tasks[0].status, TaskStatus.ASSIGNED)
+
+    def test_sync_task_statuses_requeues_uav_resupply_when_support_drops_assignment(self) -> None:
+        execution_states = {
+            "UAV-1": AgentExecutionState(
+                agent_id="UAV-1",
+                stage=ExecutionStage.GO_TO_RENDEZVOUS,
+                active_task_id="uav-resupply-UAV-1",
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="UAV-1",
+                patrol_waypoint_index=0,
+            ),
+            "USV-1": AgentExecutionState(
+                agent_id="USV-1",
+                stage=ExecutionStage.RETURN_TO_PATROL,
+                active_task_id=None,
+                active_plan=None,
+                current_waypoint_index=0,
+                patrol_route_id="USV-1",
+                patrol_waypoint_index=0,
+            ),
+        }
+        progress_states = {
+            "UAV-1": AgentProgressState(agent_id="UAV-1"),
+            "USV-1": AgentProgressState(agent_id="USV-1"),
+        }
+        task_records = (
+            TaskRecord(
+                task_id="uav-resupply-UAV-1",
+                task_type=TaskType.UAV_RESUPPLY,
+                source=TaskSource.SYSTEM_LOW_BATTERY,
+                status=TaskStatus.ASSIGNED,
+                priority=20,
+                target_x=410.841,
+                target_y=321.491,
+                target_row=None,
+                target_col=None,
+                created_step=363,
+                assigned_agent_id="UAV-1",
+                support_agent_id="USV-1",
+            ),
+        )
+
+        synced_tasks = sync_task_statuses(task_records, execution_states, progress_states)
+
+        self.assertEqual(synced_tasks[0].status, TaskStatus.REQUEUED)
+        self.assertEqual(synced_tasks[0].assigned_agent_id, "UAV-1")
+        self.assertIsNone(synced_tasks[0].support_agent_id)
+
     def test_finalize_task_resolutions_clears_completed_task_owner(self) -> None:
         grid_map = _build_runtime_grid_map()
         info_map = build_information_map(grid_map)
@@ -2955,6 +4086,15 @@ class SimulationRuntimeTestCase(unittest.TestCase):
             active_plan=None,
             current_waypoint_index=0,
             patrol_route_id="UAV-1",
+            patrol_waypoint_index=0,
+        )
+        execution_states["USV-1"] = AgentExecutionState(
+            agent_id="USV-1",
+            stage=ExecutionStage.ON_TASK,
+            active_task_id="uav-resupply-UAV-1",
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_route_id="USV-1",
             patrol_waypoint_index=0,
         )
         progress_states = build_initial_progress_states(agents)
@@ -3008,6 +4148,7 @@ class SimulationRuntimeTestCase(unittest.TestCase):
             "USV-3": AgentProgressState(
                 agent_id="USV-3",
                 released_task_id="hotspot-confirmation-3-26",
+                released_task_created_step=1005,
                 released_task_retry_until_step=1280,
                 released_task_reason="task_final_approach_exhausted",
             )

@@ -53,6 +53,8 @@ def sync_task_statuses(
     task_records: tuple[TaskRecord, ...],
     execution_states: dict[str, AgentExecutionState],
     progress_states: dict[str, AgentProgressState],
+    *,
+    step: int | None = None,
 ) -> tuple[TaskRecord, ...]:
     """Sync task lifecycle states from the current execution states."""
 
@@ -63,6 +65,62 @@ def sync_task_statuses(
             continue
         if task.assigned_agent_id is None:
             synced_tasks.append(task)
+            continue
+
+        support_dropped = False
+        if task.support_agent_id is not None:
+            support_execution = execution_states.get(task.support_agent_id)
+            support_progress = progress_states.get(task.support_agent_id)
+            if (
+                support_progress is not None
+                and _released_progress_matches_task(support_progress, task, step=step)
+                and support_progress.released_task_retry_until_step > 0
+            ):
+                s_retry_after_step, s_agent_retry = _merge_agent_retry_cooldown(
+                    task,
+                    agent_id=task.support_agent_id,
+                    retry_until_step=support_progress.released_task_retry_until_step,
+                )
+                synced_tasks.append(
+                    replace(
+                        task,
+                        status=TaskStatus.REQUEUED,
+                        support_agent_id=None,
+                        assigned_agent_id=task.assigned_agent_id if task.task_type == TaskType.UAV_RESUPPLY else None,
+                        retry_after_step=s_retry_after_step,
+                        agent_retry_after_steps=s_agent_retry,
+                    )
+                )
+                support_dropped = True
+            elif task.task_type == TaskType.UAV_RESUPPLY and not _support_holds_uav_resupply_task(
+                task,
+                support_execution=support_execution,
+                support_progress=support_progress,
+            ):
+                synced_tasks.append(
+                    replace(
+                        task,
+                        status=TaskStatus.REQUEUED,
+                        support_agent_id=None,
+                        assigned_agent_id=task.assigned_agent_id,
+                    )
+                )
+                support_dropped = True
+
+        if support_dropped:
+            continue
+
+        if task.task_type == TaskType.UAV_RESUPPLY and task.support_agent_id is None:
+            synced_tasks.append(
+                replace(
+                    task,
+                    status=(
+                        task.status
+                        if task.status in {TaskStatus.PENDING, TaskStatus.REQUEUED}
+                        else TaskStatus.PENDING
+                    ),
+                )
+            )
             continue
 
         execution_state = execution_states.get(task.assigned_agent_id)
@@ -80,6 +138,23 @@ def sync_task_statuses(
                 )
             )
             continue
+
+        if task.task_type == TaskType.UAV_RESUPPLY:
+            support_executing = _uav_resupply_support_is_executing(
+                task,
+                execution_states=execution_states,
+            )
+            if execution_state.active_task_id == task.task_id:
+                if execution_state.stage == ExecutionStage.ON_RECHARGE and support_executing:
+                    synced_tasks.append(replace(task, status=TaskStatus.IN_PROGRESS))
+                    continue
+                if execution_state.stage in {
+                    ExecutionStage.GO_TO_RENDEZVOUS,
+                    ExecutionStage.ON_RECHARGE,
+                    ExecutionStage.RECOVERY,
+                }:
+                    synced_tasks.append(replace(task, status=TaskStatus.ASSIGNED))
+                    continue
 
         if execution_state.active_task_id == task.task_id and execution_state.stage in {
             ExecutionStage.ON_TASK,
@@ -103,7 +178,7 @@ def sync_task_statuses(
             agent_retry_after_steps = task.agent_retry_after_steps
             if (
                 progress_state is not None
-                and progress_state.released_task_id == task.task_id
+                and _released_progress_matches_task(progress_state, task, step=step)
                 and progress_state.released_task_retry_until_step > 0
             ):
                 retry_after_step, agent_retry_after_steps = _merge_agent_retry_cooldown(
@@ -125,6 +200,57 @@ def sync_task_statuses(
             continue
         synced_tasks.append(replace(task, status=TaskStatus.ASSIGNED))
     return tuple(synced_tasks)
+
+
+def _released_progress_matches_task(
+    progress_state: AgentProgressState,
+    task: TaskRecord,
+    *,
+    step: int | None,
+) -> bool:
+    if progress_state.released_task_id != task.task_id:
+        return False
+    if step is not None and progress_state.released_task_step != step:
+        return False
+    if progress_state.released_task_created_step is None:
+        return True
+    return progress_state.released_task_created_step == task.created_step
+
+
+def _uav_resupply_support_is_executing(
+    task: TaskRecord,
+    *,
+    execution_states: dict[str, AgentExecutionState],
+) -> bool:
+    if task.task_type != TaskType.UAV_RESUPPLY or task.support_agent_id is None:
+        return False
+    support_execution_state = execution_states.get(task.support_agent_id)
+    if support_execution_state is None:
+        return False
+    return (
+        support_execution_state.active_task_id == task.task_id
+        and support_execution_state.stage == ExecutionStage.ON_TASK
+    )
+
+
+def _support_holds_uav_resupply_task(
+    task: TaskRecord,
+    *,
+    support_execution: AgentExecutionState | None,
+    support_progress: AgentProgressState | None,
+) -> bool:
+    """Return whether the support USV still holds one assigned resupply task."""
+
+    if task.task_type != TaskType.UAV_RESUPPLY:
+        return False
+    if support_execution is not None and support_execution.active_task_id == task.task_id:
+        return True
+    if support_progress is None:
+        return False
+    return (
+        support_progress.pending_assigned_task_id == task.task_id
+        or support_progress.claimed_task_id == task.task_id
+    )
 
 
 def _merge_agent_retry_cooldown(
@@ -501,6 +627,8 @@ def _finalize_uav_resupply_task(
     if agent is None or execution_state is None:
         return (task, execution_states, progress_states)
     if execution_state.stage != ExecutionStage.ON_RECHARGE:
+        return (task, execution_states, progress_states)
+    if not _uav_resupply_support_is_executing(task, execution_states=execution_states):
         return (task, execution_states, progress_states)
     if not has_completed_uav_resupply(agent):
         return (task, execution_states, progress_states)

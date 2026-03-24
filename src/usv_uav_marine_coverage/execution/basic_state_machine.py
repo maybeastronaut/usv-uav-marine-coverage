@@ -28,6 +28,7 @@ def transition_to_task(
         corridor_reservation_until_step=-1,
         reserved_bottleneck_zone_id=None,
         bottleneck_owner_agent_id=None,
+        bottleneck_reservation_until_step=-1,
         pre_yield_stage=None,
     )
 
@@ -48,6 +49,7 @@ def transition_to_on_task(state: AgentExecutionState) -> AgentExecutionState:
         corridor_reservation_until_step=-1,
         reserved_bottleneck_zone_id=None,
         bottleneck_owner_agent_id=None,
+        bottleneck_reservation_until_step=-1,
         pre_yield_stage=None,
     )
 
@@ -73,6 +75,7 @@ def transition_to_rendezvous(
         corridor_reservation_until_step=-1,
         reserved_bottleneck_zone_id=None,
         bottleneck_owner_agent_id=None,
+        bottleneck_reservation_until_step=-1,
         pre_yield_stage=None,
     )
 
@@ -93,6 +96,7 @@ def transition_to_recharge(state: AgentExecutionState) -> AgentExecutionState:
         corridor_reservation_until_step=-1,
         reserved_bottleneck_zone_id=None,
         bottleneck_owner_agent_id=None,
+        bottleneck_reservation_until_step=-1,
         pre_yield_stage=None,
     )
 
@@ -127,6 +131,7 @@ def transition_to_return_to_patrol(
         corridor_reservation_until_step=-1,
         reserved_bottleneck_zone_id=None,
         bottleneck_owner_agent_id=None,
+        bottleneck_reservation_until_step=-1,
         pre_yield_stage=None,
     )
 
@@ -152,6 +157,7 @@ def transition_to_patrol(state: AgentExecutionState) -> AgentExecutionState:
         corridor_reservation_until_step=-1,
         reserved_bottleneck_zone_id=None,
         bottleneck_owner_agent_id=None,
+        bottleneck_reservation_until_step=-1,
         pre_yield_stage=None,
     )
 
@@ -172,6 +178,7 @@ def transition_to_recovery(state: AgentExecutionState) -> AgentExecutionState:
         corridor_reservation_until_step=-1,
         reserved_bottleneck_zone_id=None,
         bottleneck_owner_agent_id=None,
+        bottleneck_reservation_until_step=-1,
         pre_yield_stage=None,
     )
 
@@ -202,6 +209,7 @@ def transition_to_yield(
         corridor_reservation_until_step=state.corridor_reservation_until_step,
         reserved_bottleneck_zone_id=reserved_bottleneck_zone_id,
         bottleneck_owner_agent_id=bottleneck_owner_agent_id,
+        bottleneck_reservation_until_step=state.bottleneck_reservation_until_step,
         pre_yield_stage=state.pre_yield_stage or state.stage,
     )
 
@@ -223,5 +231,6 @@ def transition_from_yield(state: AgentExecutionState) -> AgentExecutionState:
         corridor_reservation_until_step=-1,
         reserved_bottleneck_zone_id=None,
         bottleneck_owner_agent_id=None,
+        bottleneck_reservation_until_step=-1,
         pre_yield_stage=None,
     )

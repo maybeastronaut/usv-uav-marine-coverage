@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from math import hypot
+from math import ceil, hypot
 
 from usv_uav_marine_coverage.agent_model import (
     AgentState,
@@ -12,14 +12,22 @@ from usv_uav_marine_coverage.agent_model import (
     is_operational_agent,
 )
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState, ExecutionStage
+from usv_uav_marine_coverage.grid import GridMap
+from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
+from usv_uav_marine_coverage.planning.usv_path_planner import build_usv_path_plan
 
 from . import partitioning as zone_partition_layer
+from .partitioning.failure_hotspot_soft_partition import is_failed_neighbor_recovery_hotspot
 from .task_types import TaskAssignment, TaskRecord, TaskStatus, TaskType
 
 NEARSHORE_X_END_M = zone_partition_layer.NEARSHORE_X_END_M
 OFFSHORE_Y_SPLIT_M = zone_partition_layer.OFFSHORE_Y_SPLIT_M
 RETURN_TO_PATROL_OPPORTUNISTIC_TASK_RADIUS_M = 120.0
 HOTSPOT_PROXIMITY_OVERRIDE_RADIUS_M = RETURN_TO_PATROL_OPPORTUNISTIC_TASK_RADIUS_M
+FAILED_NEIGHBOR_HOTSPOT_PROXIMITY_OVERRIDE_RADIUS_M = 320.0
+HOTSPOT_PROXIMITY_OVERRIDE_MIN_GRACE_STEPS = 12
+HOTSPOT_PROXIMITY_OVERRIDE_PROGRESS_FLOOR_M_PER_STEP = 4.0
+HOTSPOT_PROXIMITY_OVERRIDE_GRACE_BUFFER_STEPS = 4
 
 
 def task_sort_key(task: TaskRecord) -> tuple[int, int, int, str]:
@@ -169,6 +177,49 @@ def distance_to_task(agent: AgentState, task: TaskRecord) -> float:
     return round(hypot(agent.x - task.target_x, agent.y - task.target_y), 3)
 
 
+def stabilize_uav_resupply_task(
+    task: TaskRecord,
+    *,
+    selected_uav: AgentState | None = None,
+) -> TaskRecord:
+    """Keep the task target aligned with the stable rendezvous anchor."""
+
+    if task.task_type != TaskType.UAV_RESUPPLY:
+        return task
+    anchor_x, anchor_y = uav_resupply_anchor(task, selected_uav=selected_uav)
+    return replace(
+        task,
+        target_x=anchor_x,
+        target_y=anchor_y,
+        rendezvous_anchor_x=anchor_x,
+        rendezvous_anchor_y=anchor_y,
+    )
+
+
+def uav_resupply_anchor(
+    task: TaskRecord,
+    *,
+    selected_uav: AgentState | None = None,
+) -> tuple[float, float]:
+    """Return the stable rendezvous anchor for one UAV-resupply episode."""
+
+    if task.rendezvous_anchor_x is not None and task.rendezvous_anchor_y is not None:
+        return (task.rendezvous_anchor_x, task.rendezvous_anchor_y)
+    if selected_uav is not None:
+        return (selected_uav.x, selected_uav.y)
+    return (task.target_x, task.target_y)
+
+
+def is_task_waiting_for_retry(
+    task: TaskRecord,
+    *,
+    step: int | None,
+) -> bool:
+    """Return whether the whole task is still inside its global retry cooldown."""
+
+    return task.retry_after_step is not None and step is not None and step < task.retry_after_step
+
+
 def preferred_usv_ids_for_task(task: TaskRecord) -> set[str]:
     """Return the baseline fixed-partition primary USV set for one task."""
 
@@ -180,18 +231,24 @@ def allocate_uav_resupply_task(
     *,
     agent_by_id: dict[str, AgentState],
     execution_states: dict[str, AgentExecutionState] | None = None,
+    grid_map: GridMap | None = None,
     task_records: tuple[TaskRecord, ...] = (),
+    step: int | None = None,
+    usv_path_planner: str = "astar_path_planner",
 ) -> tuple[TaskRecord, TaskAssignment | None]:
     """Allocate one UAV-resupply task using the nearest supporting USV."""
 
     selected_uav = agent_by_id.get(task.assigned_agent_id or "")
     if selected_uav is None or selected_uav.kind != "UAV":
         return (replace(task, status=TaskStatus.PENDING, assigned_agent_id=None), None)
+    task = stabilize_uav_resupply_task(task, selected_uav=selected_uav)
+    anchor_x, anchor_y = uav_resupply_anchor(task, selected_uav=selected_uav)
 
     usv_candidates = [
         agent
         for agent in agent_by_id.values()
         if can_support_uav_resupply(agent)
+        and not is_agent_task_in_cooldown(task, agent_id=agent.agent_id, step=step)
         and (
             execution_states is None
             or is_available_for_uav_support(
@@ -212,12 +269,20 @@ def allocate_uav_resupply_task(
             None,
         )
 
-    support_usv = min(
-        usv_candidates,
-        key=lambda agent: hypot(agent.x - selected_uav.x, agent.y - selected_uav.y),
+    support_usv = _select_reachable_support_usv(
+        selected_uav,
+        usv_candidates=tuple(usv_candidates),
+        grid_map=grid_map,
+        task=task,
+        usv_path_planner=usv_path_planner,
     )
+    if support_usv is None:
+        return (
+            replace(task, status=TaskStatus.PENDING, support_agent_id=None),
+            None,
+        )
     selection_score = round(
-        hypot(support_usv.x - selected_uav.x, support_usv.y - selected_uav.y),
+        hypot(support_usv.x - anchor_x, support_usv.y - anchor_y),
         3,
     )
     updated_task = replace(
@@ -225,8 +290,8 @@ def allocate_uav_resupply_task(
         status=TaskStatus.ASSIGNED,
         assigned_agent_id=selected_uav.agent_id,
         support_agent_id=support_usv.agent_id,
-        target_x=support_usv.x,
-        target_y=support_usv.y,
+        target_x=anchor_x,
+        target_y=anchor_y,
     )
     return (
         updated_task,
@@ -241,6 +306,36 @@ def allocate_uav_resupply_task(
     )
 
 
+def _select_reachable_support_usv(
+    selected_uav: AgentState,
+    *,
+    usv_candidates: tuple[AgentState, ...],
+    grid_map: GridMap | None,
+    task: TaskRecord,
+    usv_path_planner: str,
+) -> AgentState | None:
+    anchor_x, anchor_y = uav_resupply_anchor(task, selected_uav=selected_uav)
+    ranked_candidates = sorted(
+        usv_candidates,
+        key=lambda agent: hypot(agent.x - anchor_x, agent.y - anchor_y),
+    )
+    if grid_map is None:
+        return ranked_candidates[0] if ranked_candidates else None
+    for candidate in ranked_candidates:
+        plan = build_usv_path_plan(
+            candidate,
+            grid_map=grid_map,
+            goal_x=anchor_x,
+            goal_y=anchor_y,
+            planner_name=usv_path_planner,
+            task_id=task.task_id,
+            stats_context="allocator_uav_resupply_support_reachability",
+        )
+        if plan.status == PathPlanStatus.PLANNED:
+            return candidate
+    return None
+
+
 def allocate_hotspot_proximity_override_task(
     task: TaskRecord,
     *,
@@ -248,6 +343,7 @@ def allocate_hotspot_proximity_override_task(
     execution_states: dict[str, AgentExecutionState],
     task_records: tuple[TaskRecord, ...],
     reserved_agent_ids: set[str] = frozenset(),
+    step: int | None = None,
 ) -> tuple[TaskRecord, TaskAssignment] | None:
     """Force-assign one nearby hotspot to an idle patrol/returning USV.
 
@@ -264,11 +360,14 @@ def allocate_hotspot_proximity_override_task(
     if _has_active_executor_for_task(task, execution_states=execution_states):
         return None
 
+    override_radius_m = _hotspot_proximity_override_radius(task, agents=agents)
     candidates: list[tuple[AgentState, AgentExecutionState, float]] = []
     for agent in agents:
         if agent.kind != "USV" or not is_operational_agent(agent):
             continue
         if agent.agent_id in reserved_agent_ids:
+            continue
+        if is_agent_task_in_cooldown(task, agent_id=agent.agent_id, step=step):
             continue
         execution_state = execution_states.get(agent.agent_id)
         if execution_state is None or execution_state.active_task_id is not None:
@@ -285,7 +384,7 @@ def allocate_hotspot_proximity_override_task(
         ):
             continue
         distance_m = distance_to_task(agent, task)
-        if distance_m > HOTSPOT_PROXIMITY_OVERRIDE_RADIUS_M:
+        if distance_m > override_radius_m:
             continue
         candidates.append((agent, execution_state, distance_m))
 
@@ -300,11 +399,21 @@ def allocate_hotspot_proximity_override_task(
             item[0].agent_id,
         ),
     )
+    suppression_grace_steps = max(
+        HOTSPOT_PROXIMITY_OVERRIDE_MIN_GRACE_STEPS,
+        ceil(selection_score / HOTSPOT_PROXIMITY_OVERRIDE_PROGRESS_FLOOR_M_PER_STEP)
+        + HOTSPOT_PROXIMITY_OVERRIDE_GRACE_BUFFER_STEPS,
+    )
     return (
         replace(
             task,
             status=TaskStatus.ASSIGNED,
             assigned_agent_id=selected_agent.agent_id,
+            suppression_grace_until_step=(
+                None
+                if step is None
+                else max(task.suppression_grace_until_step or 0, step + suppression_grace_steps)
+            ),
         ),
         TaskAssignment(
             task_id=task.task_id,
@@ -314,7 +423,7 @@ def allocate_hotspot_proximity_override_task(
             selection_reason="nearby_hotspot_proximity_takeover",
             selection_score=selection_score,
             selection_details={
-                "override_radius_m": HOTSPOT_PROXIMITY_OVERRIDE_RADIUS_M,
+                "override_radius_m": override_radius_m,
                 "override_distance_m": selection_score,
                 "override_stage": selected_state.stage.value,
                 "preempted_support_task_ids": list(
@@ -326,6 +435,16 @@ def allocate_hotspot_proximity_override_task(
             },
         ),
     )
+
+
+def _hotspot_proximity_override_radius(
+    task: TaskRecord,
+    *,
+    agents: tuple[AgentState, ...],
+) -> float:
+    if is_failed_neighbor_recovery_hotspot(task, agents=agents):
+        return FAILED_NEIGHBOR_HOTSPOT_PROXIMITY_OVERRIDE_RADIUS_M
+    return HOTSPOT_PROXIMITY_OVERRIDE_RADIUS_M
 
 
 def release_preempted_uav_resupply_tasks(
@@ -371,7 +490,8 @@ def selection_score_for_task(
     support_agent = agent_by_id.get(task.support_agent_id)
     if support_agent is None:
         return distance_to_task(selected_agent, task)
-    return round(hypot(support_agent.x - selected_agent.x, support_agent.y - selected_agent.y), 3)
+    anchor_x, anchor_y = uav_resupply_anchor(task, selected_uav=selected_agent)
+    return round(hypot(support_agent.x - anchor_x, support_agent.y - anchor_y), 3)
 
 
 def _has_active_executor_for_task(
@@ -479,3 +599,12 @@ def _can_preempt_assigned_uav_support_safely(
         ):
             return False
     return True
+
+
+def is_agent_task_in_cooldown(task: TaskRecord, *, agent_id: str, step: int | None) -> bool:
+    if step is None:
+        return False
+    return any(
+        candidate_agent_id == agent_id and step < retry_after_step
+        for candidate_agent_id, retry_after_step in task.agent_retry_after_steps
+    )

@@ -33,20 +33,26 @@ def build_uav_resupply_tasks(
             continue
         task_id = f"uav-resupply-{agent.agent_id}"
         existing = existing_by_id.get(task_id)
-        support_usv = _nearest_support_usv(agent, usv_agents)
         should_trigger = needs_uav_resupply(agent)
+        support_usv = _nearest_support_usv(agent, usv_agents)
         if support_usv is not None:
             should_trigger = should_trigger or agent.energy_level <= estimate_uav_energy_to_point(
                 agent, support_usv.x, support_usv.y
             )
         if not should_trigger:
-            if existing is not None:
+            # Only keep the task record if it has reached a terminal state so
+            # that the history is visible to downstream consumers.  Active tasks
+            # (PENDING / ASSIGNED / IN_PROGRESS) must be discarded so the UAV
+            # is released back to patrol instead of looping endlessly.
+            if existing is not None and existing.status in {
+                TaskStatus.COMPLETED,
+                TaskStatus.CANCELLED,
+            }:
                 next_tasks.append(existing)
             continue
 
         active_ids.add(task_id)
-        target_x = support_usv.x if support_usv is not None else agent.x
-        target_y = support_usv.y if support_usv is not None else agent.y
+        anchor_x, anchor_y = _resolve_rendezvous_anchor(agent, existing=existing)
         if existing is None or existing.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
             next_tasks.append(
                 TaskRecord(
@@ -55,12 +61,14 @@ def build_uav_resupply_tasks(
                     source=TaskSource.SYSTEM_LOW_BATTERY,
                     status=TaskStatus.PENDING,
                     priority=20,
-                    target_x=target_x,
-                    target_y=target_y,
+                    target_x=anchor_x,
+                    target_y=anchor_y,
                     target_row=None,
                     target_col=None,
                     created_step=step,
                     assigned_agent_id=agent.agent_id,
+                    rendezvous_anchor_x=anchor_x,
+                    rendezvous_anchor_y=anchor_y,
                 )
             )
             continue
@@ -70,8 +78,10 @@ def build_uav_resupply_tasks(
                 replace(
                     existing,
                     assigned_agent_id=agent.agent_id,
-                    target_x=target_x,
-                    target_y=target_y,
+                    target_x=anchor_x,
+                    target_y=anchor_y,
+                    rendezvous_anchor_x=anchor_x,
+                    rendezvous_anchor_y=anchor_y,
                 )
             )
             continue
@@ -83,8 +93,10 @@ def build_uav_resupply_tasks(
                 assigned_agent_id=agent.agent_id,
                 support_agent_id=None,
                 completed_step=None,
-                target_x=target_x,
-                target_y=target_y,
+                target_x=anchor_x,
+                target_y=anchor_y,
+                rendezvous_anchor_x=anchor_x,
+                rendezvous_anchor_y=anchor_y,
             )
         )
 
@@ -111,3 +123,19 @@ def _nearest_support_usv(
         usv_agents,
         key=lambda usv: hypot(usv.x - uav.x, usv.y - uav.y),
     )
+
+
+def _resolve_rendezvous_anchor(
+    uav: AgentState,
+    *,
+    existing: TaskRecord | None,
+) -> tuple[float, float]:
+    """Return the stable rendezvous anchor for the current low-energy episode."""
+
+    if existing is None:
+        return (uav.x, uav.y)
+    if existing.status in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}:
+        if existing.rendezvous_anchor_x is not None and existing.rendezvous_anchor_y is not None:
+            return (existing.rendezvous_anchor_x, existing.rendezvous_anchor_y)
+        return (existing.target_x, existing.target_y)
+    return (uav.x, uav.y)
