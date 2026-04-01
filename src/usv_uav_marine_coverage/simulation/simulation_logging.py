@@ -272,6 +272,7 @@ def build_step_log(
     detected_by_agent: dict[str, tuple[tuple[int, int], ...]],
     confirmations_by_agent: dict[str, tuple[tuple[int, int], ...]],
     task_decisions: tuple[dict[str, object], ...],
+    prior_task_records: tuple[TaskRecord, ...],
     prior_agents: tuple[AgentState, ...],
     planned_agents: tuple[AgentState, ...],
     task_records: tuple[TaskRecord, ...],
@@ -334,6 +335,14 @@ def build_step_log(
         detected_by_agent=detected_by_agent,
         confirmations_by_agent=confirmations_by_agent,
     )
+    prior_task_by_key = {
+        (task.task_id, task.created_step): task for task in prior_task_records
+    }
+    task_release_reason_overrides = _build_task_release_reason_overrides(
+        task_records,
+        prior_task_records=prior_task_records,
+        reassignments=reassignments,
+    )
     step_log = {
         "record_type": "step_snapshot",
         "step": step,
@@ -367,6 +376,8 @@ def build_step_log(
                     info_map=info_map,
                     execution_states=execution_states,
                     progress_states=progress_states,
+                    previous_task=prior_task_by_key.get((task.task_id, task.created_step)),
+                    release_reason_overrides=task_release_reason_overrides,
                 )
                 for task in task_records
             ],
@@ -550,6 +561,14 @@ def build_execution_updates(
         coverage_state = (
             None if uav_coverage_states is None else uav_coverage_states.get(agent.agent_id)
         )
+        active_task_id = None if execution_state is None else execution_state.active_task_id
+        approach_state_visible = (
+            progress_state is not None
+            and progress_state.task_approach_escalation_task_id is not None
+            and progress_state.task_approach_escalation_task_id == active_task_id
+            and progress_state.task_approach_task_id is not None
+            and progress_state.task_approach_task_id == active_task_id
+        )
         tracking_error = None
         heading_error = None
         if (
@@ -599,6 +618,15 @@ def build_execution_updates(
                 "blocked_goal_signature": None
                 if progress_state is None
                 else progress_state.blocked_goal_signature,
+                "return_blocked_goal_signature": None
+                if progress_state is None
+                else progress_state.return_blocked_goal_signature,
+                "return_blocked_goal_until_step": None
+                if progress_state is None or progress_state.return_blocked_goal_until_step <= 0
+                else progress_state.return_blocked_goal_until_step,
+                "return_replan_generation": None
+                if progress_state is None
+                else progress_state.return_replan_generation,
                 "task_final_approach_task_id": None
                 if progress_state is None
                 else progress_state.task_final_approach_task_id,
@@ -617,6 +645,56 @@ def build_execution_updates(
                 "task_final_approach_status": None
                 if progress_state is None
                 else progress_state.task_final_approach_status,
+                "task_final_approach_backoff_until_step": None
+                if (
+                    progress_state is None
+                    or progress_state.task_final_approach_backoff_until_step <= 0
+                )
+                else progress_state.task_final_approach_backoff_until_step,
+                "task_final_approach_hold_reset_count": None
+                if progress_state is None
+                else progress_state.task_final_approach_hold_reset_count,
+                "task_final_approach_low_progress_count": None
+                if progress_state is None
+                else progress_state.task_final_approach_low_progress_count,
+                "low_progress_loop_active": None
+                if progress_state is None
+                else progress_state.low_progress_loop_active,
+                "task_approach_task_id": None
+                if not approach_state_visible
+                else progress_state.task_approach_task_id,
+                "task_approach_active_side": None
+                if not approach_state_visible
+                else progress_state.task_approach_active_side,
+                "task_approach_failed_sides": None
+                if (
+                    not approach_state_visible
+                    or not progress_state.task_approach_failed_sides
+                )
+                else list(progress_state.task_approach_failed_sides),
+                "task_approach_anchor_status": None
+                if not approach_state_visible
+                else progress_state.task_approach_anchor_status,
+                "task_approach_anchor_left": None
+                if (
+                    not approach_state_visible
+                    or progress_state.task_approach_anchor_left_x is None
+                    or progress_state.task_approach_anchor_left_y is None
+                )
+                else {
+                    "x": round(progress_state.task_approach_anchor_left_x, 3),
+                    "y": round(progress_state.task_approach_anchor_left_y, 3),
+                },
+                "task_approach_anchor_right": None
+                if (
+                    not approach_state_visible
+                    or progress_state.task_approach_anchor_right_x is None
+                    or progress_state.task_approach_anchor_right_y is None
+                )
+                else {
+                    "x": round(progress_state.task_approach_anchor_right_x, 3),
+                    "y": round(progress_state.task_approach_anchor_right_y, 3),
+                },
                 "released_task_id": None
                 if progress_state is None or progress_state.released_task_step != step
                 else progress_state.released_task_id,
@@ -642,6 +720,21 @@ def build_execution_updates(
                 "claim_transition_reason": None
                 if progress_state is None
                 else progress_state.claim_transition_reason,
+                "local_mpc_predicted_terminal_distance_m": None
+                if (
+                    execution_state is None
+                    or execution_state.last_local_mpc_predicted_terminal_distance_m is None
+                )
+                else round(execution_state.last_local_mpc_predicted_terminal_distance_m, 3),
+                "local_mpc_predicted_min_clearance_m": None
+                if (
+                    execution_state is None
+                    or execution_state.last_local_mpc_predicted_min_clearance_m is None
+                )
+                else round(execution_state.last_local_mpc_predicted_min_clearance_m, 3),
+                "local_mpc_candidate_count": None
+                if execution_state is None or execution_state.last_local_mpc_candidate_count <= 0
+                else execution_state.last_local_mpc_candidate_count,
                 "last_return_plan_step": None
                 if execution_state is None
                 else execution_state.last_return_plan_step,
@@ -745,6 +838,8 @@ def serialize_task_record(
     info_map: InformationMap,
     execution_states: dict[str, AgentExecutionState],
     progress_states: dict[str, AgentProgressState],
+    previous_task: TaskRecord | None = None,
+    release_reason_overrides: dict[tuple[str, int], str] | None = None,
 ) -> dict[str, object]:
     """Serialize one task record for logs."""
 
@@ -754,6 +849,10 @@ def serialize_task_record(
     if task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
         if owner_agent_id is None:
             claim_status = "unclaimed"
+        elif task.task_type == TaskType.UAV_RESUPPLY and task.support_agent_id is None:
+            claim_status = (
+                "unclaimed" if task.status == TaskStatus.REQUEUED else "pending_claim"
+            )
         else:
             execution_state = execution_states.get(owner_agent_id)
             progress_state = progress_states.get(owner_agent_id)
@@ -768,16 +867,24 @@ def serialize_task_record(
                     claim_status = "claimed"
             else:
                 claim_status = "pending_claim"
-            if (
-                progress_state is not None
-                and progress_state.released_task_id == task.task_id
-                and progress_state.released_task_step == step
-                and (
-                    progress_state.released_task_created_step is None
-                    or progress_state.released_task_created_step == task.created_step
-                )
-            ):
-                release_reason = progress_state.released_task_reason
+            release_reason = _released_task_reason_for_step(
+                task,
+                step=step,
+                progress_states=progress_states,
+            )
+        if release_reason is None:
+            release_reason = _released_task_reason_for_step(
+                task,
+                step=step,
+                progress_states=progress_states,
+            )
+        if release_reason is None and release_reason_overrides is not None:
+            release_reason = release_reason_overrides.get((task.task_id, task.created_step))
+        if release_reason is None:
+            release_reason = _infer_release_reason_from_task_transition(
+                task,
+                previous_task=previous_task,
+            )
     else:
         release_reason = "completed" if task.status == TaskStatus.COMPLETED else "cancelled"
 
@@ -833,6 +940,74 @@ def _task_claim_is_executing(
         support_execution_state.active_task_id == task.task_id
         and support_execution_state.stage == ExecutionStage.ON_TASK
     )
+
+
+def _released_task_reason_for_step(
+    task: TaskRecord,
+    *,
+    step: int,
+    progress_states: dict[str, AgentProgressState],
+) -> str | None:
+    for progress_state in progress_states.values():
+        if progress_state.released_task_step != step:
+            continue
+        if progress_state.released_task_id != task.task_id:
+            continue
+        if (
+            progress_state.released_task_created_step is not None
+            and progress_state.released_task_created_step != task.created_step
+        ):
+            continue
+        return progress_state.released_task_reason
+    return None
+
+
+def _build_task_release_reason_overrides(
+    task_records: tuple[TaskRecord, ...],
+    *,
+    prior_task_records: tuple[TaskRecord, ...],
+    reassignments: tuple[dict[str, object], ...],
+) -> dict[tuple[str, int], str]:
+    prior_by_id = {task.task_id: task for task in prior_task_records}
+    overrides: dict[tuple[str, int], str] = {}
+    for reassignment in reassignments:
+        task_id = reassignment.get("task_id")
+        if not isinstance(task_id, str):
+            continue
+        prior_task = prior_by_id.get(task_id)
+        current_task = next((task for task in task_records if task.task_id == task_id), None)
+        if prior_task is None or current_task is None:
+            continue
+        reason = reassignment.get("reason")
+        if not isinstance(reason, str):
+            continue
+        overrides[(current_task.task_id, current_task.created_step)] = reason
+    return overrides
+
+
+def _infer_release_reason_from_task_transition(
+    task: TaskRecord,
+    *,
+    previous_task: TaskRecord | None,
+) -> str | None:
+    if previous_task is None:
+        return None
+    if task.status != TaskStatus.REQUEUED:
+        return None
+    if previous_task.status not in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}:
+        return None
+    if task.assigned_agent_id is not None:
+        return None
+    if previous_task.assigned_agent_id is None:
+        return None
+    if task.retry_after_step is None:
+        return None
+    if any(
+        agent_id == previous_task.assigned_agent_id and retry_after == task.retry_after_step
+        for agent_id, retry_after in task.agent_retry_after_steps
+    ):
+        return "policy_suppressed_requeue"
+    return "requeued_without_execution_release"
 
 
 def _task_hotspot_id(task: TaskRecord, *, info_map: InformationMap) -> int | None:

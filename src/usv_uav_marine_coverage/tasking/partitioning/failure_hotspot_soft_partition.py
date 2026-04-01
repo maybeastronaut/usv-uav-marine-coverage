@@ -12,9 +12,12 @@ from usv_uav_marine_coverage.agent_model import (
     needs_uav_resupply,
 )
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState, ExecutionStage
+from usv_uav_marine_coverage.information_map import InformationMap
 
 from ..task_types import TaskRecord, TaskStatus, TaskType
+from ..uav_support_policy import select_preferred_operational_support_usv_id
 from .partition_types import TaskPartitionView
+from .regional_recovery_debt import build_regional_recovery_debt
 from .weighted_voronoi import build_weighted_voronoi_task_partition
 
 FAILURE_SOFT_ACTIVE_TASK_LOAD_PENALTY = 55.0
@@ -30,6 +33,7 @@ FAILURE_SOFT_MIN_FOCUS_CLUSTER_SIZE = 2
 FAILURE_SOFT_AGED_ISOLATED_HOTSPOT_RELEASE_STEPS = 180
 FAILURE_SOFT_FAILED_NEIGHBOR_RECOVERY_RADIUS_M = 140.0
 FAILURE_SOFT_FAILED_NEIGHBOR_RECOVERY_SCORE_BONUS = 60.0
+FAILURE_SOFT_SUPPORT_RESERVE_RATIO = 0.85
 
 
 def build_failure_hotspot_first_soft_partition(
@@ -38,6 +42,7 @@ def build_failure_hotspot_first_soft_partition(
     tasks: tuple[TaskRecord, ...],
     agents: tuple[AgentState, ...],
     execution_states: dict[str, AgentExecutionState],
+    info_map: InformationMap | None = None,
     step: int | None = None,
 ) -> TaskPartitionView:
     """Return a failure-mode soft partition when at least one USV has failed."""
@@ -76,6 +81,7 @@ def build_failure_hotspot_first_soft_partition(
         task,
         tasks=tasks,
         agents=agents,
+        info_map=info_map,
         step=step,
     ):
         return TaskPartitionView(
@@ -192,11 +198,20 @@ def should_suppress_non_focus_hotspot_after_failure(
     *,
     tasks: tuple[TaskRecord, ...],
     agents: tuple[AgentState, ...],
+    info_map: InformationMap | None = None,
     step: int | None = None,
 ) -> bool:
     """Return whether one hotspot task should yield to the active focus cluster."""
 
     if task.task_type != TaskType.HOTSPOT_CONFIRMATION:
+        return False
+    if build_regional_recovery_debt(
+        task,
+        tasks=tasks,
+        agents=agents,
+        info_map=info_map,
+        step=step,
+    ).is_high_debt:
         return False
     if is_failed_neighbor_recovery_hotspot(task, agents=agents):
         return False
@@ -469,11 +484,15 @@ def _failure_mode_support_reserved_usv_ids(
     for agent in agents:
         if agent.kind != "UAV":
             continue
-        if not needs_uav_resupply(agent) and energy_ratio(agent) > 0.4:
+        if (
+            not needs_uav_resupply(agent)
+            and energy_ratio(agent) > FAILURE_SOFT_SUPPORT_RESERVE_RATIO
+        ):
             continue
-        nearest_usv = min(
-            operational_usvs,
-            key=lambda usv: hypot(agent.x - usv.x, agent.y - usv.y),
+        preferred_support_usv_id = select_preferred_operational_support_usv_id(
+            agent,
+            usvs=operational_usvs,
         )
-        reserved_ids.add(nearest_usv.agent_id)
+        if preferred_support_usv_id is not None:
+            reserved_ids.add(preferred_support_usv_id)
     return reserved_ids

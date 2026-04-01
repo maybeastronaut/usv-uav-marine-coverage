@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from usv_uav_marine_coverage.agent_model import AgentState
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
+from usv_uav_marine_coverage.information_map import InformationMap
 
 from ..task_types import TaskRecord
 from .backlog_aware import build_backlog_aware_task_partition
@@ -29,42 +30,46 @@ def build_task_partition(
     tasks: tuple[TaskRecord, ...] = (),
     agents: tuple[AgentState, ...] = (),
     execution_states: dict[str, AgentExecutionState] | None = None,
+    info_map: InformationMap | None = None,
     step: int | None = None,
 ) -> TaskPartitionView:
     """Return one explicit partition view for the requested policy."""
-
+    partition: TaskPartitionView
     if policy_name == "baseline_fixed_partition":
-        return build_baseline_task_partition(task)
-    if policy_name == "soft_partition_policy":
-        return build_soft_task_partition(
+        partition = build_baseline_task_partition(task)
+    elif policy_name == "soft_partition_policy":
+        partition = build_soft_task_partition(
             task,
             agents=agents,
             execution_states=execution_states or {},
             step=step,
         )
-    if policy_name == "backlog_aware_partition_policy":
-        return build_backlog_aware_task_partition(
+    elif policy_name == "backlog_aware_partition_policy":
+        partition = build_backlog_aware_task_partition(
             task,
             tasks=tasks,
             agents=agents,
             execution_states=execution_states or {},
             step=step,
         )
-    if policy_name == "weighted_voronoi_partition_policy":
-        return build_weighted_voronoi_task_partition(
+    elif policy_name == "weighted_voronoi_partition_policy":
+        partition = build_weighted_voronoi_task_partition(
             task,
             agents=agents,
             execution_states=execution_states or {},
         )
-    if policy_name == "failure_triggered_hotspot_first_soft_partition_policy":
-        return build_failure_hotspot_first_soft_partition(
+    elif policy_name == "failure_triggered_hotspot_first_soft_partition_policy":
+        partition = build_failure_hotspot_first_soft_partition(
             task,
             tasks=tasks,
             agents=agents,
             execution_states=execution_states or {},
+            info_map=info_map,
             step=step,
         )
-    raise ValueError(f"Unsupported zone partition policy {policy_name!r}")
+    else:
+        raise ValueError(f"Unsupported zone partition policy {policy_name!r}")
+    return partition
 
 
 __all__ = [

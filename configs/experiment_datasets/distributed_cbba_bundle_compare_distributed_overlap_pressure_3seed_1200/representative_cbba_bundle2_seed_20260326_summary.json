@@ -1,0 +1,505 @@
+{
+  "simulation": {
+    "seed": 20260326,
+    "steps": 1200,
+    "dt_seconds": 1.0,
+    "algorithm_stage": "replay_preview",
+    "experiment_config": {
+      "simulation": {
+        "seed": 20260326,
+        "steps": 1200,
+        "dt_seconds": 1.0
+      },
+      "scenario": {
+        "name": "distributed_overlap_pressure"
+      },
+      "algorithms": {
+        "task_allocator": "distributed_cbba_allocator",
+        "zone_partition_policy": "weighted_voronoi_partition_policy",
+        "distributed_sync_interval_steps": 1,
+        "distributed_broadcast_range_m": 0.0,
+        "distributed_winner_memory_ttl_steps": 0,
+        "distributed_bundle_length": 2,
+        "usv_path_planner": "astar_path_planner",
+        "uav_search_planner": "uav_lawnmower_planner",
+        "execution_policy": "phase_one_execution"
+      },
+      "information_map": {
+        "information_timeout_steps": 340,
+        "nearshore_information_timeout_steps": 560,
+        "max_active_baseline_tasks": 2,
+        "max_active_hotspots": 14,
+        "max_suspected_hotspots": 12,
+        "nearshore_baseline_spawn_probability": 0.00035,
+        "baseline_respawn_cooldown_steps": 180,
+        "uav_false_alarm_probability": 0.08,
+        "uav_hotspot_inspection_steps": 1,
+        "usv_true_hotspot_probability": 1.0,
+        "usv_confirmation_steps": 5,
+        "baseline_service_steps": 5,
+        "nearshore_hotspot_spawn_probability": 0.008,
+        "offshore_hotspot_spawn_probability": 0.075,
+        "hotspot_clearance_cells": 0
+      },
+      "events": []
+    }
+  },
+  "environment": {
+    "sea_map": {
+      "width": 1000.0,
+      "height": 1000.0,
+      "zones": [
+        {
+          "name": "Nearshore Zone",
+          "x_start": 0.0,
+          "x_end": 250.0
+        },
+        {
+          "name": "Middle Risk Zone",
+          "x_start": 250.0,
+          "x_end": 450.0
+        },
+        {
+          "name": "Offshore Zone",
+          "x_start": 450.0,
+          "x_end": 1000.0
+        }
+      ]
+    },
+    "obstacle_layout": {
+      "seed": 20260326,
+      "generation_attempts": 2,
+      "risk_zone_obstacles": [
+        {
+          "name": "Risk Obstacle 1",
+          "zone_name": "Middle Risk Zone",
+          "points": [
+            [
+              250.0,
+              0.0
+            ],
+            [
+              450.0,
+              0.0
+            ],
+            [
+              450.0,
+              235.18227484872668
+            ],
+            [
+              410.0,
+              258.74099044889846
+            ],
+            [
+              370.0,
+              246.2902614289337
+            ],
+            [
+              330.0,
+              219.2989812639852
+            ],
+            [
+              290.0,
+              271.8478540612075
+            ],
+            [
+              250.0,
+              242.07446109073067
+            ]
+          ]
+        },
+        {
+          "name": "Risk Obstacle 2",
+          "zone_name": "Middle Risk Zone",
+          "points": [
+            [
+              272.0,
+              335.2481404970855
+            ],
+            [
+              288.0,
+              349.4813521346211
+            ],
+            [
+              304.0,
+              338.2916098114386
+            ],
+            [
+              320.0,
+              314.76725464171443
+            ],
+            [
+              336.0,
+              294.95888718696096
+            ],
+            [
+              336.0,
+              671.0564480235598
+            ],
+            [
+              320.0,
+              642.4516821843158
+            ],
+            [
+              304.0,
+              619.459715285604
+            ],
+            [
+              288.0,
+              636.701900134463
+            ],
+            [
+              272.0,
+              657.7802101372894
+            ]
+          ]
+        },
+        {
+          "name": "Risk Obstacle 3",
+          "zone_name": "Middle Risk Zone",
+          "points": [
+            [
+              352.0,
+              305.04745702115173
+            ],
+            [
+              371.5,
+              331.28762746299054
+            ],
+            [
+              391.0,
+              352.050183239879
+            ],
+            [
+              410.5,
+              341.9724899619376
+            ],
+            [
+              430.0,
+              330.45374022428115
+            ],
+            [
+              430.0,
+              662.6544138186283
+            ],
+            [
+              410.5,
+              634.0380456080542
+            ],
+            [
+              391.0,
+              650.0413929161052
+            ],
+            [
+              371.5,
+              675.4992520501141
+            ],
+            [
+              352.0,
+              695.7050162412878
+            ]
+          ]
+        },
+        {
+          "name": "Risk Obstacle 4",
+          "zone_name": "Middle Risk Zone",
+          "points": [
+            [
+              250.0,
+              789.506177586149
+            ],
+            [
+              290.0,
+              734.8801121494088
+            ],
+            [
+              330.0,
+              760.1335626201217
+            ],
+            [
+              370.0,
+              774.481690179834
+            ],
+            [
+              410.0,
+              734.0645125537345
+            ],
+            [
+              450.0,
+              783.0436021585865
+            ],
+            [
+              450.0,
+              1000.0
+            ],
+            [
+              250.0,
+              1000.0
+            ]
+          ]
+        }
+      ],
+      "offshore_features": [
+        {
+          "name": "Offshore Islet 1",
+          "feature_type": "islet",
+          "x": 541.9750490969786,
+          "y": 252.27547237326672,
+          "radius": 24.384364035576723
+        },
+        {
+          "name": "Offshore Islet 2",
+          "feature_type": "islet",
+          "x": 710.8420906215164,
+          "y": 604.681532521691,
+          "radius": 26.449085754755266
+        },
+        {
+          "name": "Offshore Islet 3",
+          "feature_type": "islet",
+          "x": 854.2642185452631,
+          "y": 330.99041031296434,
+          "radius": 25.545874440695307
+        },
+        {
+          "name": "Offshore Risk Area 1",
+          "feature_type": "risk_area",
+          "x": 625.4287745200896,
+          "y": 531.3340483400495,
+          "radius": 49.61689258337185
+        },
+        {
+          "name": "Offshore Risk Area 2",
+          "feature_type": "risk_area",
+          "x": 914.9986186660427,
+          "y": 802.7125978648289,
+          "radius": 43.01819724523585
+        }
+      ],
+      "nearshore_monitor_points": [],
+      "offshore_hotspots": []
+    }
+  },
+  "initial_agents": [
+    {
+      "agent_id": "USV-1",
+      "kind": "USV",
+      "x": 110.0,
+      "y": 180.0,
+      "heading_deg": 8.0,
+      "speed_mps": 0.0,
+      "detection_radius": 70.0,
+      "coverage_radius": 50.0,
+      "cruise_speed_mps": 5.5,
+      "max_speed_mps": 8.0,
+      "max_turn_rate_degps": 28.0,
+      "energy_capacity": 0.0,
+      "energy_level": 0.0,
+      "energy_ratio": null,
+      "task_mode": "idle",
+      "available": true,
+      "health_status": "healthy",
+      "speed_multiplier": 1.0,
+      "turn_rate_multiplier": 1.0
+    },
+    {
+      "agent_id": "USV-2",
+      "kind": "USV",
+      "x": 120.0,
+      "y": 500.0,
+      "heading_deg": -12.0,
+      "speed_mps": 0.0,
+      "detection_radius": 70.0,
+      "coverage_radius": 50.0,
+      "cruise_speed_mps": 5.5,
+      "max_speed_mps": 8.0,
+      "max_turn_rate_degps": 28.0,
+      "energy_capacity": 0.0,
+      "energy_level": 0.0,
+      "energy_ratio": null,
+      "task_mode": "idle",
+      "available": true,
+      "health_status": "healthy",
+      "speed_multiplier": 1.0,
+      "turn_rate_multiplier": 1.0
+    },
+    {
+      "agent_id": "USV-3",
+      "kind": "USV",
+      "x": 130.0,
+      "y": 820.0,
+      "heading_deg": 5.0,
+      "speed_mps": 0.0,
+      "detection_radius": 70.0,
+      "coverage_radius": 50.0,
+      "cruise_speed_mps": 5.5,
+      "max_speed_mps": 8.0,
+      "max_turn_rate_degps": 28.0,
+      "energy_capacity": 0.0,
+      "energy_level": 0.0,
+      "energy_ratio": null,
+      "task_mode": "idle",
+      "available": true,
+      "health_status": "healthy",
+      "speed_multiplier": 1.0,
+      "turn_rate_multiplier": 1.0
+    },
+    {
+      "agent_id": "UAV-1",
+      "kind": "UAV",
+      "x": 150.0,
+      "y": 260.0,
+      "heading_deg": -14.0,
+      "speed_mps": 0.0,
+      "detection_radius": 120.0,
+      "coverage_radius": 100.0,
+      "cruise_speed_mps": 16.0,
+      "max_speed_mps": 22.0,
+      "max_turn_rate_degps": 120.0,
+      "energy_capacity": 180.0,
+      "energy_level": 180.0,
+      "energy_ratio": 1.0,
+      "task_mode": "idle",
+      "available": true,
+      "health_status": "healthy",
+      "speed_multiplier": 1.0,
+      "turn_rate_multiplier": 1.0
+    },
+    {
+      "agent_id": "UAV-2",
+      "kind": "UAV",
+      "x": 165.0,
+      "y": 700.0,
+      "heading_deg": 18.0,
+      "speed_mps": 0.0,
+      "detection_radius": 120.0,
+      "coverage_radius": 100.0,
+      "cruise_speed_mps": 16.0,
+      "max_speed_mps": 22.0,
+      "max_turn_rate_degps": 120.0,
+      "energy_capacity": 180.0,
+      "energy_level": 180.0,
+      "energy_ratio": 1.0,
+      "task_mode": "idle",
+      "available": true,
+      "health_status": "healthy",
+      "speed_multiplier": 1.0,
+      "turn_rate_multiplier": 1.0
+    }
+  ],
+  "final_metrics": {
+    "coverage_ratio": 0.875455,
+    "covered_cells": 1202,
+    "total_coverable_cells": 1373,
+    "valid_cells": 803,
+    "stale_cells": 570,
+    "active_hotspot_cells": 14,
+    "uav_checked_cells": 6,
+    "active_ground_truth_hotspots": 14,
+    "path_lengths_by_agent": {
+      "UAV-1": 10225.142,
+      "UAV-2": 7209.793,
+      "USV-1": 4904.973,
+      "USV-2": 4466.958,
+      "USV-3": 4941.079
+    },
+    "event_totals": {
+      "spawned_hotspots": 51,
+      "uav_checked_marks": 43,
+      "confirmed_hotspots": 37,
+      "astar_total_calls": 279,
+      "astar_planned_calls": 262,
+      "astar_blocked_calls": 17,
+      "astar_expanded_nodes": 111268,
+      "astar_max_expanded_nodes": 9948,
+      "failure_events": 0,
+      "task_reassignments": 0
+    },
+    "last_step_events": []
+  },
+  "validation": {
+    "step_violation_count": 11,
+    "steps_with_violations": [
+      103,
+      241,
+      283,
+      423,
+      651,
+      701,
+      761,
+      970,
+      1049,
+      1059,
+      1173
+    ],
+    "flip_flop_count": 0,
+    "flip_flops": [],
+    "silent_requeue_count": 11,
+    "silent_requeues": [
+      {
+        "task_id": "hotspot-confirmation-18-26",
+        "created_step": 54,
+        "step": 104
+      },
+      {
+        "task_id": "baseline-service-31-1",
+        "created_step": 170,
+        "step": 242
+      },
+      {
+        "task_id": "baseline-service-33-8",
+        "created_step": 283,
+        "step": 284
+      },
+      {
+        "task_id": "hotspot-confirmation-12-29",
+        "created_step": 122,
+        "step": 424
+      },
+      {
+        "task_id": "hotspot-confirmation-35-28",
+        "created_step": 193,
+        "step": 652
+      },
+      {
+        "task_id": "hotspot-confirmation-11-25",
+        "created_step": 659,
+        "step": 702
+      },
+      {
+        "task_id": "hotspot-confirmation-22-30",
+        "created_step": 606,
+        "step": 762
+      },
+      {
+        "task_id": "baseline-service-11-9",
+        "created_step": 363,
+        "step": 971
+      },
+      {
+        "task_id": "hotspot-confirmation-17-38",
+        "created_step": 1035,
+        "step": 1050
+      },
+      {
+        "task_id": "hotspot-confirmation-23-35",
+        "created_step": 1051,
+        "step": 1060
+      },
+      {
+        "task_id": "hotspot-confirmation-34-36",
+        "created_step": 1160,
+        "step": 1174
+      }
+    ],
+    "taskless_return_recovery_loop_count": 0,
+    "taskless_return_recovery_loops": [],
+    "task_approach_same_side_recovery_loop_count": 0,
+    "task_approach_same_side_recovery_loops": [],
+    "task_approach_side_switch_without_recovery_count": 0,
+    "task_approach_side_switches_without_recovery": [],
+    "pseudo_progress_loop_count": 0,
+    "pseudo_progress_loops": [],
+    "has_errors": true
+  }
+}

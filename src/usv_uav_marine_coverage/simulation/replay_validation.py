@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from math import hypot
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,13 @@ _HOTSPOT_FLIPFLOP_ACTIVE_STATUSES = {"assigned", "in_progress"}
 _HOTSPOT_FLIPFLOP_RELEASE_STATUSES = {"pending", "requeued"}
 _RESUPPLY_OVERLAP_EPSILON = 1e-6
 _FLIP_FLOP_WINDOW_STEPS = 6
+_RETURN_RECOVERY_LOOP_WINDOW_STEPS = 48
+_RETURN_RECOVERY_LOOP_MIN_ENTRIES = 4
+_APPROACH_SIDE_LOOP_WINDOW_STEPS = 80
+_APPROACH_SIDE_LOOP_MIN_ENTRIES = 3
+_PSEUDO_PROGRESS_WINDOW_STEPS = 20
+_PSEUDO_PROGRESS_MAX_BBOX_DIAGONAL_M = 12.0
+_PSEUDO_PROGRESS_MIN_DISTANCE_GAIN_M = 6.0
 
 
 def load_step_snapshots_from_events_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -49,12 +57,35 @@ def summarize_replay_validation(step_snapshots: tuple[dict[str, Any], ...] | lis
         if int(validation.get("violation_count", 0)) > 0
     ]
     flip_flops = detect_task_status_flip_flops(step_snapshots)
+    silent_requeues = detect_requeued_without_release_reason(step_snapshots)
+    return_recovery_loops = detect_taskless_return_recovery_loops(step_snapshots)
+    approach_side_loops = detect_task_approach_same_side_recovery_loops(step_snapshots)
+    approach_side_switches = detect_task_approach_side_switches_without_recovery(step_snapshots)
+    pseudo_progress_loops = detect_pseudo_progress_loops(step_snapshots)
     return {
         "step_violation_count": sum(int(validation.get("violation_count", 0)) for validation in validations),
         "steps_with_violations": steps_with_violations,
         "flip_flop_count": len(flip_flops),
         "flip_flops": flip_flops,
-        "has_errors": bool(steps_with_violations or flip_flops),
+        "silent_requeue_count": len(silent_requeues),
+        "silent_requeues": silent_requeues,
+        "taskless_return_recovery_loop_count": len(return_recovery_loops),
+        "taskless_return_recovery_loops": return_recovery_loops,
+        "task_approach_same_side_recovery_loop_count": len(approach_side_loops),
+        "task_approach_same_side_recovery_loops": approach_side_loops,
+        "task_approach_side_switch_without_recovery_count": len(approach_side_switches),
+        "task_approach_side_switches_without_recovery": approach_side_switches,
+        "pseudo_progress_loop_count": len(pseudo_progress_loops),
+        "pseudo_progress_loops": pseudo_progress_loops,
+        "has_errors": bool(
+            steps_with_violations
+            or flip_flops
+            or silent_requeues
+            or return_recovery_loops
+            or approach_side_loops
+            or approach_side_switches
+            or pseudo_progress_loops
+        ),
     }
 
 
@@ -74,6 +105,9 @@ def validate_step_snapshot(step_snapshot: dict[str, Any]) -> list[dict[str, Any]
         for row in step_snapshot.get("task_layer", {}).get("task_assignments", [])
     }
     tasks = step_snapshot.get("task_layer", {}).get("tasks", [])
+    task_type_by_id = {
+        str(task["task_id"]): str(task["task_type"]) for task in tasks
+    }
     violations: list[dict[str, Any]] = []
 
     for task in tasks:
@@ -111,6 +145,22 @@ def validate_step_snapshot(step_snapshot: dict[str, Any]) -> list[dict[str, Any]
                     code="uav_resupply_missing_support",
                     task_id=task_id,
                     detail="uav_resupply task is active without support_agent_id",
+                )
+            )
+        if (
+            task_type == "uav_resupply"
+            and support_agent_id is None
+            and claim_status in {"claimed", "executing"}
+        ):
+            violations.append(
+                _build_violation(
+                    step,
+                    code="uav_resupply_supportless_claim",
+                    task_id=task_id,
+                    detail=(
+                        "uav_resupply task has no support_agent_id, but claim_status still "
+                        f"reports {claim_status}"
+                    ),
                 )
             )
 
@@ -299,8 +349,24 @@ def validate_step_snapshot(step_snapshot: dict[str, Any]) -> list[dict[str, Any]
                 detail=(
                     f"agent {agent_id} is still in {stage}, but its execution target is missing"
                 ),
+                )
             )
-        )
+    for execution_update in execution_updates.values():
+        active_task_id = execution_update.get("active_task_id")
+        active_side = execution_update.get("task_approach_active_side")
+        if (
+            active_task_id is not None
+            and active_side in {"left", "right"}
+            and task_type_by_id.get(str(active_task_id)) == "baseline_service"
+        ):
+            violations.append(
+                _build_violation(
+                    step,
+                    code="baseline_task_should_not_use_macro_approach",
+                    task_id=str(active_task_id),
+                    detail="baseline task entered macro left/right approach mode",
+                )
+            )
 
     return violations
 
@@ -351,6 +417,271 @@ def detect_task_status_flip_flops(
                     "owner_agent_id": first_owner,
                 }
             )
+    return findings
+
+
+def detect_requeued_without_release_reason(
+    step_snapshots: tuple[dict[str, Any], ...] | list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Detect assigned/in-progress tasks that become requeued without a same-step reason."""
+
+    findings: list[dict[str, Any]] = []
+    previous_by_task: dict[tuple[str, int], dict[str, Any]] = {}
+    for record in step_snapshots:
+        step = int(record["step"])
+        current_by_task: dict[tuple[str, int], dict[str, Any]] = {}
+        for task in record.get("task_layer", {}).get("tasks", []):
+            key = _task_episode_key(task)
+            current_by_task[key] = task
+            previous = previous_by_task.get(key)
+            if previous is None:
+                continue
+            if str(previous.get("status")) not in _ACTIVE_TASK_STATUSES:
+                continue
+            if str(task.get("status")) != "requeued":
+                continue
+            if task.get("release_reason") is not None:
+                continue
+            findings.append(
+                {
+                    "task_id": str(task["task_id"]),
+                    "created_step": key[1],
+                    "step": step,
+                }
+            )
+        previous_by_task = current_by_task
+    return findings
+
+
+def _task_episode_key(task: dict[str, Any]) -> tuple[str, int]:
+    created_step = task.get("created_step")
+    if created_step is None:
+        return (str(task["task_id"]), -1)
+    return (str(task["task_id"]), int(created_step))
+
+
+def detect_taskless_return_recovery_loops(
+    step_snapshots: tuple[dict[str, Any], ...] | list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Detect no-task return-to-patrol agents repeatedly entering recovery on one goal."""
+
+    entries_by_agent: dict[str, list[tuple[int, str]]] = {}
+    previous_stage_by_agent: dict[str, str | None] = {}
+    findings: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, str]] = set()
+
+    for record in step_snapshots:
+        step = int(record["step"])
+        for update in record.get("execution_layer", {}).get("tracking_updates", []):
+            agent_id = str(update["agent_id"])
+            stage = update.get("execution_stage")
+            active_task_id = update.get("active_task_id")
+            blocked_goal_signature = update.get("return_blocked_goal_signature") or update.get(
+                "blocked_goal_signature"
+            )
+            if stage == "recovery" and active_task_id is None:
+                previous_stage = previous_stage_by_agent.get(agent_id)
+                if previous_stage != "recovery" and blocked_goal_signature is not None:
+                    entries = entries_by_agent.setdefault(agent_id, [])
+                    entries.append((step, str(blocked_goal_signature)))
+                    entries[:] = [
+                        entry
+                        for entry in entries
+                        if step - entry[0] <= _RETURN_RECOVERY_LOOP_WINDOW_STEPS
+                    ]
+                    matching_entries = [
+                        entry for entry in entries if entry[1] == blocked_goal_signature
+                    ]
+                    if len(matching_entries) >= _RETURN_RECOVERY_LOOP_MIN_ENTRIES:
+                        finding_key = (
+                            agent_id,
+                            matching_entries[0][0],
+                            str(blocked_goal_signature),
+                        )
+                        if finding_key not in seen:
+                            seen.add(finding_key)
+                            findings.append(
+                                {
+                                    "agent_id": agent_id,
+                                    "blocked_goal_signature": str(blocked_goal_signature),
+                                    "step_start": matching_entries[0][0],
+                                    "step_end": step,
+                                    "entry_count": len(matching_entries),
+                                }
+                            )
+            previous_stage_by_agent[agent_id] = None if stage is None else str(stage)
+    return findings
+
+
+def detect_task_approach_same_side_recovery_loops(
+    step_snapshots: tuple[dict[str, Any], ...] | list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Detect task recovery loops that keep retrying the same approach side."""
+
+    entries_by_agent_task_side: dict[tuple[str, str, str], list[int]] = {}
+    previous_stage_by_agent: dict[str, str | None] = {}
+    findings: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, int]] = set()
+
+    for record in step_snapshots:
+        step = int(record["step"])
+        for update in record.get("execution_layer", {}).get("tracking_updates", []):
+            agent_id = str(update["agent_id"])
+            stage = None if update.get("execution_stage") is None else str(update["execution_stage"])
+            task_id = update.get("active_task_id")
+            approach_task_id = update.get("task_approach_task_id")
+            active_side = update.get("task_approach_active_side")
+            anchor_status = update.get("task_approach_anchor_status")
+            if (
+                stage == "recovery"
+                and task_id is not None
+                and approach_task_id == task_id
+                and active_side in {"left", "right"}
+                and anchor_status == "enroute_anchor"
+            ):
+                previous_stage = previous_stage_by_agent.get(agent_id)
+                if previous_stage != "recovery":
+                    key = (agent_id, str(task_id), str(active_side))
+                    entries = entries_by_agent_task_side.setdefault(key, [])
+                    entries.append(step)
+                    entries[:] = [
+                        entry_step
+                        for entry_step in entries
+                        if step - entry_step <= _APPROACH_SIDE_LOOP_WINDOW_STEPS
+                    ]
+                    if len(entries) >= _APPROACH_SIDE_LOOP_MIN_ENTRIES:
+                        finding_key = (agent_id, str(task_id), str(active_side), entries[0])
+                        if finding_key not in seen:
+                            seen.add(finding_key)
+                            findings.append(
+                                {
+                                    "agent_id": agent_id,
+                                    "task_id": str(task_id),
+                                    "approach_side": str(active_side),
+                                    "step_start": entries[0],
+                                    "step_end": step,
+                                    "entry_count": len(entries),
+                                }
+                            )
+            previous_stage_by_agent[agent_id] = stage
+    return findings
+
+
+def detect_task_approach_side_switches_without_recovery(
+    step_snapshots: tuple[dict[str, Any], ...] | list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Detect macro approach side switches that happen without a recovery transition."""
+
+    last_side_by_agent_task: dict[tuple[str, str], str] = {}
+    last_recovery_step_by_agent_task: dict[tuple[str, str], int] = {}
+    findings: list[dict[str, Any]] = []
+
+    for record in step_snapshots:
+        step = int(record["step"])
+        for update in record.get("execution_layer", {}).get("tracking_updates", []):
+            agent_id = str(update["agent_id"])
+            task_id = update.get("active_task_id")
+            approach_task_id = update.get("task_approach_task_id")
+            active_side = update.get("task_approach_active_side")
+            stage = update.get("execution_stage")
+            if task_id is None:
+                continue
+            key = (agent_id, str(task_id))
+            if approach_task_id != task_id:
+                last_side_by_agent_task.pop(key, None)
+                continue
+            if stage == "recovery":
+                last_recovery_step_by_agent_task[key] = step
+            if active_side not in {"left", "right"}:
+                last_side_by_agent_task.pop(key, None)
+                continue
+            previous_side = last_side_by_agent_task.get(key)
+            if previous_side is not None and previous_side != active_side:
+                last_recovery_step = last_recovery_step_by_agent_task.get(key, -1)
+                if last_recovery_step < step - 1:
+                    findings.append(
+                        {
+                            "agent_id": agent_id,
+                            "task_id": str(task_id),
+                            "from_side": previous_side,
+                            "to_side": str(active_side),
+                            "step": step,
+                        }
+                    )
+            last_side_by_agent_task[key] = str(active_side)
+    return findings
+
+
+def detect_pseudo_progress_loops(
+    step_snapshots: tuple[dict[str, Any], ...] | list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Detect moving-but-not-converging loops for one task/candidate pair."""
+
+    findings: list[dict[str, Any]] = []
+    active_windows: dict[tuple[str, str, int], list[tuple[int, float, float, float]]] = {}
+    emitted_keys: set[tuple[str, str, int, int]] = set()
+
+    for record in step_snapshots:
+        step = int(record["step"])
+        agent_states = {
+            str(agent["agent_id"]): agent for agent in record.get("agent_states", [])
+        }
+        for update in record.get("execution_layer", {}).get("tracking_updates", []):
+            agent_id = str(update["agent_id"])
+            task_id = update.get("active_task_id")
+            candidate_index = update.get("task_final_approach_candidate_index")
+            candidate_x = update.get("task_final_approach_candidate_x")
+            candidate_y = update.get("task_final_approach_candidate_y")
+            if (
+                update.get("execution_stage") != "go_to_task"
+                or task_id is None
+                or candidate_index is None
+                or candidate_x is None
+                or candidate_y is None
+            ):
+                continue
+            if int(update.get("stalled_steps") or 0) != 0:
+                continue
+            agent_state = agent_states.get(agent_id)
+            if agent_state is None or float(agent_state.get("speed_mps", 0.0)) <= 0.0:
+                continue
+            x = float(agent_state["x"])
+            y = float(agent_state["y"])
+            target_distance = hypot(float(candidate_x) - x, float(candidate_y) - y)
+            key = (agent_id, str(task_id), int(candidate_index))
+            window = active_windows.setdefault(key, [])
+            window.append((step, x, y, target_distance))
+            window[:] = [
+                entry
+                for entry in window
+                if step - entry[0] < _PSEUDO_PROGRESS_WINDOW_STEPS
+            ]
+            if len(window) < _PSEUDO_PROGRESS_WINDOW_STEPS:
+                continue
+            xs = [entry[1] for entry in window]
+            ys = [entry[2] for entry in window]
+            distances = [entry[3] for entry in window]
+            bbox_diagonal = hypot(max(xs) - min(xs), max(ys) - min(ys))
+            distance_gain = max(distances[0] - distances[-1], 0.0)
+            if (
+                bbox_diagonal <= _PSEUDO_PROGRESS_MAX_BBOX_DIAGONAL_M
+                and distance_gain < _PSEUDO_PROGRESS_MIN_DISTANCE_GAIN_M
+            ):
+                finding_key = (agent_id, str(task_id), int(candidate_index), window[0][0])
+                if finding_key in emitted_keys:
+                    continue
+                emitted_keys.add(finding_key)
+                findings.append(
+                    {
+                        "agent_id": agent_id,
+                        "task_id": str(task_id),
+                        "candidate_index": int(candidate_index),
+                        "step_start": window[0][0],
+                        "step_end": window[-1][0],
+                        "bbox_diagonal_m": round(bbox_diagonal, 3),
+                        "distance_gain_m": round(distance_gain, 3),
+                    }
+                )
     return findings
 
 

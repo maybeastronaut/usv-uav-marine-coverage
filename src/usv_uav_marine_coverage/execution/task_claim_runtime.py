@@ -78,6 +78,7 @@ def claim_task_for_execution(
     patrol_routes: dict[str, tuple[tuple[float, float], ...]],
     grid_map: GridMap,
     info_map: InformationMap | None,
+    step: int,
 ) -> TaskClaimDecision:
     """Project tasking assignments into a single execution-side claim decision."""
 

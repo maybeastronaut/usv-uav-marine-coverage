@@ -12,6 +12,9 @@ from usv_uav_marine_coverage.execution.execution_types import (
     ExecutionStage,
 )
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
+from usv_uav_marine_coverage.tasking.uav_support_policy import (
+    fixed_initial_escort_uav_id_for_usv,
+)
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
 
 USV_TASK_REPLAN_GOAL_TOLERANCE_M = 1.0
@@ -23,6 +26,8 @@ USV_MIN_PROGRESS_DISTANCE_M = 0.5
 USV_STALL_TRIGGER_STEPS = 3
 USV_COLLISION_CLEAR_TRIGGER_STEPS = 2
 USV_RECOVERY_COOLDOWN_STEPS = 8
+USV_LOW_PROGRESS_WINDOW_STEPS = 20
+USV_LOW_PROGRESS_MIN_NET_GAIN_M = 6.0
 
 
 @dataclass(frozen=True)
@@ -50,6 +55,7 @@ def reset_progress_state(progress_state: AgentProgressState) -> AgentProgressSta
         stalled_steps=0,
         last_progress_distance=0.0,
         last_target_distance=None,
+        recovery_attempts=0,
         recovery_step_index=0,
         cooldown_until_step=0,
         blocked_goal_signature=None,
@@ -61,8 +67,27 @@ def reset_progress_state(progress_state: AgentProgressState) -> AgentProgressSta
         task_final_approach_candidate_x=None,
         task_final_approach_candidate_y=None,
         task_final_approach_failed_candidate_indexes=(),
+        task_final_approach_attempted_candidate_indexes=(),
         task_final_approach_attempt_count=0,
         task_final_approach_status=None,
+        task_final_approach_low_progress_count=0,
+        task_approach_escalation_task_id=None,
+        task_approach_commit_until_step=0,
+        task_approach_task_id=None,
+        task_approach_anchor_left_x=None,
+        task_approach_anchor_left_y=None,
+        task_approach_anchor_right_x=None,
+        task_approach_anchor_right_y=None,
+        task_approach_active_side=None,
+        task_approach_failed_sides=(),
+        task_approach_anchor_status=None,
+        low_progress_task_id=None,
+        low_progress_candidate_index=-1,
+        low_progress_window_steps=0,
+        low_progress_baseline_distance=None,
+        low_progress_loop_active=False,
+        initial_escort_corridor_index=-1,
+        initial_escort_control_point_index=-1,
         released_task_id=None,
         released_task_created_step=None,
         released_task_step=-1,
@@ -88,6 +113,19 @@ def record_released_task_feedback(
     cleared_state = reset_progress_state(progress_state)
     return replace(
         cleared_state,
+        task_final_approach_backoff_task_id=None,
+        task_final_approach_backoff_until_step=0,
+        task_final_approach_hold_reset_count=0,
+        task_approach_escalation_task_id=None,
+        task_approach_commit_until_step=0,
+        task_approach_task_id=None,
+        task_approach_anchor_left_x=None,
+        task_approach_anchor_left_y=None,
+        task_approach_anchor_right_x=None,
+        task_approach_anchor_right_y=None,
+        task_approach_active_side=None,
+        task_approach_failed_sides=(),
+        task_approach_anchor_status=None,
         released_task_id=task_id,
         released_task_created_step=task_created_step,
         released_task_step=task_step,
@@ -149,6 +187,7 @@ def evaluate_usv_progress(
     target_y: float | None,
     path_cleared: bool,
     step: int,
+    enable_uav_usv_meeting: bool = True,
 ) -> ProgressEvaluation:
     """Evaluate one USV step and decide whether recovery should start."""
 
@@ -172,11 +211,47 @@ def evaluate_usv_progress(
     progress_distance = max(previous_distance - current_distance, 0.0)
     plan_cleared_without_motion = path_cleared and movement_distance < USV_STALL_DISTANCE_EPS_M
 
+    initial_fixed_escort_follow_active = (
+        enable_uav_usv_meeting
+        and active_task is None
+        and execution_state.stage in {ExecutionStage.PATROL, ExecutionStage.RETURN_TO_PATROL}
+        and fixed_initial_escort_uav_id_for_usv(
+            previous_agent.agent_id,
+            step=step,
+            agent_by_id={previous_agent.agent_id: previous_agent},
+        )
+        is not None
+    )
+    if initial_fixed_escort_follow_active:
+        return ProgressEvaluation(
+            progress_state=replace(
+                progress_state,
+                stalled_steps=0,
+                last_progress_distance=progress_distance,
+                last_target_distance=current_distance,
+                recovery_attempts=0,
+                recovery_step_index=0,
+                cooldown_until_step=0,
+                blocked_goal_signature=None,
+            ),
+            should_enter_recovery=False,
+            blocked_goal_signature=None,
+        )
+
     stalled_steps = 0
-    if (
-        movement_distance < USV_STALL_DISTANCE_EPS_M
-        and progress_distance < USV_MIN_PROGRESS_DISTANCE_M
-    ) or plan_cleared_without_motion:
+    fresh_taskless_return_target = (
+        execution_state.stage == ExecutionStage.RETURN_TO_PATROL
+        and active_task is None
+        and progress_state.last_target_distance is None
+        and progress_state.recovery_attempts == 0
+    )
+    if not fresh_taskless_return_target and (
+        (
+            movement_distance < USV_STALL_DISTANCE_EPS_M
+            and progress_distance < USV_MIN_PROGRESS_DISTANCE_M
+        )
+        or plan_cleared_without_motion
+    ):
         stalled_steps = progress_state.stalled_steps + 1
 
     next_progress_state = replace(
@@ -186,9 +261,78 @@ def evaluate_usv_progress(
         last_target_distance=current_distance,
     )
 
+    low_progress_loop_active = False
+    if execution_state.stage == ExecutionStage.GO_TO_TASK and active_task is not None:
+        candidate_index = -1
+        if progress_state.task_final_approach_task_id == active_task.task_id:
+            candidate_index = progress_state.task_final_approach_candidate_index
+        candidate_changed = (
+            progress_state.low_progress_task_id != active_task.task_id
+            or progress_state.low_progress_candidate_index != candidate_index
+        )
+        if candidate_changed or progress_state.low_progress_baseline_distance is None:
+            next_progress_state = replace(
+                next_progress_state,
+                low_progress_task_id=active_task.task_id,
+                low_progress_candidate_index=candidate_index,
+                low_progress_window_steps=1,
+                low_progress_baseline_distance=current_distance,
+                low_progress_loop_active=False,
+                task_final_approach_low_progress_count=(
+                    0
+                    if progress_state.low_progress_candidate_index != candidate_index
+                    else progress_state.task_final_approach_low_progress_count
+                ),
+            )
+        else:
+            baseline_distance = progress_state.low_progress_baseline_distance
+            window_steps = progress_state.low_progress_window_steps + 1
+            net_gain = 0.0 if baseline_distance is None else max(baseline_distance - current_distance, 0.0)
+            if (
+                progress_distance >= USV_MIN_PROGRESS_DISTANCE_M * 2.0
+                or net_gain >= USV_LOW_PROGRESS_MIN_NET_GAIN_M
+            ):
+                next_progress_state = replace(
+                    next_progress_state,
+                    low_progress_task_id=active_task.task_id,
+                    low_progress_candidate_index=candidate_index,
+                    low_progress_window_steps=1,
+                    low_progress_baseline_distance=current_distance,
+                    low_progress_loop_active=False,
+                )
+            else:
+                low_progress_loop_active = (
+                    movement_distance > USV_STALL_DISTANCE_EPS_M
+                    and window_steps >= USV_LOW_PROGRESS_WINDOW_STEPS
+                    and net_gain < USV_LOW_PROGRESS_MIN_NET_GAIN_M
+                )
+                next_progress_state = replace(
+                    next_progress_state,
+                    low_progress_task_id=active_task.task_id,
+                    low_progress_candidate_index=candidate_index,
+                    low_progress_window_steps=window_steps,
+                    low_progress_baseline_distance=baseline_distance,
+                    low_progress_loop_active=low_progress_loop_active,
+                    task_final_approach_low_progress_count=(
+                        progress_state.task_final_approach_low_progress_count + 1
+                        if low_progress_loop_active and not progress_state.low_progress_loop_active
+                        else progress_state.task_final_approach_low_progress_count
+                    ),
+                )
+    else:
+        next_progress_state = replace(
+            next_progress_state,
+            low_progress_task_id=None,
+            low_progress_candidate_index=-1,
+            low_progress_window_steps=0,
+            low_progress_baseline_distance=None,
+            low_progress_loop_active=False,
+            task_final_approach_low_progress_count=0,
+        )
+
     should_enter_recovery = stalled_steps >= USV_STALL_TRIGGER_STEPS or (
         plan_cleared_without_motion and stalled_steps >= USV_COLLISION_CLEAR_TRIGGER_STEPS
-    )
+    ) or low_progress_loop_active
     if not should_enter_recovery:
         if stalled_steps == 0:
             next_progress_state = replace(
@@ -203,11 +347,21 @@ def evaluate_usv_progress(
             blocked_goal_signature=None,
         )
 
-    blocked_goal_signature = build_goal_signature(
-        stage=execution_state.stage,
-        active_task=active_task,
-        execution_state=execution_state,
-    )
+    if (
+        execution_state.stage == ExecutionStage.RETURN_TO_PATROL
+        and target_x is not None
+        and target_y is not None
+    ):
+        blocked_goal_signature = (
+            f"return:{execution_state.patrol_waypoint_index}:"
+            f"{round(target_x, 1)}:{round(target_y, 1)}"
+        )
+    else:
+        blocked_goal_signature = build_goal_signature(
+            stage=execution_state.stage,
+            active_task=active_task,
+            execution_state=execution_state,
+        )
     next_progress_state = replace(
         next_progress_state,
         stalled_steps=0,

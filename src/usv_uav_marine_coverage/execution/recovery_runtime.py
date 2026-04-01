@@ -20,6 +20,7 @@ from usv_uav_marine_coverage.planning.traffic_cost import TrafficCostContext
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
 
 from .collision_guard import _apply_collision_guard_with_optional_wrecks
+from .basic_state_machine import transition_to_patrol
 from .execution_types import (
     AgentExecutionState,
     AgentProgressState,
@@ -28,13 +29,25 @@ from .execution_types import (
 )
 from .progress_feedback import record_released_task_feedback, reset_progress_state
 from .return_to_patrol_runtime import (
+    RETURN_BLOCKED_GOAL_COOLDOWN_STEPS,
     _build_local_patrol_return_transition,
     _build_planned_local_patrol_return_transition,
     _find_local_patrol_access,
+    _plan_return_to_patrol_path,
 )
 from .task_final_approach_runtime import (
+    TASK_FINAL_APPROACH_BACKOFF_STEPS,
+    activate_task_approach_escalation,
     advance_task_final_approach_after_failure,
     apply_task_final_approach_selection,
+    current_task_approach_anchor,
+    prepare_task_approach_state,
+    reset_task_final_approach_progress,
+    rotate_task_approach_side,
+    set_task_approach_anchor_status,
+    supports_task_approach_anchors,
+    task_approach_escalation_active,
+    task_final_approach_hold_reset_count,
     task_final_approach_release_cooldown_steps,
 )
 
@@ -43,6 +56,47 @@ USV_RECOVERY_REVERSE_DISTANCE_M = 18.0
 USV_RECOVERY_FORWARD_DISTANCE_M = 26.0
 USV_RECOVERY_CLEARANCE_IMPROVEMENT_M = 0.5
 BLOCKED_TASK_RELEASE_COOLDOWN_STEPS = 12
+RETURN_DIRECT_PATROL_REJOIN_THRESHOLD_M = 90.0
+
+
+def _preserve_active_task_approach_state(
+    progress_state: AgentProgressState,
+    *,
+    task_id: str,
+) -> AgentProgressState:
+    """Reset stall bookkeeping while keeping the active hotspot escalation state."""
+
+    next_state = reset_progress_state(progress_state)
+    if not task_approach_escalation_active(progress_state, task_id=task_id):
+        return next_state
+    return replace(
+        next_state,
+        task_approach_escalation_task_id=progress_state.task_approach_escalation_task_id,
+        task_approach_commit_until_step=progress_state.task_approach_commit_until_step,
+        task_approach_task_id=progress_state.task_approach_task_id,
+        task_approach_anchor_left_x=progress_state.task_approach_anchor_left_x,
+        task_approach_anchor_left_y=progress_state.task_approach_anchor_left_y,
+        task_approach_anchor_right_x=progress_state.task_approach_anchor_right_x,
+        task_approach_anchor_right_y=progress_state.task_approach_anchor_right_y,
+        task_approach_active_side=progress_state.task_approach_active_side,
+        task_approach_failed_sides=progress_state.task_approach_failed_sides,
+        task_approach_anchor_status=progress_state.task_approach_anchor_status,
+    )
+
+
+def _preserve_return_replan_feedback(
+    progress_state: AgentProgressState,
+    *,
+    step: int,
+) -> AgentProgressState:
+    """Carry one blocked return-goal cooldown across a successful recovery replan."""
+
+    return replace(
+        reset_progress_state(progress_state),
+        return_blocked_goal_signature=progress_state.blocked_goal_signature,
+        return_blocked_goal_until_step=step + RETURN_BLOCKED_GOAL_COOLDOWN_STEPS,
+        return_replan_generation=progress_state.return_replan_generation + 1,
+    )
 
 
 def _release_blocked_usv_task(
@@ -110,8 +164,6 @@ def _run_usv_recovery_step(
     traffic_cost_context: TrafficCostContext | None = None,
 ) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
     if agent.kind != "USV":
-        from .basic_state_machine import transition_to_patrol
-
         return (agent, transition_to_patrol(execution_state), reset_progress_state(progress_state))
 
     if progress_state.recovery_step_index == 0:
@@ -147,6 +199,123 @@ def _run_usv_recovery_step(
         and local_access is not None
     ):
         if (
+            progress_state.pre_recovery_stage == ExecutionStage.RETURN_TO_PATROL
+            and progress_state.pre_recovery_task_id is None
+            and progress_state.return_replan_generation >= 2
+            and hypot(
+                recovered_agent.x - local_access.access.access_x,
+                recovered_agent.y - local_access.access.access_y,
+            )
+            <= RETURN_DIRECT_PATROL_REJOIN_THRESHOLD_M
+        ):
+            return (
+                recovered_agent,
+                replace(
+                    transition_to_patrol(execution_state),
+                    patrol_waypoint_index=local_access.access.segment_end_index,
+                ),
+                reset_progress_state(progress_state),
+            )
+        approach_escalation_was_active = (
+            active_task is not None
+            and task_approach_escalation_active(progress_state, task_id=active_task.task_id)
+        )
+        if active_task is not None and supports_task_approach_anchors(
+            active_task,
+            progress_state=progress_state,
+        ):
+            progress_state = prepare_task_approach_state(
+                progress_state,
+                agent=recovered_agent,
+                task=active_task,
+                grid_map=grid_map,
+            )
+        elif (
+            active_task is not None
+            and active_task.task_type == TaskType.HOTSPOT_CONFIRMATION
+            and progress_state.pre_recovery_stage == ExecutionStage.GO_TO_TASK
+            and progress_state.pre_recovery_task_id == active_task.task_id
+        ):
+            progress_state = activate_task_approach_escalation(
+                reset_task_final_approach_progress(
+                    reset_progress_state(progress_state),
+                    task_id=active_task.task_id,
+                ),
+                agent=recovered_agent,
+                task=active_task,
+                grid_map=grid_map,
+                step=step,
+            )
+            approach_anchor = current_task_approach_anchor(
+                progress_state,
+                task_id=active_task.task_id,
+            )
+            goal_x = active_task.target_x if approach_anchor is None else approach_anchor[0]
+            goal_y = active_task.target_y if approach_anchor is None else approach_anchor[1]
+            return (
+                assign_agent_task(
+                    recovered_agent,
+                    TaskMode.CONFIRM,
+                    goal_x,
+                    goal_y,
+                ),
+                replace(
+                    execution_state,
+                    stage=ExecutionStage.GO_TO_TASK,
+                    active_task_id=active_task.task_id,
+                    active_plan=None,
+                    current_waypoint_index=0,
+                ),
+                progress_state,
+            )
+        if (
+            progress_state.pre_recovery_stage == ExecutionStage.GO_TO_TASK
+            and active_task is not None
+            and supports_task_approach_anchors(
+                active_task,
+                progress_state=progress_state,
+            )
+            and approach_escalation_was_active
+            and progress_state.task_approach_anchor_status != "final_approach"
+        ):
+            switched_progress_state = set_task_approach_anchor_status(
+                rotate_task_approach_side(
+                    reset_task_final_approach_progress(
+                        _preserve_active_task_approach_state(
+                            progress_state,
+                            task_id=active_task.task_id,
+                        ),
+                        task_id=active_task.task_id,
+                    ),
+                    task_id=active_task.task_id,
+                    step=step,
+                ),
+                task_id=active_task.task_id,
+                status="enroute_anchor",
+            )
+            approach_anchor = current_task_approach_anchor(
+                switched_progress_state,
+                task_id=active_task.task_id,
+            )
+            goal_x = active_task.target_x if approach_anchor is None else approach_anchor[0]
+            goal_y = active_task.target_y if approach_anchor is None else approach_anchor[1]
+            return (
+                assign_agent_task(
+                    recovered_agent,
+                    TaskMode.CONFIRM,
+                    goal_x,
+                    goal_y,
+                ),
+                replace(
+                    execution_state,
+                    stage=ExecutionStage.GO_TO_TASK,
+                    active_task_id=active_task.task_id,
+                    active_plan=None,
+                    current_waypoint_index=0,
+                ),
+                switched_progress_state,
+            )
+        if (
             progress_state.pre_recovery_stage == ExecutionStage.GO_TO_TASK
             and active_task is not None
             and active_task.task_type in {
@@ -154,12 +323,82 @@ def _run_usv_recovery_step(
                 TaskType.HOTSPOT_CONFIRMATION,
             }
         ):
-            next_selection, exhausted = advance_task_final_approach_after_failure(
+            next_selection, exhausted, hold_reset = advance_task_final_approach_after_failure(
                 recovered_agent,
                 task=active_task,
                 grid_map=grid_map,
                 progress_state=progress_state,
             )
+            if hold_reset:
+                hold_reset_count = (
+                    task_final_approach_hold_reset_count(
+                        progress_state,
+                        task_id=active_task.task_id,
+                    )
+                    + 1
+                )
+                downgraded_progress_state = reset_task_final_approach_progress(
+                    _preserve_active_task_approach_state(
+                        progress_state,
+                        task_id=active_task.task_id,
+                    ),
+                    task_id=active_task.task_id,
+                )
+                goal_x = active_task.target_x
+                goal_y = active_task.target_y
+                if active_task.task_type == TaskType.HOTSPOT_CONFIRMATION:
+                    if task_approach_escalation_active(
+                        progress_state,
+                        task_id=active_task.task_id,
+                    ):
+                        downgraded_progress_state = rotate_task_approach_side(
+                            downgraded_progress_state,
+                            task_id=active_task.task_id,
+                            step=step,
+                        )
+                    else:
+                        downgraded_progress_state = activate_task_approach_escalation(
+                            downgraded_progress_state,
+                            agent=recovered_agent,
+                            task=active_task,
+                            grid_map=grid_map,
+                            step=step,
+                        )
+                    downgraded_progress_state = set_task_approach_anchor_status(
+                        downgraded_progress_state,
+                        task_id=active_task.task_id,
+                        status="enroute_anchor",
+                    )
+                    approach_anchor = current_task_approach_anchor(
+                        downgraded_progress_state,
+                        task_id=active_task.task_id,
+                    )
+                    if approach_anchor is not None:
+                        goal_x, goal_y = approach_anchor
+                downgraded_progress_state = replace(
+                    downgraded_progress_state,
+                    task_final_approach_backoff_task_id=active_task.task_id,
+                    task_final_approach_backoff_until_step=(
+                        step + TASK_FINAL_APPROACH_BACKOFF_STEPS
+                    ),
+                    task_final_approach_hold_reset_count=hold_reset_count,
+                )
+                return (
+                    assign_agent_task(
+                        _stop_agent_motion(recovered_agent),
+                        TaskMode.CONFIRM,
+                        goal_x,
+                        goal_y,
+                    ),
+                    replace(
+                        execution_state,
+                        stage=ExecutionStage.GO_TO_TASK,
+                        active_task_id=active_task.task_id,
+                        active_plan=None,
+                        current_waypoint_index=0,
+                    ),
+                    downgraded_progress_state,
+                )
             if exhausted:
                 return _release_blocked_usv_task(
                     _stop_agent_motion(assign_agent_task(recovered_agent, TaskMode.IDLE)),
@@ -192,7 +431,11 @@ def _run_usv_recovery_step(
                     current_waypoint_index=0,
                 ),
                 apply_task_final_approach_selection(
-                    reset_progress_state(progress_state),
+                    set_task_approach_anchor_status(
+                        reset_progress_state(progress_state),
+                        task_id=active_task.task_id,
+                        status="final_approach",
+                    ),
                     selection=next_selection,
                 ),
             )
@@ -216,12 +459,22 @@ def _run_usv_recovery_step(
                 ),
                 reset_progress_state(progress_state),
             )
+        next_progress_state = reset_progress_state(progress_state)
+        if (
+            progress_state.pre_recovery_stage == ExecutionStage.RETURN_TO_PATROL
+            and progress_state.pre_recovery_task_id is None
+            and progress_state.blocked_goal_signature is not None
+        ):
+            next_progress_state = _preserve_return_replan_feedback(
+                progress_state,
+                step=step,
+            )
         return (
             recovered_agent,
             _build_planned_local_patrol_return_transition(
                 recovered_agent,
                 execution_state=execution_state,
-                progress_state=progress_state,
+                progress_state=next_progress_state,
                 patrol_route=patrol_route,
                 grid_map=grid_map,
                 obstacle_layout=obstacle_layout,
@@ -232,7 +485,7 @@ def _run_usv_recovery_step(
                 usv_path_planner=usv_path_planner,
                 traffic_cost_context=traffic_cost_context,
             ),
-            reset_progress_state(progress_state),
+            next_progress_state,
         )
 
     next_recovery_step_index = progress_state.recovery_step_index + 1
@@ -245,6 +498,71 @@ def _run_usv_recovery_step(
         )
 
     recovery_attempts = progress_state.recovery_attempts + 1
+    if (
+        progress_state.pre_recovery_stage == ExecutionStage.RETURN_TO_PATROL
+        and progress_state.pre_recovery_task_id is None
+    ):
+        local_access = _find_local_patrol_access(
+            recovered_agent,
+            patrol_route=patrol_route,
+            execution_state=execution_state,
+            progress_state=progress_state,
+            skip_blocked_goal=True,
+            grid_map=grid_map,
+            info_map=info_map,
+            task_records=task_records,
+        )
+        if (
+            local_access is not None
+            and progress_state.return_replan_generation >= 1
+            and hypot(
+                recovered_agent.x - local_access.access.access_x,
+                recovered_agent.y - local_access.access.access_y,
+            )
+            <= RETURN_DIRECT_PATROL_REJOIN_THRESHOLD_M
+        ):
+            return (
+                _stop_agent_motion(recovered_agent),
+                replace(
+                    transition_to_patrol(execution_state),
+                    patrol_waypoint_index=local_access.access.segment_end_index,
+                ),
+                reset_progress_state(progress_state),
+            )
+        return_progress_state = replace(
+            reset_progress_state(progress_state),
+            return_blocked_goal_signature=progress_state.blocked_goal_signature,
+            return_blocked_goal_until_step=step + RETURN_BLOCKED_GOAL_COOLDOWN_STEPS,
+            return_replan_generation=progress_state.return_replan_generation + 1,
+        )
+        transitioned_execution_state = _build_local_patrol_return_transition(
+            recovered_agent,
+            execution_state=execution_state,
+            progress_state=return_progress_state,
+            patrol_route=patrol_route,
+            grid_map=grid_map,
+            info_map=info_map,
+            task_records=task_records,
+            skip_blocked_goal=True,
+        )
+        return (
+            _stop_agent_motion(recovered_agent),
+            _plan_return_to_patrol_path(
+                recovered_agent,
+                execution_state=transitioned_execution_state,
+                progress_state=return_progress_state,
+                patrol_route=patrol_route,
+                grid_map=grid_map,
+                obstacle_layout=obstacle_layout,
+                info_map=info_map,
+                allow_patrol_index_advance=True,
+                step=step,
+                task_records=task_records,
+                usv_path_planner=usv_path_planner,
+                traffic_cost_context=traffic_cost_context,
+            ),
+            return_progress_state,
+        )
     if (
         progress_state.pre_recovery_stage == ExecutionStage.GO_TO_TASK
         and recovery_attempts >= USV_MAX_RECOVERY_ATTEMPTS

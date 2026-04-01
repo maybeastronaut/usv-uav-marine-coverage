@@ -66,6 +66,9 @@ from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskStatus, T
 from usv_uav_marine_coverage.tasking.uav_resupply_task_generator import (
     build_uav_resupply_tasks,
 )
+from usv_uav_marine_coverage.tasking.uav_support_policy import (
+    set_uav_usv_meeting_enabled,
+)
 
 from .experiment_config import ExperimentConfig, serialize_experiment_config
 from .simulation_agent_runtime import (
@@ -147,6 +150,8 @@ def build_simulation_replay(
     if effective_dt_seconds <= 0:
         raise ValueError("Simulation time step must be positive.")
 
+    set_uav_usv_meeting_enabled(effective_config.coordination.enable_uav_usv_meeting)
+
     target_map = sea_map or build_default_sea_map()
     layout = obstacle_layout or build_obstacle_layout(
         target_map,
@@ -207,6 +212,7 @@ def build_simulation_replay(
             detected_by_agent={},
             confirmations_by_agent={},
             task_decisions=(),
+            prior_task_records=(),
             prior_agents=agents,
             planned_agents=agents,
             task_records=task_records,
@@ -229,6 +235,7 @@ def build_simulation_replay(
                 
         reset_planner_metrics()
         events: list[str] = []
+        prior_task_records = task_records
         stale_before = set(_collect_stale_cells(info_map))
         advance_information_age(info_map, step)
         stale_after = set(_collect_stale_cells(info_map))
@@ -250,11 +257,12 @@ def build_simulation_replay(
             step=step,
             existing_tasks=task_records,
         )
-        task_records = build_uav_resupply_tasks(
-            agents,
-            step=step,
-            existing_tasks=task_records,
-        )
+        if effective_config.coordination.enable_uav_usv_meeting:
+            task_records = build_uav_resupply_tasks(
+                agents,
+                step=step,
+                existing_tasks=task_records,
+            )
         (
             agents,
             execution_states,
@@ -301,7 +309,7 @@ def build_simulation_replay(
             info_map=info_map,
         )
         _ACTIVE_TASK_STATUSES = {TaskStatus.PENDING, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}
-        if any(
+        if effective_config.coordination.enable_uav_usv_meeting and any(
             task.task_type == TaskType.UAV_RESUPPLY and task.status in _ACTIVE_TASK_STATUSES
             for task in task_records
         ):
@@ -326,6 +334,7 @@ def build_simulation_replay(
             usv_path_planner=effective_config.algorithms.usv_path_planner,
             uav_search_planner=effective_config.algorithms.uav_search_planner,
             execution_policy=effective_config.algorithms.execution_policy,
+            enable_uav_usv_meeting=effective_config.coordination.enable_uav_usv_meeting,
         )
         task_records = sync_task_statuses(
             task_records,
@@ -362,6 +371,7 @@ def build_simulation_replay(
                     observed_indices=observed_indices,
                     task_records=task_records,
                     execution_states=execution_states,
+                    info_map=info_map,
                 )
                 resolved = apply_usv_confirmation(
                     info_map,
@@ -421,6 +431,7 @@ def build_simulation_replay(
                 detected_by_agent=uav_checked_by_agent,
                 confirmations_by_agent=confirmations_by_agent,
                 task_decisions=task_decisions,
+                prior_task_records=prior_task_records,
                 prior_agents=previous_agents,
                 planned_agents=agents,
                 task_records=task_records,
@@ -471,23 +482,66 @@ def _confirmation_indices_for_usv(
     observed_indices: tuple[tuple[int, int], ...],
     task_records: tuple[TaskRecord, ...],
     execution_states: dict[str, AgentExecutionState],
+    info_map: InformationMap,
 ) -> tuple[tuple[int, int], ...]:
-    """Only allow hotspot confirmation while a USV is stopped on its assigned task."""
+    """Return hotspot cells that this USV can confirm on this step.
+
+    Assigned ON_TASK hotspot confirmation remains the primary path. In addition,
+    a healthy USV may opportunistically accumulate confirmation progress when it
+    physically observes a UAV-checked hotspot while already navigating the sea
+    surface for patrol, return, baseline, or another hotspot task.
+    """
 
     execution_state = execution_states.get(agent_id)
-    if execution_state is None or execution_state.stage != ExecutionStage.ON_TASK:
+    if execution_state is None:
+        return ()
+    if execution_state.stage not in {
+        ExecutionStage.PATROL,
+        ExecutionStage.RETURN_TO_PATROL,
+        ExecutionStage.GO_TO_TASK,
+        ExecutionStage.ON_TASK,
+    }:
+        return ()
+
+    observed_set = set(observed_indices)
+    if not observed_set:
         return ()
 
     active_task = find_task_by_id(task_records, execution_state.active_task_id)
-    if active_task is None or active_task.task_type != TaskType.HOTSPOT_CONFIRMATION:
-        return ()
-    if active_task.target_row is None or active_task.target_col is None:
-        return ()
+    confirmation_indices: list[tuple[int, int]] = []
+    if (
+        execution_state.stage == ExecutionStage.ON_TASK
+        and active_task is not None
+        and active_task.task_type == TaskType.HOTSPOT_CONFIRMATION
+        and active_task.target_row is not None
+        and active_task.target_col is not None
+    ):
+        target_index = (active_task.target_row, active_task.target_col)
+        if target_index in observed_set:
+            confirmation_indices.append(target_index)
 
-    target_index = (active_task.target_row, active_task.target_col)
-    if target_index not in observed_indices:
-        return ()
-    return (target_index,)
+    if active_task is not None and active_task.task_type == TaskType.UAV_RESUPPLY:
+        return tuple(confirmation_indices)
+
+    hotspot_indices = {
+        (task.target_row, task.target_col)
+        for task in task_records
+        if (
+            task.task_type == TaskType.HOTSPOT_CONFIRMATION
+            and task.target_row is not None
+            and task.target_col is not None
+            and task.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+        )
+    }
+    for index in observed_indices:
+        if index in confirmation_indices or index not in hotspot_indices:
+            continue
+        row, col = index
+        if info_map.state_at(row, col).known_hotspot_state != HotspotKnowledgeState.UAV_CHECKED:
+            continue
+        confirmation_indices.append(index)
+
+    return tuple(confirmation_indices)
 
 
 def _collect_stale_cells(info_map: InformationMap) -> tuple[tuple[int, int], ...]:

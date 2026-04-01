@@ -2,6 +2,12 @@
 
 这是当前 `USV` 规划层在 `return_to_patrol_stress` 场景下的最新正式数据集目录。
 
+## 实验定位
+
+- 标签：`待重建基线`
+- 当前判断：这组目前不适合继续当作纯 planner 特征说明。
+- 原因：这组最容易被 patrol / return / hotspot / blocked 的公共逻辑变化污染，当前差异已经很难稳定归因到 planner 本身。
+
 ## 数据集用途
 
 用于在更强调“任务完成后长距离回巡航、跨风险区往返与路径折返”的场景中，对比：
@@ -40,6 +46,8 @@
   - `astar_smoother_path_planner` 每个 seed 的逐事件日志
 - `astar_smoother_seed_*_summary.json`
   - `astar_smoother_path_planner` 每个 seed 的最终汇总
+- `representative_astar_seed_20260335.html`
+  - 当前主线代码下的代表性回放
 
 ## 复现实验
 
@@ -49,13 +57,26 @@ python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_d
 
 ## 结论
 
-- `astar_path_planner` 在这组最新 `3-seed` 对比里更偏向整体 coverage 与 freshness 维持：
-  - 平均 `valid_cells` 更高
-  - 平均 `stale_cells` 更低
-- `astar_smoother_path_planner` 在这组最新结果里更能体现“任务后回巡航链”的优势：
-  - 平均确认热点更多
-  - 平均 `blocked_calls` 更少
-  - 平均 `expanded_nodes` 更低
-- 这组最新场景说明：
-  - `return_to_patrol_stress` 适合放大 `astar + smoother` 在“热点完成与回巡航接入”上的优势
-  - 但它不会自动把整体 freshness 一起拉高
+以下结论基于当前主线代码于 `2026-04-01` 的重跑结果，不再沿用目录内历史 `comparison_summary.json` 的旧结论。
+
+- `astar_path_planner`
+  - 平均 `coverage_ratio = 0.8508`
+  - 平均 `valid_cells = 812.3`
+  - 平均 `stale_cells = 554.7`
+  - 平均 `confirmed_hotspots = 11.0`
+- `astar_smoother_path_planner`
+  - 平均 `coverage_ratio = 0.8444`
+  - 平均 `valid_cells = 764.0`
+  - 平均 `stale_cells = 603.0`
+  - 平均 `confirmed_hotspots = 15.0`
+
+这组当前结果说明：
+
+- `astar_smoother_path_planner` 现在只保住了“确认热点更多”这一项优势。
+- `astar_path_planner` 反而在 coverage、valid_cells、stale_cells、blocked 和 expanded_nodes 上整体更好。
+- 因此，当前主线下已经不能再说 `astar + smoother` 在这组 `return_to_patrol_stress` 实验里更优。
+
+## 代表性回放
+
+- 推荐查看：`representative_astar_seed_20260335.html`
+- 原因：这份回放最能代表当前主线下 `astar` 在回巡航压力场景里的整体优势。

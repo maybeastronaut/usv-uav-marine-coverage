@@ -13,11 +13,12 @@ from usv_uav_marine_coverage.agent_model import (
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState, ExecutionStage
 
 from ..task_types import TaskRecord, TaskType
+from ..uav_support_policy import select_preferred_operational_support_usv_id
 from .partition_types import TaskPartitionView
 
 WEIGHTED_VORONOI_BUSY_PENALTY = 140.0
 WEIGHTED_VORONOI_SUPPORT_PENALTY = 180.0
-WEIGHTED_VORONOI_SUPPORT_RATIO = 0.4
+WEIGHTED_VORONOI_SUPPORT_RATIO = 0.85
 WEIGHTED_VORONOI_SECONDARY_MARGIN = 120.0
 
 
@@ -122,6 +123,10 @@ def _protected_support_usv_ids(agents: tuple[AgentState, ...]) -> set[str]:
             continue
         if not needs_uav_resupply(agent) and energy_ratio(agent) > WEIGHTED_VORONOI_SUPPORT_RATIO:
             continue
-        nearest_usv = min(usvs, key=lambda usv: hypot(agent.x - usv.x, agent.y - usv.y))
-        protected.add(nearest_usv.agent_id)
+        preferred_support_usv_id = select_preferred_operational_support_usv_id(
+            agent,
+            usvs=usvs,
+        )
+        if preferred_support_usv_id is not None:
+            protected.add(preferred_support_usv_id)
     return protected

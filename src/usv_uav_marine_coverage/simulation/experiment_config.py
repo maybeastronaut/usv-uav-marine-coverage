@@ -23,6 +23,13 @@ class SimulationConfig:
 
 
 @dataclass(frozen=True)
+class CoordinationConfig:
+    """Optional cross-agent coordination toggles for one experiment."""
+
+    enable_uav_usv_meeting: bool = True
+
+
+@dataclass(frozen=True)
 class AlgorithmSelection:
     """Named baseline algorithms selected for one experiment."""
 
@@ -50,6 +57,7 @@ class ExperimentConfig:
 
     simulation: SimulationConfig
     scenario: ScenarioSelection
+    coordination: CoordinationConfig
     algorithms: AlgorithmSelection
     information_map: InformationMapConfig
     events: tuple[AgentDamageEvent, ...] = ()
@@ -72,6 +80,7 @@ def build_default_experiment_config(
     return ExperimentConfig(
         simulation=SimulationConfig(seed=seed, steps=steps, dt_seconds=dt_seconds),
         scenario=scenario,
+        coordination=CoordinationConfig(),
         algorithms=AlgorithmSelection(),
         information_map=preset.information_map,
         events=(),
@@ -96,6 +105,7 @@ def load_experiment_config(
     scenario = ScenarioSelection(name=scenario_name)
     preset = get_scenario_preset(scenario_name)
     algorithms_raw = _expect_table(raw, "algorithms")
+    coordination_raw = _read_optional_table(raw, "coordination")
     info_map_raw = _read_optional_table(raw, "information_map")
 
     config = ExperimentConfig(
@@ -105,6 +115,13 @@ def load_experiment_config(
             dt_seconds=_read_float(simulation_raw, "dt_seconds", minimum=0.0, strict_minimum=True),
         ),
         scenario=scenario,
+        coordination=CoordinationConfig(
+            enable_uav_usv_meeting=_read_optional_bool(
+                coordination_raw,
+                "enable_uav_usv_meeting",
+                default=CoordinationConfig().enable_uav_usv_meeting,
+            ),
+        ),
         algorithms=AlgorithmSelection(
             task_allocator=_read_str(algorithms_raw, "task_allocator"),
             zone_partition_policy=_read_optional_str(
@@ -171,6 +188,7 @@ def apply_experiment_overrides(
             dt_seconds=simulation.dt_seconds if dt_seconds is None else dt_seconds,
         ),
         scenario=config.scenario,
+        coordination=config.coordination,
         algorithms=config.algorithms,
         information_map=config.information_map,
         events=config.events,
@@ -183,6 +201,7 @@ def serialize_experiment_config(config: ExperimentConfig) -> dict[str, object]:
     payload = asdict(config)
     payload["algorithms"] = dict(payload["algorithms"])
     payload["scenario"] = dict(payload["scenario"])
+    payload["coordination"] = dict(payload["coordination"])
     payload["simulation"] = dict(payload["simulation"])
     payload["information_map"] = dict(payload["information_map"])
     payload["events"] = [
@@ -344,6 +363,15 @@ def _read_optional_str(raw: dict[str, object], key: str, *, default: str) -> str
         return default
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} must be a non-empty string when provided")
+    return value
+
+
+def _read_optional_bool(raw: dict[str, object], key: str, *, default: bool) -> bool:
+    value = raw.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be a boolean when provided")
     return value
 
 

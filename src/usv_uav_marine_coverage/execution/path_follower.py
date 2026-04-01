@@ -36,6 +36,7 @@ USV_LOCAL_AVOIDANCE_SAMPLE_SPACING_M = 4.0
 USV_LOCAL_AVOIDANCE_CLEARANCE_M = USV_COLLISION_CLEARANCE_M
 USV_LOCAL_MPC_NEIGHBOR_TRIGGER_M = USV_COLLISION_CLEARANCE_M * 4.0
 USV_LOCAL_MPC_EDGE_TRIGGER_M = USV_COLLISION_CLEARANCE_M * 2.5
+USV_GO_TO_TASK_FINAL_APPROACH_MPC_TRIGGER_M = 55.0
 
 
 def follow_path_step(
@@ -48,6 +49,7 @@ def follow_path_step(
 ) -> tuple[AgentState, AgentExecutionState, ExecutionOutcome]:
     """Advance one agent by one step along the currently active plan."""
 
+    execution_state = _clear_local_mpc_metrics(execution_state)
     plan = execution_state.active_plan
     if plan is None or not plan.waypoints:
         if execution_state.stage in {ExecutionStage.ON_TASK, ExecutionStage.ON_RECHARGE}:
@@ -166,6 +168,7 @@ def follow_path_step_with_local_mpc(
     )
     if not _should_activate_local_mpc(
         agent,
+        execution_state=execution_state,
         tracking_target=tracking_target,
         obstacle_layout=obstacle_layout,
         neighboring_agents=neighboring_agents,
@@ -210,6 +213,12 @@ def follow_path_step_with_local_mpc(
         advanced_agent = assign_agent_task(advanced_agent, mode)
 
     updated_state = replace(execution_state, current_waypoint_index=next_waypoint_index)
+    updated_state = replace(
+        updated_state,
+        last_local_mpc_predicted_terminal_distance_m=mpc_decision.predicted_terminal_distance_m,
+        last_local_mpc_predicted_min_clearance_m=mpc_decision.predicted_min_clearance_m,
+        last_local_mpc_candidate_count=mpc_decision.candidate_count,
+    )
     if next_waypoint_index >= len(plan.waypoints):
         return _finish_path_step(
             advanced_agent,
@@ -243,6 +252,7 @@ def _stop_and_clear_target(agent: AgentState, mode: TaskMode) -> AgentState:
 def _should_activate_local_mpc(
     agent: AgentState,
     *,
+    execution_state: AgentExecutionState,
     tracking_target: Waypoint,
     obstacle_layout: ObstacleLayout | None,
     neighboring_agents: tuple[AgentState, ...],
@@ -250,6 +260,25 @@ def _should_activate_local_mpc(
     grid_width: float | None,
     grid_height: float | None,
 ) -> bool:
+    plan = execution_state.active_plan
+    if (
+        execution_state.stage == ExecutionStage.GO_TO_TASK
+        and execution_state.active_task_id is not None
+        and plan is not None
+        and hypot(tracking_target.x - plan.goal_x, tracking_target.y - plan.goal_y)
+        > USV_GO_TO_TASK_FINAL_APPROACH_MPC_TRIGGER_M
+    ):
+        if obstacle_layout is None:
+            return False
+        return not _segment_is_clear(
+            agent.x,
+            agent.y,
+            tracking_target.x,
+            tracking_target.y,
+            obstacle_layout=obstacle_layout,
+            clearance_m=USV_LOCAL_AVOIDANCE_CLEARANCE_M,
+            wreck_zones=wreck_zones,
+        )
     if grid_width is not None and grid_height is not None:
         edge_clearance = min(agent.x, grid_width - agent.x, agent.y, grid_height - agent.y)
         if edge_clearance <= USV_LOCAL_MPC_EDGE_TRIGGER_M:
@@ -291,6 +320,15 @@ def _should_activate_local_mpc(
         ):
             return True
     return False
+
+
+def _clear_local_mpc_metrics(execution_state: AgentExecutionState) -> AgentExecutionState:
+    return replace(
+        execution_state,
+        last_local_mpc_predicted_terminal_distance_m=None,
+        last_local_mpc_predicted_min_clearance_m=None,
+        last_local_mpc_candidate_count=0,
+    )
 
 
 def _skip_reached_waypoints(agent: AgentState, execution_state: AgentExecutionState) -> int:

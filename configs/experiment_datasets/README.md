@@ -89,6 +89,18 @@
 python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_datasets/<dataset_name>/batch.toml
 ```
 
+当前约定进一步收敛为：
+
+- 每个正式数据集目录都尽量做成**自包含**
+- `batch.toml` 直接引用同目录下的配置副本
+- 不再依赖根目录里一长串跨目录相对引用
+
+这样做的好处是：
+
+- 打开一个数据集目录就能看到它实际用到的所有 `.toml`
+- 数据集迁移、归档、分享时不容易漏掉配置
+- 根目录 `configs/` 不必长期堆很多只服务某一个数据集的实验配置
+
 输出结果建议统一写到：
 
 - `outputs/experiments/<layer>/<dataset_name>/`

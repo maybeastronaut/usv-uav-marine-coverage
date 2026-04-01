@@ -65,8 +65,8 @@ class PlanningTestCase(unittest.TestCase):
         patrol_routes = build_default_usv_patrol_routes(sea_map)
 
         expected_zones = {
-            "USV-1": "Nearshore Zone",
-            "USV-2": "Offshore Zone",
+            "USV-1": "Offshore Zone",
+            "USV-2": "Nearshore Zone",
             "USV-3": "Offshore Zone",
         }
         for agent_id, expected_zone in expected_zones.items():
@@ -76,19 +76,34 @@ class PlanningTestCase(unittest.TestCase):
                     self.assertEqual(cell.zone_name, expected_zone)
                     self.assertFalse(cell.has_obstacle)
 
-    def test_usv_1_nearshore_patrol_route_uses_multi_lane_coverage_pattern(self) -> None:
+    def test_usv_2_nearshore_patrol_route_uses_multi_lane_coverage_pattern(self) -> None:
         sea_map = build_default_sea_map()
         patrol_routes = build_default_usv_patrol_routes(sea_map)
 
-        usv_1_route = patrol_routes["USV-1"]
-        unique_xs = {round(x, 3) for x, _ in usv_1_route}
-        unique_ys = {round(y, 3) for _, y in usv_1_route}
+        usv_2_route = patrol_routes["USV-2"]
+        unique_xs = {round(x, 3) for x, _ in usv_2_route}
+        unique_ys = {round(y, 3) for _, y in usv_2_route}
 
-        self.assertGreater(len(usv_1_route), 4)
+        self.assertGreater(len(usv_2_route), 4)
         self.assertEqual(unique_xs, {45.0, 210.0})
         self.assertGreater(len(unique_ys), 2)
         self.assertGreaterEqual(min(unique_xs), sea_map.nearshore.x_start + 45.0)
         self.assertLessEqual(max(unique_xs), sea_map.nearshore.x_end - 40.0)
+
+    def test_usv_1_and_usv_3_patrol_routes_stage_into_nearest_offshore_corridors(
+        self,
+    ) -> None:
+        sea_map = build_default_sea_map()
+        patrol_routes = build_default_usv_patrol_routes(sea_map)
+
+        usv_1_ys = {round(y, 3) for _, y in patrol_routes["USV-1"]}
+        usv_3_ys = {round(y, 3) for _, y in patrol_routes["USV-3"]}
+
+        self.assertLessEqual(max(usv_1_ys), 420.0)
+        self.assertGreaterEqual(min(usv_1_ys), 120.0)
+        self.assertLessEqual(max(usv_3_ys), 880.0)
+        self.assertGreaterEqual(min(usv_3_ys), 580.0)
+        self.assertLess(max(usv_1_ys), min(usv_3_ys))
 
     def test_progressive_patrol_access_prefers_forward_segment_for_dense_route(self) -> None:
         patrol_route = (

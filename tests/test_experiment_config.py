@@ -11,6 +11,36 @@ from usv_uav_marine_coverage.simulation.experiment_config import (
 
 
 class ExperimentConfigTestCase(unittest.TestCase):
+    def test_load_experiment_config_reads_coordination_toggle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "coordination_toggle.toml"
+            path.write_text(
+                "\n".join(
+                    [
+                        "[simulation]",
+                        "steps = 10",
+                        "dt_seconds = 1.0",
+                        "",
+                        "[scenario]",
+                        'name = "baseline_patrol"',
+                        "",
+                        "[coordination]",
+                        "enable_uav_usv_meeting = false",
+                        "",
+                        "[algorithms]",
+                        'task_allocator = "basic_task_allocator"',
+                        'usv_path_planner = "astar_path_planner"',
+                        'uav_search_planner = "uav_lawnmower_planner"',
+                        'execution_policy = "phase_one_execution"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_experiment_config(path)
+
+        self.assertFalse(config.coordination.enable_uav_usv_meeting)
+
     def test_load_experiment_config_reads_toml_sections(self) -> None:
         config = load_experiment_config(
             Path("configs/phase_one_baseline.toml"),
@@ -420,6 +450,7 @@ nearshore_information_timeout_steps = 800
 
         self.assertIn("simulation", payload)
         self.assertIn("scenario", payload)
+        self.assertIn("coordination", payload)
         self.assertIn("algorithms", payload)
         self.assertIn("information_map", payload)
         self.assertEqual(payload["algorithms"]["task_allocator"], "basic_task_allocator")

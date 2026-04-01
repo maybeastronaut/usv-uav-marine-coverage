@@ -18,64 +18,26 @@ module execution, and future tests.
 |-- BUGFIX.md
 |-- README.md
 |-- configs/
-|   |-- cost_aware_allocator.toml
-|   |-- aoi_energy_auction_allocator.toml
-|   |-- distributed_cbba_allocator.toml
-|   |-- distributed_overlap_pressure_cost_aware_weighted_voronoi.toml
-|   |-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi.toml
-|   |-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2.toml
-|   |-- distributed_overlap_pressure_rho_weighted_voronoi.toml
-|   |-- rho_task_allocator.toml
-|   |-- return_to_patrol_stress_cost_aware.toml
-|   |-- return_to_patrol_stress_cost_aware_astar_smoother.toml
-|   |-- offshore_hotspot_pressure_cost_aware.toml
-|   |-- offshore_hotspot_pressure_cost_aware_soft_partition.toml
-|   |-- offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml
-|   |-- offshore_hotspot_pressure_cost_aware_failure_event.toml
-|   |-- offshore_hotspot_pressure_aoi_energy_weighted_voronoi.toml
-|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi.toml
-|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync5.toml
-|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync10.toml
-|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_range350.toml
-|   |-- offshore_hotspot_pressure_rho_weighted_voronoi.toml
-|   |-- offshore_hotspot_pressure_cost_aware_astar_smoother.toml
-|   |-- cost_aware_uav_persistent_multi_region.toml
-|   |-- astar_smoother_baseline.toml
-|   |-- hybrid_astar_baseline.toml
-|   |-- local_mpc_execution.toml
+|   |-- phase_one_baseline.toml
+|   |-- baseline_patrol_rho_failure_hotspot_first_soft_partition.toml
+|   |-- baseline_patrol_rho_failure_hotspot_first_soft_partition_usv1_failure.toml
 |   |-- experiment_datasets/
 |   |   |-- README.md
 |   |   |-- partition_policy_offshore_hotspot_pressure_3seed_1200/
 |   |   |   |-- README.md
 |   |   |   |-- batch.toml
-|   |   |   `-- ...
-|   |   |-- distributed_cbba_bundle2_memory_compare_distributed_overlap_pressure_3seed_1200/
-|   |   |   |-- README.md
-|   |   |   |-- batch.toml
-|   |   |   `-- ...
+|   |   |   |-- offshore_hotspot_pressure_cost_aware.toml
+|   |   |   |-- offshore_hotspot_pressure_cost_aware_soft_partition.toml
+|   |   |   `-- offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml
 |   |   |-- distributed_cbba_bundle_compare_distributed_overlap_pressure_3seed_1200/
 |   |   |   |-- README.md
 |   |   |   |-- batch.toml
+|   |   |   |-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi.toml
+|   |   |   `-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2.toml
 |   |   |   `-- ...
-|   |   |-- task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/
-|   |   |   |-- README.md
-|   |   |   |-- batch.toml
-|   |   |   `-- ...
-|   |   |-- task_allocator_offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_1200/
-|   |   |   |-- README.md
-|   |   |   |-- batch.toml
-|   |   |   `-- ...
-|   |   |-- usv_planner_offshore_hotspot_pressure_3seed_800/
-|   |   |   |-- README.md
-|   |   |   |-- batch.toml
-|   |   |   `-- ...
-|   |   |-- usv_planner_return_to_patrol_stress_3seed_1200/
-|   |   |   |-- README.md
-|   |   |   |-- batch.toml
-|   |   |   `-- ...
+|   |   `-- ...
 |   |-- uav_multi_region_coverage.toml
-|   |-- uav_persistent_multi_region_coverage.toml
-|   `-- phase_one_baseline.toml
+|   `-- uav_persistent_multi_region_coverage.toml
 |-- docx/
 |   |-- current_system_flow.md
 |   |-- discussion_notes.md
@@ -188,37 +150,9 @@ module execution, and future tests.
 - `AGENTS.md`: Codex 在本仓库中的开发约束、编码规范、文档同步规则和协作方式说明。
 - `BUGFIX.md`: 基于最新仿真输出日志整理的已确认缺陷记录，包含异常现象、step 范围和当前判断。
 - `README.md`: 项目总览、环境配置方式、运行方式、测试方式和工程结构说明。
-- `configs/phase_one_baseline.toml`: 当前第一阶段 baseline 的统一实验配置样例，集中定义仿真步数、随机种子、算法选择和信息地图参数。
-- `configs/cost_aware_allocator.toml`: 当前第一版 `cost-aware centralized allocator` 的实验配置样例，用于与 baseline 任务分配器做直接对比。
-- `configs/aoi_energy_auction_allocator.toml`: 当前第一版 `AoI-Energy Auction allocator` 的实验配置样例，用于在固定 `UAV/USV` planner 下与现有任务层算法做单因素对比。
-- `configs/distributed_cbba_allocator.toml`: 当前第一版分布式 `CBBA-lite allocator` 的实验配置样例，用于在固定 `weighted_voronoi` 分区基线下验证分布式任务分配主路径。
-- `configs/distributed_overlap_pressure_cost_aware_weighted_voronoi.toml`: 当前 `distributed_overlap_pressure` 下固定 `cost_aware`、切换 `weighted_voronoi_partition_policy` 的分布式协商放大场景配置样例。
-- `configs/distributed_overlap_pressure_distributed_cbba_weighted_voronoi.toml`: 当前 `distributed_overlap_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy` 的分布式协商放大场景配置样例。
-- `configs/distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2.toml`: 当前 `distributed_overlap_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy`，并将分布式 CBBA greedy bundle 长度显式切到 `2` 的配置样例。
-- `configs/distributed_overlap_pressure_rho_weighted_voronoi.toml`: 当前 `distributed_overlap_pressure` 下固定 `RHO`、切换 `weighted_voronoi_partition_policy` 的分布式协商放大场景配置样例。
-- `configs/rho_task_allocator.toml`: 当前第一版 `RHO (Rolling Horizon Optimization) allocator` 的实验配置样例，用于在固定 `UAV/USV` planner 下验证滚动任务价值分配主路径。
-- `configs/offshore_hotspot_pressure_cost_aware.toml`: 当前 `offshore_hotspot_pressure` 单种子任务层对比用的 `cost-aware` 任务分配配置样例。
-- `configs/offshore_hotspot_pressure_cost_aware_soft_partition.toml`: 当前 `offshore_hotspot_pressure` 下固定 `cost_aware`、切换 `soft_partition_policy` 的分区层对比配置样例。
-- `configs/offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml`: 当前 `offshore_hotspot_pressure` 下固定 `cost_aware`、切换 `weighted_voronoi_partition_policy` 的分区层对比配置样例。
-- `configs/offshore_hotspot_pressure_cost_aware_agent_failure.toml`: 当前第一版动态事件/受损重规划的“单 `USV` 失效”配置样例，用于验证 `agent_failure` 触发后的任务释放与后续接管。
-- `configs/offshore_hotspot_pressure_cost_aware_speed_degradation.toml`: 当前第一版动态事件/受损重规划的“单 `USV` 降速”配置样例，用于验证 `speed_degradation` 触发后的路径执行与能力退化。
-- `configs/offshore_hotspot_pressure_cost_aware_failure_event.toml`: 当前第一版动态事件/受损重规划配置样例，用于验证 `USV` 中途 `agent_failure` 与 `speed_degradation` 后的系统联动重规划。
-- `configs/offshore_hotspot_pressure_aoi_energy_weighted_voronoi.toml`: 当前 `offshore_hotspot_pressure` 下固定 `AEA`、切换 `weighted_voronoi_partition_policy` 的分区层测试配置样例。
-- `configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi.toml`: 当前 `offshore_hotspot_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy` 的分布式任务层测试配置样例。
-- `configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync5.toml`: 当前 `offshore_hotspot_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy`，并把 winner/bid 同步频率限制为每 `5` 步一次的通信约束配置样例。
-- `configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync10.toml`: 当前 `offshore_hotspot_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy`，并把 winner/bid 同步频率限制为每 `10` 步一次的通信约束配置样例。
-- `configs/offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_range350.toml`: 当前 `offshore_hotspot_pressure` 下固定 `distributed_cbba_allocator`、切换 `weighted_voronoi_partition_policy`，并把 `USV` 间广播范围限制为 `350m` 的有限广播范围配置样例。
-- `configs/offshore_hotspot_pressure_rho_weighted_voronoi.toml`: 当前 `offshore_hotspot_pressure` 下固定 `RHO`、切换 `weighted_voronoi_partition_policy` 的分区层测试配置样例。
+- `configs/phase_one_baseline.toml`: 当前保留的基础单次运行入口配置，适合快速 smoke run。
 - `configs/baseline_patrol_rho_failure_hotspot_first_soft_partition.toml`: 普通压力 `baseline_patrol` 下的失效应急配置样例；平时仍走 `RHO` 主线，但在 `agent_failure` 后启用热点焦点簇优先的 failure-triggered soft partition，只要热点 backlog 仍在就压住 `baseline_service`，并优先让剩余 `USV` 围绕当前外海热点焦点簇协同清理。
-- `configs/offshore_hotspot_pressure_cost_aware_astar_smoother.toml`: 当前 `offshore_hotspot_pressure` 下切换 `USV astar + smoother` 的实验配置样例。
-- `configs/return_to_patrol_stress_cost_aware.toml`: 当前 `return_to_patrol_stress` 单种子 `USV planner` 对比用的 `cost-aware + astar` 配置样例。
-- `configs/return_to_patrol_stress_cost_aware_astar_smoother.toml`: 当前 `return_to_patrol_stress` 单种子 `USV planner` 对比用的 `cost-aware + astar + smoother` 配置样例。
-- `configs/cost_aware_uav_persistent_multi_region.toml`: 当前固定 `cost_aware` 任务层、切换第二版 `UAV persistent multi-region` 规划器的组合实验配置样例。
-- `configs/astar_smoother_baseline.toml`: 当前切换 `USV A* + smoother` 规划器的基础实验配置样例，用于和默认 `astar_path_planner` 做单因素对比。
-- `configs/hybrid_astar_baseline.toml`: 当前切换 `USV hybrid A* + smoother` 规划器的基础实验配置样例，用于和默认 `astar_path_planner` 做单因素对比。
-- `configs/local_mpc_execution.toml`: 当前第一版局部 `MPC` 执行策略配置样例，用于在不改任务层和全局规划层的前提下验证 `USV` 的局部实时避障。
-- `configs/uav_multi_region_coverage.toml`: 当前第一版 `UAV multi-region coverage planner` 的实验配置样例，用于与固定割草机搜索 baseline 做直接对比。
-- `configs/uav_persistent_multi_region_coverage.toml`: 当前第二版 `UAV persistent multi-region coverage planner` 的实验配置样例，用于验证事件触发重排与区域承诺式覆盖。
+- `configs/baseline_patrol_rho_failure_hotspot_first_soft_partition_usv1_failure.toml`: 与上面同一主线配置的派生版本，只把 `step 600` 的失效对象改成 `USV-1`，便于直接对比失效对象差异。
 - `configs/experiment_datasets/README.md`: 实验数据集目录说明，约定如何组织“能突出算法特点”的可复用对比数据集。
 - `configs/experiment_datasets/usv_planner_offshore_hotspot_pressure_3seed_800/`: 当前 `USV` 规划层对比用的正式数据集目录，固定 `offshore_hotspot_pressure` 场景、`3` 个随机种子和 `800 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
 - `configs/experiment_datasets/usv_planner_return_to_patrol_stress_3seed_1200/`: 当前 `USV` 规划层在 `return_to_patrol_stress` 场景下的最新正式数据集目录，固定最新 `3` 个随机种子和 `1200 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
@@ -227,6 +161,12 @@ module execution, and future tests.
 - `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_1200/`: 当前正式“中心化 vs 分布式任务分配”对比数据集目录，固定 `weighted_voronoi` 分区基线、`offshore_hotspot_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `cost_aware / RHO / distributed_CBBA(bundle=2)`。
 - `configs/experiment_datasets/distributed_cbba_bundle_compare_distributed_overlap_pressure_3seed_1200/`: 当前正式分布式 `CBBA-lite` 内部结构对比数据集目录，固定 `distributed_overlap_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `bundle = 1 / 2`。
 - `configs/experiment_datasets/distributed_cbba_bundle2_memory_compare_distributed_overlap_pressure_3seed_1200/`: 当前正式 `distributed_CBBA(bundle=2)` 局部 winner 记忆滞后验证数据集目录，固定 `distributed_overlap_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `winner_memory_ttl = 0 / 5 / 10`。
+- 当前正式 `experiment_datasets/*` 目录已改成**自包含配置**：
+  - `batch.toml` 直接引用同目录下的 `.toml`
+  - 迁移或归档单个数据集目录时，不再依赖根目录中的跨目录相对引用
+- 当前根目录 `configs/` 已收敛为：
+  - 仅保留少量手动单跑入口
+  - 主要实验配置统一下沉到各自数据集目录
 - `docx/current_system_flow.md`: 基于当前已有代码整理的系统实际流程说明文档。
 - `docx/discussion_notes.md`: 讨论阶段确认的建模方案、状态标记和后续实现依据。
 - `docx/execution_regression_checklist.md`: 执行层 `1200 step` 长回放回归检查清单，固定记录关键 step、预期行为和推荐复跑方式，用于后续执行层改动后的人工回归。

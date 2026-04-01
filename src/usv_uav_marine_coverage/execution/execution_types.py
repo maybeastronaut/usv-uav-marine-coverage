@@ -60,6 +60,9 @@ class AgentExecutionState:
     pre_yield_stage: ExecutionStage | None = None
     last_return_plan_step: int = -1
     last_patrol_plan_step: int = -1
+    last_local_mpc_predicted_terminal_distance_m: float | None = None
+    last_local_mpc_predicted_min_clearance_m: float | None = None
+    last_local_mpc_candidate_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,9 @@ class AgentProgressState:
     recovery_step_index: int = 0
     cooldown_until_step: int = 0
     blocked_goal_signature: str | None = None
+    return_blocked_goal_signature: str | None = None
+    return_blocked_goal_until_step: int = 0
+    return_replan_generation: int = 0
     pre_recovery_stage: ExecutionStage | None = None
     pre_recovery_task_id: str | None = None
     task_final_approach_task_id: str | None = None
@@ -92,8 +98,30 @@ class AgentProgressState:
     task_final_approach_candidate_x: float | None = None
     task_final_approach_candidate_y: float | None = None
     task_final_approach_failed_candidate_indexes: tuple[int, ...] = ()
+    task_final_approach_attempted_candidate_indexes: tuple[int, ...] = ()
     task_final_approach_attempt_count: int = 0
     task_final_approach_status: str | None = None
+    task_final_approach_backoff_task_id: str | None = None
+    task_final_approach_backoff_until_step: int = 0
+    task_final_approach_hold_reset_count: int = 0
+    task_final_approach_low_progress_count: int = 0
+    task_approach_escalation_task_id: str | None = None
+    task_approach_commit_until_step: int = 0
+    task_approach_task_id: str | None = None
+    task_approach_anchor_left_x: float | None = None
+    task_approach_anchor_left_y: float | None = None
+    task_approach_anchor_right_x: float | None = None
+    task_approach_anchor_right_y: float | None = None
+    task_approach_active_side: str | None = None
+    task_approach_failed_sides: tuple[str, ...] = ()
+    task_approach_anchor_status: str | None = None
+    low_progress_task_id: str | None = None
+    low_progress_candidate_index: int = -1
+    low_progress_window_steps: int = 0
+    low_progress_baseline_distance: float | None = None
+    low_progress_loop_active: bool = False
+    initial_escort_corridor_index: int = -1
+    initial_escort_control_point_index: int = -1
     released_task_id: str | None = None
     released_task_created_step: int | None = None
     released_task_step: int = -1

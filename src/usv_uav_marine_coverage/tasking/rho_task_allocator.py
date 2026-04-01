@@ -11,7 +11,10 @@ from usv_uav_marine_coverage.agent_model import (
     is_operational_agent,
     needs_uav_resupply,
 )
-from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState
+from usv_uav_marine_coverage.execution.execution_types import (
+    AgentExecutionState,
+    ExecutionStage,
+)
 from usv_uav_marine_coverage.grid import GridMap
 from usv_uav_marine_coverage.information_map import InformationMap
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
@@ -37,7 +40,16 @@ from .partitioning.failure_hotspot_soft_partition import (
     should_suppress_baseline_after_failure,
     should_suppress_non_focus_hotspot_after_failure,
 )
+from .partitioning.regional_recovery_debt import (
+    RegionalRecoveryDebt,
+    build_regional_recovery_debt,
+)
 from .task_types import TaskAssignment, TaskRecord, TaskStatus, TaskType
+from .uav_support_policy import (
+    INITIAL_FIXED_BASE_USV_ID,
+    is_initial_fixed_escort_phase,
+    is_reserved_for_initial_escort,
+)
 
 HOTSPOT_BASE_VALUE = 84.0
 BASELINE_BASE_VALUE = 44.0
@@ -50,6 +62,8 @@ MAX_DELAY_PENALTY = 26.0
 LOW_ENERGY_SUPPORT_RATIO = 0.35
 LOW_ENERGY_SUPPORT_PENALTY = 18.0
 AGENT_TASK_BLOCKED_COOLDOWN_STEPS = 12
+REGIONAL_RECOVERY_BONUS_SCALE = 0.45
+REGIONAL_RECOVERY_BONUS_CAP = 55.0
 
 
 @dataclass(frozen=True)
@@ -65,6 +79,10 @@ class RhoCandidate:
     delay_penalty: float
     energy_penalty: float
     failure_recovery_bonus: float
+    regional_recovery_bonus: float
+    regional_recovery_score: float
+    regional_recovery_stale_cells: int
+    regional_recovery_backlog_hotspots: int
     partition_reason: str
 
 
@@ -134,6 +152,23 @@ def allocate_tasks_with_rho_policy(
             decisions.append(decision)
             continue
 
+        keep_existing_assignment = can_keep_existing_assignment(
+            task,
+            agent_by_id=agent_by_id,
+            execution_states=execution_states,
+        )
+        existing_execution_state = (
+            None
+            if task.assigned_agent_id is None
+            else execution_states.get(task.assigned_agent_id)
+        )
+        keep_existing_recovery_assignment = (
+            task.assigned_agent_id is not None
+            and existing_execution_state is not None
+            and existing_execution_state.stage == ExecutionStage.RECOVERY
+            and existing_execution_state.active_task_id == task.task_id
+        )
+
         if zone_partition_policy == "failure_triggered_hotspot_first_soft_partition_policy" and (
             should_suppress_baseline_after_failure(
                 task,
@@ -144,10 +179,11 @@ def allocate_tasks_with_rho_policy(
                 task,
                 tasks=scheduled_tasks,
                 agents=agents,
+                info_map=info_map,
                 step=step,
             )
         ):
-            if task.assigned_agent_id is not None:
+            if task.assigned_agent_id is not None and not keep_existing_recovery_assignment:
                 released_task_ids.add(task.task_id)
                 force_available_agent_ids.add(task.assigned_agent_id)
                 task = _requeue_suppressed_task(
@@ -162,11 +198,7 @@ def allocate_tasks_with_rho_policy(
                     assigned_agent_id=None,
                 )
 
-        if can_keep_existing_assignment(
-            task,
-            agent_by_id=agent_by_id,
-            execution_states=execution_states,
-        ):
+        if keep_existing_assignment and task.assigned_agent_id is not None:
             selected_agent = agent_by_id[task.assigned_agent_id or ""]
             if task.task_type == TaskType.UAV_RESUPPLY:
                 task = stabilize_uav_resupply_task(task, selected_uav=selected_agent)
@@ -334,6 +366,10 @@ def _allocate_one_priority_layer(
                         "delay_penalty": round(candidate.delay_penalty, 3),
                         "energy_penalty": round(candidate.energy_penalty, 3),
                         "failure_recovery_bonus": round(candidate.failure_recovery_bonus, 3),
+                        "regional_recovery_bonus": round(candidate.regional_recovery_bonus, 3),
+                        "regional_recovery_score": round(candidate.regional_recovery_score, 3),
+                        "regional_recovery_stale_cells": candidate.regional_recovery_stale_cells,
+                        "regional_recovery_backlog_hotspots": candidate.regional_recovery_backlog_hotspots,
                         "partition_reason": candidate.partition_reason,
                     }
                     for candidate in candidate_pairs
@@ -359,6 +395,20 @@ def _allocate_one_priority_layer(
                     "failure_recovery_bonus": round(
                         selected_candidate.failure_recovery_bonus,
                         3,
+                    ),
+                    "regional_recovery_bonus": round(
+                        selected_candidate.regional_recovery_bonus,
+                        3,
+                    ),
+                    "regional_recovery_score": round(
+                        selected_candidate.regional_recovery_score,
+                        3,
+                    ),
+                    "regional_recovery_stale_cells": (
+                        selected_candidate.regional_recovery_stale_cells
+                    ),
+                    "regional_recovery_backlog_hotspots": (
+                        selected_candidate.regional_recovery_backlog_hotspots
                     ),
                     "partition_reason": selected_candidate.partition_reason,
                     "final_bid": round(selected_candidate.score, 3),
@@ -401,6 +451,7 @@ def _build_candidate_pairs(
 ) -> tuple[list[RhoCandidate], dict[str, set[str]]]:
     pairs: list[RhoCandidate] = []
     blocked_agent_ids_by_task: dict[str, set[str]] = {}
+    agent_by_id = {agent.agent_id: agent for agent in all_agents}
 
     for task in tasks:
         partition = build_task_partition(
@@ -415,10 +466,37 @@ def _build_candidate_pairs(
             ),
             agents=all_agents,
             execution_states=execution_states,
+            info_map=info_map,
             step=step,
+        )
+        regional_recovery_debt = build_regional_recovery_debt(
+            task,
+            tasks=task_context,
+            agents=all_agents,
+            info_map=info_map,
+            step=step,
+        )
+        failure_mode_active = failure_hotspot_emergency_active(
+            tasks=task_context,
+            agents=all_agents,
         )
         preferred_ids = set(partition.primary_usv_ids) | set(partition.secondary_usv_ids)
         for agent in candidate_agents:
+            if (
+                task.task_type != TaskType.UAV_RESUPPLY
+                and is_reserved_for_initial_escort(
+                    agent.agent_id,
+                    step=step,
+                    agent_by_id=agent_by_id,
+                )
+            ):
+                continue
+            if (
+                task.task_type != TaskType.UAV_RESUPPLY
+                and is_initial_fixed_escort_phase(step, agent_by_id=agent_by_id)
+                and agent.agent_id != INITIAL_FIXED_BASE_USV_ID
+            ):
+                continue
             if agent.agent_id not in preferred_ids:
                 continue
             if not is_available_for_new_assignment(
@@ -452,6 +530,8 @@ def _build_candidate_pairs(
                         task,
                         agents=all_agents,
                     ),
+                    regional_recovery_debt=regional_recovery_debt,
+                    failure_mode_active=failure_mode_active,
                     partition_reason=partition.partition_reason,
                 )
             )
@@ -466,6 +546,8 @@ def _build_rho_candidate(
     info_map: InformationMap | None,
     protected_support_usv_ids: set[str],
     failure_recovery_bonus: float,
+    regional_recovery_debt: RegionalRecoveryDebt,
+    failure_mode_active: bool,
     partition_reason: str,
 ) -> RhoCandidate:
     base_value = (
@@ -478,10 +560,17 @@ def _build_rho_candidate(
     energy_penalty = (
         LOW_ENERGY_SUPPORT_PENALTY if agent.agent_id in protected_support_usv_ids else 0.0
     )
+    regional_recovery_bonus = 0.0
+    if failure_mode_active and task.task_type == TaskType.HOTSPOT_CONFIRMATION:
+        regional_recovery_bonus = min(
+            regional_recovery_debt.score * REGIONAL_RECOVERY_BONUS_SCALE,
+            REGIONAL_RECOVERY_BONUS_CAP,
+        )
     score = round(
         base_value
         + aoi_reward
         + failure_recovery_bonus
+        + regional_recovery_bonus
         - (estimated_cost * PATH_COST_WEIGHT)
         - delay_penalty
         - energy_penalty,
@@ -497,6 +586,10 @@ def _build_rho_candidate(
         delay_penalty=round(delay_penalty, 3),
         energy_penalty=energy_penalty,
         failure_recovery_bonus=round(failure_recovery_bonus, 3),
+        regional_recovery_bonus=round(regional_recovery_bonus, 3),
+        regional_recovery_score=regional_recovery_debt.score,
+        regional_recovery_stale_cells=regional_recovery_debt.stale_coverable_cell_count,
+        regional_recovery_backlog_hotspots=regional_recovery_debt.backlog_hotspot_count,
         partition_reason=partition_reason,
     )
 

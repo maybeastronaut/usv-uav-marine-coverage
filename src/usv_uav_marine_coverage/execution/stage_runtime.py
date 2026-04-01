@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from math import hypot
+from math import cos, hypot, radians, sin
 
 from usv_uav_marine_coverage.agent_model import (
     AgentState,
@@ -53,11 +53,18 @@ from usv_uav_marine_coverage.execution.return_to_patrol_runtime import (
 )
 from usv_uav_marine_coverage.execution.task_final_approach_runtime import (
     apply_task_final_approach_selection,
+    current_task_approach_anchor,
+    prepare_task_approach_state,
     select_task_final_approach_candidate,
+    set_task_approach_anchor_status,
+    supports_task_approach_anchors,
+    task_approach_anchor_reached,
+    task_final_approach_backoff_active,
     task_final_approach_satisfied,
 )
 from usv_uav_marine_coverage.grid import GridMap
 from usv_uav_marine_coverage.information_map import InformationMap
+from usv_uav_marine_coverage.planning.astar_path_planner import _point_has_clearance
 from usv_uav_marine_coverage.planning.direct_line_planner import build_direct_line_plan
 from usv_uav_marine_coverage.planning.path_types import PathPlanStatus
 from usv_uav_marine_coverage.planning.traffic_cost import build_traffic_cost_context
@@ -84,7 +91,16 @@ from usv_uav_marine_coverage.simulation.uav_coverage_runtime import (
     resolve_persistent_uav_coverage_state,
     uav_offshore_x_bounds,
 )
+from usv_uav_marine_coverage.tasking.uav_support_policy import (
+    fixed_initial_escort_uav_id_for_usv,
+)
 from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
+
+INITIAL_ESCORT_FOLLOW_SPACING_M = 90.0
+INITIAL_ESCORT_FOLLOW_CATCHUP_DISTANCE_M = 180.0
+INITIAL_ESCORT_FOLLOW_AHEAD_OFFSET_M = 60.0
+INITIAL_ESCORT_CORRIDOR_PROGRESS_STEP_M = 90.0
+INITIAL_ESCORT_CORRIDOR_ADVANCE_X_TOLERANCE_M = 5.0
 
 
 @dataclass(frozen=True)
@@ -102,6 +118,7 @@ class StageRuntimeContext:
     usv_path_planner: str
     uav_search_planner: str
     execution_policy: str
+    enable_uav_usv_meeting: bool
     execution_states: dict[str, AgentExecutionState]
     uav_coverage_states: dict[str, UavCoverageState] | None
     task_records: tuple[TaskRecord, ...]
@@ -137,11 +154,39 @@ def _build_usv_traffic_cost_context(
 
 
 def _resolve_uav_resupply_support_goal(
+    agent: AgentState,
     execution_state: AgentExecutionState,
     *,
     active_task: TaskRecord,
+    context: StageRuntimeContext,
 ) -> tuple[float | None, float | None]:
     """Prefer the stable rendezvous anchor for one support-USV episode."""
+
+    if not context.enable_uav_usv_meeting:
+        return (active_task.target_x, active_task.target_y)
+
+    escort_uav_id = fixed_initial_escort_uav_id_for_usv(
+        agent.agent_id,
+        step=context.step,
+        agent_by_id=context.agent_by_id,
+    )
+    if (
+        escort_uav_id is not None
+        and active_task.support_agent_id == agent.agent_id
+        and active_task.assigned_agent_id == escort_uav_id
+    ):
+        escort_uav = context.agent_by_id.get(escort_uav_id)
+        if escort_uav is not None and escort_uav.is_operational:
+            plan = execution_state.active_plan
+            if (
+                plan is not None
+                and plan.status == PathPlanStatus.PLANNED
+                and plan.task_id == active_task.task_id
+                and hypot(plan.goal_x - escort_uav.x, plan.goal_y - escort_uav.y)
+                <= UAV_RESUPPLY_SUPPORT_REPLAN_GOAL_TOLERANCE_M
+            ):
+                return (plan.goal_x, plan.goal_y)
+            return (escort_uav.x, escort_uav.y)
 
     anchor_x = active_task.rendezvous_anchor_x
     anchor_y = active_task.rendezvous_anchor_y
@@ -160,6 +205,175 @@ def _resolve_uav_resupply_support_goal(
     return (anchor_x, anchor_y)
 
 
+def _resolve_initial_escort_follow_goal(
+    agent: AgentState,
+    *,
+    escort_uav: AgentState,
+    grid_map: GridMap,
+    obstacle_layout: ObstacleLayout | None,
+    progress_state: AgentProgressState,
+) -> tuple[tuple[float, float], AgentProgressState, bool]:
+    """Build a loose follow goal that tracks one UAV's direction, not its exact point."""
+
+    direction_dx = 0.0
+    direction_dy = 0.0
+    if escort_uav.task.target_x is not None and escort_uav.task.target_y is not None:
+        direction_dx = escort_uav.task.target_x - escort_uav.x
+        direction_dy = escort_uav.task.target_y - escort_uav.y
+    if abs(direction_dx) < 1e-6 and abs(direction_dy) < 1e-6:
+        heading_rad = radians(escort_uav.heading_deg)
+        direction_dx = cos(heading_rad)
+        direction_dy = sin(heading_rad)
+    direction_norm = hypot(direction_dx, direction_dy)
+    if direction_norm < 1e-6:
+        return ((escort_uav.x, escort_uav.y), progress_state, False)
+    direction_dx /= direction_norm
+    direction_dy /= direction_norm
+
+    shadow_goal_x, shadow_goal_y = _build_initial_escort_shadow_goal(
+        agent,
+        escort_uav=escort_uav,
+        direction_dx=direction_dx,
+        direction_dy=direction_dy,
+    )
+    corridor_goal, progress_state = _resolve_initial_escort_corridor_goal(
+        agent,
+        escort_uav=escort_uav,
+        grid_map=grid_map,
+        obstacle_layout=obstacle_layout,
+        progress_state=progress_state,
+    )
+    if corridor_goal is None:
+        goal_x, goal_y = shadow_goal_x, shadow_goal_y
+        using_corridor_goal = False
+    else:
+        goal_x, goal_y = corridor_goal
+        using_corridor_goal = True
+    goal_x = min(max(goal_x, 0.0), grid_map.width)
+    goal_y = min(max(goal_y, 0.0), grid_map.height)
+    return ((goal_x, goal_y), progress_state, using_corridor_goal)
+
+
+def _build_initial_escort_shadow_goal(
+    agent: AgentState,
+    *,
+    escort_uav: AgentState,
+    direction_dx: float,
+    direction_dy: float,
+) -> tuple[float, float]:
+    """Build the loose shadow point used outside the risk-zone corridor."""
+
+    separation = hypot(escort_uav.x - agent.x, escort_uav.y - agent.y)
+    offset_m = -INITIAL_ESCORT_FOLLOW_SPACING_M
+    if separation > INITIAL_ESCORT_FOLLOW_CATCHUP_DISTANCE_M:
+        offset_m = INITIAL_ESCORT_FOLLOW_AHEAD_OFFSET_M
+    return (
+        escort_uav.x + direction_dx * offset_m,
+        escort_uav.y + direction_dy * offset_m,
+    )
+
+
+def _resolve_initial_escort_corridor_goal(
+    agent: AgentState,
+    *,
+    escort_uav: AgentState,
+    grid_map: GridMap,
+    obstacle_layout: ObstacleLayout | None,
+    progress_state: AgentProgressState,
+) -> tuple[tuple[float, float] | None, AgentProgressState]:
+    """Use one nearest traversable corridor only while crossing the risk belt."""
+
+    if obstacle_layout is None or not obstacle_layout.traversable_corridors:
+        return (None, progress_state)
+    corridors = obstacle_layout.traversable_corridors
+    corridor_index = progress_state.initial_escort_corridor_index
+    if corridor_index < 0 or corridor_index >= len(corridors):
+        corridor_index = min(
+            range(len(corridors)),
+            key=lambda idx: hypot(
+                corridors[idx].control_points[0][0] - agent.x,
+                corridors[idx].control_points[0][1] - agent.y,
+            ),
+        )
+    corridor = corridors[corridor_index]
+    corridor_start_x = corridor.control_points[0][0]
+    corridor_end_x = corridor.control_points[-1][0]
+    if escort_uav.x > corridor_end_x and agent.x > corridor_end_x:
+        # Once the paired UAV has already exited through the corridor, the escort
+        # USV can switch back to loose follow instead of lingering around the
+        # corridor control points.  Require the USV itself to have crossed the
+        # corridor too; otherwise the UAV's offshore route can pull the escort
+        # back across the wrong side before it actually exits the risk belt.
+        return (
+            None,
+            replace(
+                progress_state,
+                initial_escort_corridor_index=-1,
+                initial_escort_control_point_index=-1,
+            ),
+        )
+    if agent.x > corridor_end_x:
+        return (
+            None,
+            replace(
+                progress_state,
+                initial_escort_corridor_index=-1,
+                initial_escort_control_point_index=-1,
+            ),
+        )
+    control_points = corridor.control_points
+    control_point_index = progress_state.initial_escort_control_point_index
+    if control_point_index < 0:
+        control_point_index = 0
+
+    def _advance_to_clear_control_point(index: int) -> int:
+        while index < len(control_points) - 1:
+            point_x, point_y = control_points[index]
+            if _point_has_clearance(grid_map, point_x, point_y):
+                break
+            index += 1
+        return index
+
+    def _has_reached_control_point(index: int) -> bool:
+        point_x, point_y = control_points[index]
+        return hypot(point_x - agent.x, point_y - agent.y) <= agent.arrival_tolerance_m
+
+    if agent.x < corridor_start_x:
+        control_point_index = _advance_to_clear_control_point(max(control_point_index, 0))
+        while control_point_index < len(control_points) - 1 and _has_reached_control_point(
+            control_point_index
+        ):
+            control_point_index += 1
+            control_point_index = _advance_to_clear_control_point(control_point_index)
+        return (
+            control_points[control_point_index],
+            replace(
+                progress_state,
+                initial_escort_corridor_index=corridor_index,
+                initial_escort_control_point_index=control_point_index,
+            ),
+        )
+
+    while (
+        control_point_index < len(control_points) - 1
+        and (
+            agent.x
+            >= control_points[control_point_index][0] - INITIAL_ESCORT_CORRIDOR_ADVANCE_X_TOLERANCE_M
+            or _has_reached_control_point(control_point_index)
+        )
+    ):
+        control_point_index += 1
+    control_point_index = _advance_to_clear_control_point(control_point_index)
+    return (
+        control_points[control_point_index],
+        replace(
+            progress_state,
+            initial_escort_corridor_index=corridor_index,
+            initial_escort_control_point_index=control_point_index,
+        ),
+    )
+
+
 def run_agent_stage(
     agent: AgentState,
     *,
@@ -169,6 +383,20 @@ def run_agent_stage(
     context: StageRuntimeContext,
 ) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
     """Advance one non-yield execution stage by one simulation step."""
+
+    if (
+        agent.kind == "USV"
+        and active_task is None
+        and execution_state.stage in {ExecutionStage.PATROL, ExecutionStage.RETURN_TO_PATROL}
+    ):
+        escort_result = _run_initial_escort_follow_stage(
+            agent,
+            execution_state=execution_state,
+            progress_state=progress_state,
+            context=context,
+        )
+        if escort_result is not None:
+            return escort_result
 
     if execution_state.stage == ExecutionStage.RECOVERY:
         return _run_recovery_stage(
@@ -344,6 +572,15 @@ def _run_go_to_task_stage(
     context: StageRuntimeContext,
 ) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
     rendezvous_target_uav: AgentState | None = None
+    final_approach_backoff_is_active = (
+        agent.kind == "USV"
+        and active_task.task_type != TaskType.UAV_RESUPPLY
+        and task_final_approach_backoff_active(
+            progress_state,
+            task_id=active_task.task_id,
+            step=context.step,
+        )
+    )
     if active_task.task_type == TaskType.UAV_RESUPPLY and agent.kind == "USV":
         rendezvous_target_uav = context.agent_by_id.get(active_task.assigned_agent_id or "")
         if rendezvous_target_uav is not None and _has_reached_rendezvous(agent, rendezvous_target_uav):
@@ -351,17 +588,59 @@ def _run_go_to_task_stage(
                 context.stop_agent_motion(assign_agent_task(agent, TaskMode.IDLE)),
                 transition_to_on_task(execution_state),
                 progress_state,
+    )
+    selection = None
+    using_macro_approach_anchor = False
+    if agent.kind == "USV" and supports_task_approach_anchors(
+        active_task,
+        progress_state=progress_state,
+    ):
+        progress_state = prepare_task_approach_state(
+            progress_state,
+            agent=agent,
+            task=active_task,
+            grid_map=context.grid_map,
+        )
+        approach_anchor = current_task_approach_anchor(
+            progress_state,
+            task_id=active_task.task_id,
+        )
+        anchor_ready = task_approach_anchor_reached(
+            progress_state,
+            agent=agent,
+            task_id=active_task.task_id,
+        )
+        if approach_anchor is not None and (final_approach_backoff_is_active or not anchor_ready):
+            progress_state = set_task_approach_anchor_status(
+                progress_state,
+                task_id=active_task.task_id,
+                status="enroute_anchor",
             )
-    selection = (
-        select_task_final_approach_candidate(
+            goal_x, goal_y = approach_anchor
+            using_macro_approach_anchor = True
+        else:
+            progress_state = set_task_approach_anchor_status(
+                progress_state,
+                task_id=active_task.task_id,
+                status="final_approach",
+            )
+            selection = select_task_final_approach_candidate(
+                agent,
+                task=active_task,
+                grid_map=context.grid_map,
+                progress_state=progress_state,
+            )
+    elif (
+        agent.kind == "USV"
+        and active_task.task_type != TaskType.UAV_RESUPPLY
+        and not final_approach_backoff_is_active
+    ):
+        selection = select_task_final_approach_candidate(
             agent,
             task=active_task,
             grid_map=context.grid_map,
             progress_state=progress_state,
         )
-        if agent.kind == "USV" and active_task.task_type != TaskType.UAV_RESUPPLY
-        else None
-    )
     if selection is not None:
         progress_state = apply_task_final_approach_selection(
             progress_state,
@@ -369,11 +648,13 @@ def _run_go_to_task_stage(
         )
         goal_x = selection.candidate_x
         goal_y = selection.candidate_y
-    else:
+    elif not using_macro_approach_anchor:
         if active_task.task_type == TaskType.UAV_RESUPPLY and agent.kind == "USV":
             goal_x, goal_y = _resolve_uav_resupply_support_goal(
+                agent,
                 execution_state,
                 active_task=active_task,
+                context=context,
             )
         else:
             goal_x = active_task.target_x
@@ -516,6 +797,120 @@ def _run_go_to_task_stage(
             goal_y,
         ),
         execution_state,
+        progress_state,
+    )
+
+
+def _run_initial_escort_follow_stage(
+    agent: AgentState,
+    *,
+    execution_state: AgentExecutionState,
+    progress_state: AgentProgressState,
+    context: StageRuntimeContext,
+) -> tuple[AgentState, AgentExecutionState, AgentProgressState] | None:
+    """Let reserved USVs trail their paired UAV during the initial escort phase."""
+
+    if not context.enable_uav_usv_meeting:
+        return None
+
+    escort_uav_id = fixed_initial_escort_uav_id_for_usv(
+        agent.agent_id,
+        step=context.step,
+        agent_by_id=context.agent_by_id,
+    )
+    if escort_uav_id is None:
+        return None
+    escort_uav = context.agent_by_id.get(escort_uav_id)
+    if escort_uav is None or not escort_uav.is_operational:
+        return None
+
+    (goal_x, goal_y), progress_state, using_corridor_goal = _resolve_initial_escort_follow_goal(
+        agent,
+        escort_uav=escort_uav,
+        grid_map=context.grid_map,
+        obstacle_layout=context.obstacle_layout,
+        progress_state=progress_state,
+    )
+    should_refresh_plan = (
+        (
+            execution_state.active_plan is None
+            or execution_state.active_plan.status != PathPlanStatus.PLANNED
+            or execution_state.current_waypoint_index >= len(execution_state.active_plan.waypoints)
+            or abs(execution_state.active_plan.goal_x - goal_x) > 1.0
+            or abs(execution_state.active_plan.goal_y - goal_y) > 1.0
+        )
+        if using_corridor_goal
+        else _should_refresh_patrol_plan(
+            agent,
+            execution_state=execution_state,
+            goal_x=goal_x,
+            goal_y=goal_y,
+            step=context.step,
+            usv_path_planner=context.usv_path_planner,
+        )
+    )
+    if should_refresh_plan:
+        next_plan = (
+            build_direct_line_plan(
+                agent,
+                goal_x=goal_x,
+                goal_y=goal_y,
+                planner_name=context.usv_path_planner,
+                task_id=None,
+            )
+            if using_corridor_goal
+            else build_usv_path_plan(
+                agent,
+                grid_map=context.grid_map,
+                obstacle_layout=context.obstacle_layout,
+                goal_x=goal_x,
+                goal_y=goal_y,
+                planner_name=context.usv_path_planner,
+                task_id=None,
+                stats_context="runtime_initial_escort_follow",
+                traffic_cost_context=_build_usv_traffic_cost_context(
+                    agent_id=agent.agent_id,
+                    context=context,
+                ),
+            )
+        )
+        execution_state = replace(
+            execution_state,
+            active_plan=next_plan,
+            current_waypoint_index=0,
+        )
+    plan = execution_state.active_plan
+    if plan is None or plan.status != PathPlanStatus.PLANNED:
+        return (
+            context.stop_agent_motion(assign_agent_task(agent, TaskMode.PATROL, goal_x, goal_y)),
+            replace(
+                execution_state,
+                stage=ExecutionStage.PATROL,
+                active_plan=plan,
+            ),
+            progress_state,
+        )
+
+    advanced_agent, execution_state, _ = context.advance_path_execution_step(
+        agent,
+        execution_state=replace(execution_state, stage=ExecutionStage.PATROL),
+        grid_map=context.grid_map,
+        dt_seconds=context.dt_seconds,
+        obstacle_layout=context.obstacle_layout,
+        execution_policy=context.execution_policy,
+        neighboring_agents=context.neighboring_agents(agent, context.agent_by_id),
+        wreck_zones=context.wreck_zones,
+    )
+    advanced_agent, execution_state = _apply_collision_guard_with_optional_wrecks(
+        agent,
+        advanced_agent=advanced_agent,
+        execution_state=execution_state,
+        obstacle_layout=context.obstacle_layout,
+        wreck_zones=context.wreck_zones,
+    )
+    return (
+        assign_agent_task(advanced_agent, TaskMode.PATROL, goal_x, goal_y),
+        replace(execution_state, stage=ExecutionStage.PATROL),
         progress_state,
     )
 

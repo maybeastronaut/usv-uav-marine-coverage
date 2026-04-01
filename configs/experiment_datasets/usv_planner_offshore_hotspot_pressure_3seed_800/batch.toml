@@ -1,6 +1,6 @@
 [batch]
 name = "usv_planner_offshore_hotspot_pressure_3seed_800"
-base_config = "../../offshore_hotspot_pressure_cost_aware.toml"
+base_config = "offshore_hotspot_pressure_cost_aware.toml"
 output_dir = "../../../outputs/experiments/usv_planner/offshore_hotspot_pressure_3seed_800"
 generate_html = false
 
@@ -21,18 +21,18 @@ steps = 800
 
 [[runs]]
 label = "astar_smoother_seed_20260324"
-config = "../../offshore_hotspot_pressure_cost_aware_astar_smoother.toml"
+config = "offshore_hotspot_pressure_cost_aware_astar_smoother.toml"
 seed = 20260324
 steps = 800
 
 [[runs]]
 label = "astar_smoother_seed_20260325"
-config = "../../offshore_hotspot_pressure_cost_aware_astar_smoother.toml"
+config = "offshore_hotspot_pressure_cost_aware_astar_smoother.toml"
 seed = 20260325
 steps = 800
 
 [[runs]]
 label = "astar_smoother_seed_20260326"
-config = "../../offshore_hotspot_pressure_cost_aware_astar_smoother.toml"
+config = "offshore_hotspot_pressure_cost_aware_astar_smoother.toml"
 seed = 20260326
 steps = 800

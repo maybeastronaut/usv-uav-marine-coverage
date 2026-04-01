@@ -2,6 +2,12 @@
 
 这是当前“集中式 vs 分布式任务分配”主对比的正式数据集目录。
 
+## 实验定位
+
+- 标签：`当前主线综合表现`
+- 当前判断：这组还能看出中心化与分布式任务分配的相对差异，但已经不适合当作纯算法画像。
+- 原因：`RHO / cost_aware / distributed_CBBA(bundle=2)` 的相对强弱仍然可见，但这些结果已经明显受当前主线公共执行链影响。
+
 ## 数据集用途
 
 用于在固定更强的新分区基线后，对比：
@@ -46,6 +52,8 @@
   - `distributed_CBBA(bundle=2)` 每个 seed 的逐事件日志
 - `distributed_cbba_bundle2_seed_*_summary.json`
   - `distributed_CBBA(bundle=2)` 每个 seed 的最终汇总
+- `representative_rho_seed_20260325.html`
+  - 当前主线代码下的代表性回放
 
 ## 复现实验
 
@@ -55,23 +63,31 @@ python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_d
 
 ## 结论
 
-- `cost_aware`
-  - 当前最均衡
-  - 平均 `confirmed_hotspots = 24.0`
-  - 平均 `valid_cells = 1013.3`
-  - 平均 `stale_cells = 355.0`
-  - 平均 `astar_blocked_calls = 2.3`
-- `RHO`
-  - 当前仍是最强的 freshness-first 中心化方案
-  - 平均 `valid_cells = 1063.3` 最高
-  - 平均 `stale_cells = 305.0` 最低
-  - 平均 `confirmed_hotspots = 24.3`
-  - 平均 `astar_blocked_calls = 0.0`
-- `distributed_CBBA(bundle=2)`
-  - 当前已经能形成有效分布式协商结果
-  - 平均 `astar_blocked_calls = 0.7` 较低，总调用也更少
-  - 但平均 `confirmed_hotspots = 18.3`
-  - 平均 `valid_cells = 991.3`
-  - 平均 `stale_cells = 377.0`
+以下结论基于当前主线代码于 `2026-04-01` 的重跑结果，不再沿用目录内历史 `comparison_summary.json` 的旧结论。
 
-这组正式数据说明：当前这版分布式任务分配已经可以和中心化任务层进行正式对比，但在该场景下整体表现仍落后于 `cost_aware / RHO` 两种中心化方案。
+- `cost_aware`
+  - 平均 `coverage_ratio = 0.8613`
+  - 平均 `valid_cells = 849.7`
+  - 平均 `stale_cells = 518.7`
+  - 平均 `confirmed_hotspots = 19.3`
+- `RHO`
+  - 平均 `coverage_ratio = 0.8597`
+  - 平均 `valid_cells = 897.0`
+  - 平均 `stale_cells = 471.3`
+  - 平均 `confirmed_hotspots = 26.7`
+- `distributed_CBBA(bundle=2)`
+  - 平均 `coverage_ratio = 0.8568`
+  - 平均 `valid_cells = 837.7`
+  - 平均 `stale_cells = 530.7`
+  - 平均 `confirmed_hotspots = 20.7`
+
+这组当前结果说明：
+
+- `RHO` 仍然是这组三者里整体最强的一档，尤其在热点确认和 freshness 上优势最明显。
+- `distributed_CBBA(bundle=2)` 不是失效，但当前主线下仍然明显落后于 `RHO`，与 `cost_aware` 相比也没有形成稳定优势。
+- 这说明当前这版分布式任务分配可以正式参与对比，但还不能替代中心化 `RHO` 主线。
+
+## 代表性回放
+
+- 推荐查看：`representative_rho_seed_20260325.html`
+- 原因：这份回放最能体现当前主线下 `RHO` 的确认热点优势，以及它与分布式版本的差异。

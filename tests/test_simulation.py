@@ -11,7 +11,7 @@ from usv_uav_marine_coverage.execution.execution_types import (
 )
 from usv_uav_marine_coverage.execution.progress_feedback import build_initial_progress_states
 from usv_uav_marine_coverage.grid import build_grid_map
-from usv_uav_marine_coverage.information_map import build_information_map
+from usv_uav_marine_coverage.information_map import HotspotKnowledgeState, build_information_map
 from usv_uav_marine_coverage.simulation import (
     build_simulation_html,
     build_simulation_replay,
@@ -683,7 +683,11 @@ nearshore_information_timeout_steps = 800
                 "uav_persistent_multi_region_coverage_planner",
             )
 
-    def test_usv_only_confirms_hotspot_while_on_task_at_target_cell(self) -> None:
+    def test_usv_confirms_assigned_hotspot_and_opportunistic_uav_checked_hotspots(self) -> None:
+        sea_map = build_default_sea_map()
+        obstacle_layout = build_obstacle_layout(sea_map, seed=20260314)
+        grid_map = build_grid_map(sea_map, obstacle_layout)
+        info_map = build_information_map(grid_map)
         execution_states = {
             "USV-1": AgentExecutionState(
                 agent_id="USV-1",
@@ -704,6 +708,8 @@ nearshore_information_timeout_steps = 800
                 patrol_waypoint_index=0,
             ),
         }
+        info_map.state_at(10, 8).known_hotspot_state = HotspotKnowledgeState.UAV_CHECKED
+        info_map.state_at(10, 9).known_hotspot_state = HotspotKnowledgeState.UAV_CHECKED
         hotspot_task = TaskRecord(
             task_id="hotspot-confirmation-10-8",
             task_type=TaskType.HOTSPOT_CONFIRMATION,
@@ -716,6 +722,18 @@ nearshore_information_timeout_steps = 800
             target_col=8,
             created_step=2,
             assigned_agent_id="USV-1",
+        )
+        nearby_hotspot_task = TaskRecord(
+            task_id="hotspot-confirmation-10-9",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_SUSPECTED,
+            status=TaskStatus.PENDING,
+            priority=10,
+            target_x=237.5,
+            target_y=262.5,
+            target_row=10,
+            target_col=9,
+            created_step=3,
         )
         baseline_task = TaskRecord(
             task_id="baseline-service-10-8",
@@ -730,15 +748,30 @@ nearshore_information_timeout_steps = 800
             created_step=2,
             assigned_agent_id="USV-1",
         )
+        uav_resupply_task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=212.5,
+            target_y=262.5,
+            target_row=None,
+            target_col=None,
+            created_step=4,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-2",
+        )
 
         self.assertEqual(
             _confirmation_indices_for_usv(
                 agent_id="USV-1",
                 observed_indices=((10, 8), (10, 9)),
-                task_records=(hotspot_task,),
+                task_records=(hotspot_task, nearby_hotspot_task),
                 execution_states=execution_states,
+                info_map=info_map,
             ),
-            ((10, 8),),
+            ((10, 8), (10, 9)),
         )
         self.assertEqual(
             _confirmation_indices_for_usv(
@@ -746,6 +779,22 @@ nearshore_information_timeout_steps = 800
                 observed_indices=((10, 8),),
                 task_records=(replace(hotspot_task, assigned_agent_id="USV-2"),),
                 execution_states=execution_states,
+                info_map=info_map,
+            ),
+            ((10, 8),),
+        )
+        self.assertEqual(
+            _confirmation_indices_for_usv(
+                agent_id="USV-2",
+                observed_indices=((10, 8),),
+                task_records=(uav_resupply_task,),
+                execution_states={
+                    "USV-2": replace(
+                        execution_states["USV-2"],
+                        active_task_id="uav-resupply-UAV-1",
+                    )
+                },
+                info_map=info_map,
             ),
             (),
         )
@@ -753,8 +802,16 @@ nearshore_information_timeout_steps = 800
             _confirmation_indices_for_usv(
                 agent_id="USV-1",
                 observed_indices=((10, 8),),
-                task_records=(baseline_task,),
+                task_records=(
+                    baseline_task,
+                    replace(
+                        hotspot_task,
+                        status=TaskStatus.PENDING,
+                        assigned_agent_id=None,
+                    ),
+                ),
                 execution_states={"USV-1": execution_states["USV-1"]},
+                info_map=info_map,
             ),
-            (),
+            ((10, 8),),
         )

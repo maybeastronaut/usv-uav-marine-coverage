@@ -1,6 +1,6 @@
 [batch]
 name = "usv_planner_return_to_patrol_stress_3seed_1200"
-base_config = "../../return_to_patrol_stress_cost_aware.toml"
+base_config = "return_to_patrol_stress_cost_aware.toml"
 output_dir = "../../../outputs/experiments/usv_planner/return_to_patrol_stress_3seed_1200"
 generate_html = false
 
@@ -21,18 +21,18 @@ steps = 1200
 
 [[runs]]
 label = "astar_smoother_seed_20260334"
-config = "../../return_to_patrol_stress_cost_aware_astar_smoother.toml"
+config = "return_to_patrol_stress_cost_aware_astar_smoother.toml"
 seed = 20260334
 steps = 1200
 
 [[runs]]
 label = "astar_smoother_seed_20260335"
-config = "../../return_to_patrol_stress_cost_aware_astar_smoother.toml"
+config = "return_to_patrol_stress_cost_aware_astar_smoother.toml"
 seed = 20260335
 steps = 1200
 
 [[runs]]
 label = "astar_smoother_seed_20260336"
-config = "../../return_to_patrol_stress_cost_aware_astar_smoother.toml"
+config = "return_to_patrol_stress_cost_aware_astar_smoother.toml"
 seed = 20260336
 steps = 1200

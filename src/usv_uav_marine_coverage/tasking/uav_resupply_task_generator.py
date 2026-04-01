@@ -13,6 +13,10 @@ from usv_uav_marine_coverage.agent_model import (
 )
 
 from .task_types import TaskRecord, TaskSource, TaskStatus, TaskType
+from .uav_support_policy import (
+    is_uav_usv_meeting_enabled,
+    should_delay_uav_resupply_for_initial_escort,
+)
 
 
 def build_uav_resupply_tasks(
@@ -22,6 +26,11 @@ def build_uav_resupply_tasks(
     existing_tasks: tuple[TaskRecord, ...] = (),
 ) -> tuple[TaskRecord, ...]:
     """Sync one low-energy resupply task per UAV when needed."""
+
+    if not is_uav_usv_meeting_enabled():
+        return tuple(
+            task for task in existing_tasks if task.task_type != TaskType.UAV_RESUPPLY
+        )
 
     existing_by_id = {task.task_id: task for task in existing_tasks}
     usv_agents = tuple(agent for agent in agents if can_support_uav_resupply(agent))
@@ -39,6 +48,12 @@ def build_uav_resupply_tasks(
             should_trigger = should_trigger or agent.energy_level <= estimate_uav_energy_to_point(
                 agent, support_usv.x, support_usv.y
             )
+        if should_trigger and should_delay_uav_resupply_for_initial_escort(
+            agent,
+            usvs=usv_agents,
+            step=step,
+        ):
+            should_trigger = False
         if not should_trigger:
             # Only keep the task record if it has reached a terminal state so
             # that the history is visible to downstream consumers.  Active tasks

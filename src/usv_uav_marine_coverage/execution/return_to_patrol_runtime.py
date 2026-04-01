@@ -14,6 +14,7 @@ from usv_uav_marine_coverage.environment import ObstacleLayout
 from usv_uav_marine_coverage.execution.execution_types import (
     AgentExecutionState,
     AgentProgressState,
+    ExecutionStage,
 )
 from usv_uav_marine_coverage.execution.progress_feedback import (
     build_goal_signature,
@@ -53,6 +54,7 @@ RETURN_ACCESS_HOTSPOT_WEIGHT = 0.20
 RETURN_ACCESS_APPROACH_WEIGHT = 0.30
 RETURN_ACCESS_HEADING_WEIGHT = 0.20
 RETURN_ACCESS_TRAVEL_WEIGHT = 0.15
+RETURN_BLOCKED_GOAL_COOLDOWN_STEPS = 96
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,8 @@ class ReturnPatrolAccessSelection:
 def find_nearest_patrol_rejoin_point(
     agent: AgentState,
     patrol_route: tuple[tuple[float, float], ...],
+    *,
+    blocked_goal_signature: str | None = None,
 ) -> tuple[int, float, float]:
     """Return the nearest local patrol-segment access for the current agent position."""
 
@@ -75,7 +79,14 @@ def find_nearest_patrol_rejoin_point(
         patrol_route=patrol_route,
     )
     if access is None:
-        indexed_points = [(index, point[0], point[1]) for index, point in enumerate(patrol_route)]
+        indexed_points = [
+            (index, point[0], point[1])
+            for index, point in enumerate(patrol_route)
+            if blocked_goal_signature
+            != f"return:{index}:{round(point[0], 1)}:{round(point[1], 1)}"
+        ]
+        if not indexed_points:
+            indexed_points = [(index, point[0], point[1]) for index, point in enumerate(patrol_route)]
         index, x, y = min(
             indexed_points,
             key=lambda item: (agent.x - item[1]) ** 2 + (agent.y - item[2]) ** 2,
@@ -108,7 +119,16 @@ def _build_local_patrol_return_transition(
         task_records=task_records,
     )
     if selection is None:
-        patrol_index, return_x, return_y = find_nearest_patrol_rejoin_point(agent, patrol_route)
+        blocked_goal_signature = (
+            progress_state.return_blocked_goal_signature
+            if progress_state.return_blocked_goal_until_step > 0
+            else None
+        )
+        patrol_index, return_x, return_y = find_nearest_patrol_rejoin_point(
+            agent,
+            patrol_route,
+            blocked_goal_signature=blocked_goal_signature,
+        )
         return transition_to_return_to_patrol(
             execution_state,
             return_target_x=return_x,
@@ -142,30 +162,32 @@ def _find_local_patrol_access(
     blocked_goal_signature = None
     if skip_blocked_goal:
         blocked_goal_signature = progress_state.blocked_goal_signature
-    selection = _select_safe_value_patrol_access(
-        agent,
-        patrol_route=patrol_route,
-        preferred_end_index=execution_state.patrol_waypoint_index,
-        blocked_goal_signature=blocked_goal_signature,
-        grid_map=grid_map,
-        info_map=info_map,
-        task_records=task_records,
-        relax_endpoint_filter=False,
-    )
-    if selection is not None:
-        return selection
-    selection = _select_safe_value_patrol_access(
-        agent,
-        patrol_route=patrol_route,
-        preferred_end_index=execution_state.patrol_waypoint_index,
-        blocked_goal_signature=blocked_goal_signature,
-        grid_map=grid_map,
-        info_map=info_map,
-        task_records=task_records,
-        relax_endpoint_filter=True,
-    )
-    if selection is not None:
-        return selection
+    prefer_coarse_rejoin = progress_state.return_replan_generation > 0
+    if not prefer_coarse_rejoin:
+        selection = _select_safe_value_patrol_access(
+            agent,
+            patrol_route=patrol_route,
+            preferred_end_index=execution_state.patrol_waypoint_index,
+            blocked_goal_signature=blocked_goal_signature,
+            grid_map=grid_map,
+            info_map=info_map,
+            task_records=task_records,
+            relax_endpoint_filter=False,
+        )
+        if selection is not None:
+            return selection
+        selection = _select_safe_value_patrol_access(
+            agent,
+            patrol_route=patrol_route,
+            preferred_end_index=execution_state.patrol_waypoint_index,
+            blocked_goal_signature=blocked_goal_signature,
+            grid_map=grid_map,
+            info_map=info_map,
+            task_records=task_records,
+            relax_endpoint_filter=True,
+        )
+        if selection is not None:
+            return selection
     legacy_access = _find_legacy_local_patrol_access(
         agent,
         patrol_route=patrol_route,
@@ -178,6 +200,16 @@ def _find_local_patrol_access(
         access=legacy_access,
         source="fallback_legacy_local",
     )
+
+
+def _active_return_blocked_goal_signature(
+    progress_state: AgentProgressState,
+    *,
+    step: int,
+) -> str | None:
+    if progress_state.return_blocked_goal_until_step <= step:
+        return None
+    return progress_state.return_blocked_goal_signature
 
 
 def _find_legacy_local_patrol_access(
@@ -615,21 +647,32 @@ def _plan_return_to_patrol_path(
     if route_length == 0:
         return replace(execution_state, active_plan=None, current_waypoint_index=0)
 
+    return_blocked_goal_signature = _active_return_blocked_goal_signature(
+        progress_state,
+        step=step,
+    )
+    effective_progress_state = progress_state
+    if return_blocked_goal_signature is not None:
+        effective_progress_state = replace(
+            progress_state,
+            blocked_goal_signature=return_blocked_goal_signature,
+        )
+
     if (
-        progress_state.cooldown_until_step > step
-        and progress_state.blocked_goal_signature is not None
+        effective_progress_state.cooldown_until_step > step
+        and effective_progress_state.blocked_goal_signature is not None
         and build_goal_signature(
             stage=execution_state.stage,
             active_task=None,
             execution_state=execution_state,
         )
-        == progress_state.blocked_goal_signature
+        == effective_progress_state.blocked_goal_signature
     ):
         access = _find_local_patrol_access(
             agent,
             patrol_route=patrol_route,
             execution_state=execution_state,
-            progress_state=progress_state,
+            progress_state=effective_progress_state,
             skip_blocked_goal=True,
             grid_map=grid_map,
             info_map=info_map,
@@ -650,18 +693,29 @@ def _plan_return_to_patrol_path(
         and execution_state.return_target_x is not None
         and execution_state.return_target_y is not None
     ):
-        current_target_plan = build_usv_path_plan(
-            agent,
-            grid_map=grid_map,
-            obstacle_layout=obstacle_layout,
-            goal_x=execution_state.return_target_x,
-            goal_y=execution_state.return_target_y,
-            planner_name=usv_path_planner,
-            task_id=None,
-            stats_context="runtime_return_to_patrol",
-            traffic_cost_context=traffic_cost_context,
+        current_target_signature = build_goal_signature(
+            stage=ExecutionStage.RETURN_TO_PATROL,
+            active_task=None,
+            execution_state=execution_state,
         )
-        if current_target_plan.status == PathPlanStatus.PLANNED:
+        if (
+            return_blocked_goal_signature is not None
+            and current_target_signature == return_blocked_goal_signature
+        ):
+            current_target_plan = None
+        else:
+            current_target_plan = build_usv_path_plan(
+                agent,
+                grid_map=grid_map,
+                obstacle_layout=obstacle_layout,
+                goal_x=execution_state.return_target_x,
+                goal_y=execution_state.return_target_y,
+                planner_name=usv_path_planner,
+                task_id=None,
+                stats_context="runtime_return_to_patrol",
+                traffic_cost_context=traffic_cost_context,
+            )
+        if current_target_plan is not None and current_target_plan.status == PathPlanStatus.PLANNED:
             return replace(
                 execution_state,
                 active_plan=current_target_plan,
@@ -677,6 +731,26 @@ def _plan_return_to_patrol_path(
     for offset in range(route_length):
         patrol_index = (start_index + offset) % route_length
         goal_x, goal_y = patrol_route[patrol_index]
+        candidate_state = replace(
+            execution_state,
+            active_plan=None,
+            current_waypoint_index=0,
+            patrol_waypoint_index=patrol_index,
+            return_target_x=goal_x,
+            return_target_y=goal_y,
+            return_target_source="fallback_patrol_waypoint",
+            last_return_plan_step=step,
+        )
+        candidate_signature = build_goal_signature(
+            stage=ExecutionStage.RETURN_TO_PATROL,
+            active_task=None,
+            execution_state=candidate_state,
+        )
+        if (
+            return_blocked_goal_signature is not None
+            and candidate_signature == return_blocked_goal_signature
+        ):
+            continue
         plan = build_usv_path_plan(
             agent,
             grid_map=grid_map,
@@ -688,16 +762,7 @@ def _plan_return_to_patrol_path(
             stats_context="runtime_return_to_patrol",
             traffic_cost_context=traffic_cost_context,
         )
-        candidate_state = replace(
-            execution_state,
-            active_plan=plan,
-            current_waypoint_index=0,
-            patrol_waypoint_index=patrol_index,
-            return_target_x=goal_x,
-            return_target_y=goal_y,
-            return_target_source="fallback_patrol_waypoint",
-            last_return_plan_step=step,
-        )
+        candidate_state = replace(candidate_state, active_plan=plan)
         if plan.status == PathPlanStatus.PLANNED:
             return candidate_state
         if blocked_state is None and not allow_patrol_index_advance:
@@ -707,7 +772,7 @@ def _plan_return_to_patrol_path(
         agent,
         patrol_route=patrol_route,
         execution_state=execution_state,
-        progress_state=progress_state,
+        progress_state=effective_progress_state,
         skip_blocked_goal=allow_patrol_index_advance,
         grid_map=grid_map,
         info_map=info_map,

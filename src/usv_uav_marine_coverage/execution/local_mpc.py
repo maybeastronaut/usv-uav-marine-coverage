@@ -31,6 +31,9 @@ LOCAL_MPC_PROGRESS_WEIGHT = 1.35
 LOCAL_MPC_CLEARANCE_WEIGHT = 18.0
 LOCAL_MPC_HEADING_WEIGHT = 0.12
 LOCAL_MPC_SPEED_WEIGHT = 1.2
+LOCAL_MPC_MIN_PROGRESS_RATIO = 0.18
+LOCAL_MPC_LOW_PROGRESS_PENALTY = 40.0
+LOCAL_MPC_LATERAL_DRIFT_PENALTY = 12.0
 LOCAL_MPC_STOPPING_SPEED_MPS = 0.0
 LOCAL_MPC_EDGE_CLEARANCE_M = USV_COLLISION_CLEARANCE_M * 2.0
 
@@ -43,6 +46,7 @@ class LocalMpcDecision:
     predicted_min_clearance_m: float
     predicted_terminal_distance_m: float
     candidate_count: int
+    predicted_lateral_drift_m: float
 
 
 def compute_local_mpc_decision(
@@ -66,7 +70,7 @@ def compute_local_mpc_decision(
     nominal_command = compute_control_command(agent, reference)
     initial_distance = hypot(tracking_target.x - agent.x, tracking_target.y - agent.y)
 
-    best_decision: tuple[float, ControlCommand, float, float] | None = None
+    best_decision: tuple[float, ControlCommand, float, float, float] | None = None
     candidate_count = 0
     for command in _candidate_commands(agent, nominal_command):
         candidate_count += 1
@@ -83,7 +87,7 @@ def compute_local_mpc_decision(
         )
         if rollout is None:
             continue
-        terminal_distance, min_clearance_m = rollout
+        terminal_distance, min_clearance_m, lateral_drift_m = rollout
         progress_m = max(0.0, initial_distance - terminal_distance)
         heading_error = abs(
             shortest_heading_delta_deg(
@@ -92,15 +96,26 @@ def compute_local_mpc_decision(
             )
         )
         speed_delta = abs(nominal_command.target_speed_mps - command.target_speed_mps)
+        low_progress_penalty = 0.0
+        if progress_m < initial_distance * LOCAL_MPC_MIN_PROGRESS_RATIO:
+            low_progress_penalty = LOCAL_MPC_LOW_PROGRESS_PENALTY
         score = (
             terminal_distance * LOCAL_MPC_TRACKING_WEIGHT
             - progress_m * LOCAL_MPC_PROGRESS_WEIGHT
             - min_clearance_m * LOCAL_MPC_CLEARANCE_WEIGHT
             + heading_error * LOCAL_MPC_HEADING_WEIGHT
             + speed_delta * LOCAL_MPC_SPEED_WEIGHT
+            + low_progress_penalty
+            + lateral_drift_m * LOCAL_MPC_LATERAL_DRIFT_PENALTY
         )
         if best_decision is None or score < best_decision[0]:
-            best_decision = (score, command, min_clearance_m, terminal_distance)
+            best_decision = (
+                score,
+                command,
+                min_clearance_m,
+                terminal_distance,
+                lateral_drift_m,
+            )
 
     if best_decision is None:
         fallback_command = ControlCommand(
@@ -112,14 +127,16 @@ def compute_local_mpc_decision(
             predicted_min_clearance_m=0.0,
             predicted_terminal_distance_m=initial_distance,
             candidate_count=candidate_count,
+            predicted_lateral_drift_m=0.0,
         )
 
-    _, command, min_clearance_m, terminal_distance = best_decision
+    _, command, min_clearance_m, terminal_distance, lateral_drift_m = best_decision
     return LocalMpcDecision(
         command=command,
         predicted_min_clearance_m=min_clearance_m,
         predicted_terminal_distance_m=terminal_distance,
         candidate_count=candidate_count,
+        predicted_lateral_drift_m=lateral_drift_m,
     )
 
 
@@ -160,7 +177,7 @@ def _simulate_rollout(
     wreck_zones: tuple[WreckZone, ...],
     grid_width: float | None,
     grid_height: float | None,
-) -> tuple[float, float] | None:
+) -> tuple[float, float, float] | None:
     simulated_agent = agent
     predicted_neighbors = neighboring_agents
     min_clearance_m = float("inf")
@@ -184,7 +201,29 @@ def _simulate_rollout(
         tracking_target.x - simulated_agent.x,
         tracking_target.y - simulated_agent.y,
     )
-    return (terminal_distance, min_clearance_m)
+    lateral_drift_m = _lateral_drift_from_tracking_line(
+        agent,
+        tracking_target=tracking_target,
+        simulated_agent=simulated_agent,
+    )
+    return (terminal_distance, min_clearance_m, lateral_drift_m)
+
+
+def _lateral_drift_from_tracking_line(
+    agent: AgentState,
+    *,
+    tracking_target: Waypoint,
+    simulated_agent: AgentState,
+) -> float:
+    line_dx = tracking_target.x - agent.x
+    line_dy = tracking_target.y - agent.y
+    line_length = hypot(line_dx, line_dy)
+    if line_length <= 1e-9:
+        return 0.0
+    point_dx = simulated_agent.x - agent.x
+    point_dy = simulated_agent.y - agent.y
+    area_twice = abs(line_dx * point_dy - line_dy * point_dx)
+    return area_twice / line_length
 
 
 def _predict_neighbor_step(agent: AgentState, dt_seconds: float) -> AgentState:

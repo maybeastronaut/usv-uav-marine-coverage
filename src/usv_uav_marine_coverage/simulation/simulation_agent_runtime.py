@@ -136,6 +136,7 @@ def advance_agents_one_step(
     usv_path_planner: str = "astar_path_planner",
     uav_search_planner: str = "uav_lawnmower_planner",
     execution_policy: str = "phase_one_execution",
+    enable_uav_usv_meeting: bool = True,
     uav_coverage_states: dict[str, UavCoverageState] | None = None,
 ) -> tuple[
     tuple[AgentState, ...],
@@ -176,6 +177,7 @@ def advance_agents_one_step(
             grid_map=grid_map,
             info_map=info_map,
             patrol_routes=patrol_routes,
+            step=step,
         )
         transitioned_execution_state = claim_decision.execution_state
         next_progress_state = (
@@ -260,6 +262,7 @@ def advance_agents_one_step(
             usv_path_planner=usv_path_planner,
             uav_search_planner=uav_search_planner,
             execution_policy=execution_policy,
+            enable_uav_usv_meeting=enable_uav_usv_meeting,
             uav_coverage_states=uav_coverage_states,
             task_records=task_records,
         )
@@ -271,6 +274,7 @@ def advance_agents_one_step(
             active_task=active_task,
             patrol_routes=patrol_routes,
             step=step,
+            enable_uav_usv_meeting=enable_uav_usv_meeting,
         )
         next_agents.append(updated_agent)
         next_execution_states[agent.agent_id] = updated_execution_state
@@ -304,6 +308,7 @@ def _pre_step_transition(
     task_records: tuple[TaskRecord, ...],
     grid_map: GridMap,
     info_map: InformationMap | None,
+    step: int,
 ) -> AgentExecutionState:
     claim_decision = claim_task_for_execution(
         agent,
@@ -313,8 +318,13 @@ def _pre_step_transition(
         patrol_routes=patrol_routes,
         grid_map=grid_map,
         info_map=info_map,
+        step=step,
     )
-    if active_task is not None and claim_decision.active_task is None:
+    if (
+        active_task is not None
+        and claim_decision.active_task is None
+        and claim_decision.claim_transition_reason != "final_approach_backoff"
+    ):
         if active_task.task_type == TaskType.UAV_RESUPPLY:
             return transition_to_rendezvous(execution_state, task_id=active_task.task_id)
         return transition_to_task(execution_state, task_id=active_task.task_id)
@@ -339,6 +349,7 @@ def _run_agent_stage(
     usv_path_planner: str,
     uav_search_planner: str,
     execution_policy: str,
+    enable_uav_usv_meeting: bool,
     uav_coverage_states: dict[str, UavCoverageState] | None,
     task_records: tuple[TaskRecord, ...],
 ) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
@@ -364,6 +375,7 @@ def _run_agent_stage(
         usv_path_planner=usv_path_planner,
         uav_search_planner=uav_search_planner,
         execution_policy=execution_policy,
+        enable_uav_usv_meeting=enable_uav_usv_meeting,
         execution_states=execution_states,
         uav_coverage_states=uav_coverage_states,
         task_records=task_records,
@@ -569,6 +581,7 @@ def _evaluate_agent_progress(
     active_task: TaskRecord | None,
     patrol_routes: dict[str, tuple[tuple[float, float], ...]],
     step: int,
+    enable_uav_usv_meeting: bool = True,
 ) -> tuple[AgentExecutionState, AgentProgressState]:
     if updated_agent.kind != "USV":
         return (execution_state, progress_state)
@@ -609,6 +622,7 @@ def _evaluate_agent_progress(
         target_y=target_y,
         path_cleared=execution_state.active_plan is None,
         step=step,
+        enable_uav_usv_meeting=enable_uav_usv_meeting,
     )
     if not evaluation.should_enter_recovery:
         return (execution_state, evaluation.progress_state)

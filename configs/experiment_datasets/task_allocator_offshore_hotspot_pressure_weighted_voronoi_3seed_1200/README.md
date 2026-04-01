@@ -2,6 +2,12 @@
 
 这是当前任务层在 `weighted_voronoi_partition_policy` 新分区基线下的最新正式数据集目录。
 
+## 实验定位
+
+- 标签：`当前主线综合表现`
+- 当前判断：这组还能说明 allocator 的相对倾向，但不再是特别干净的算法特征实验。
+- 原因：`AEA / RHO / cost_aware` 的差异仍然可见，但绝对结果已经明显受主线公共逻辑变化影响，更适合解释“当前主线下的综合表现”。
+
 ## 数据集用途
 
 用于在更强的新候选空间上，对比：
@@ -45,6 +51,8 @@
   - `RHO` 每个 seed 的逐事件日志
 - `rho_seed_*_summary.json`
   - `RHO` 每个 seed 的最终汇总
+- `representative_aea_seed_20260325.html`
+  - 当前主线代码下的代表性回放
 
 ## 复现实验
 
@@ -54,21 +62,31 @@ python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_d
 
 ## 结论
 
-- `cost_aware`
-  - 当前最均衡
-  - 平均 `confirmed_hotspots = 24.0`
-  - 平均 `valid_cells = 1013.3`
-  - 平均 `stale_cells = 355.0`
-  - 平均 `astar_blocked_calls = 2.3`
-- `AEA`
-  - 当前更保守
-  - 平均 `blocked` 最低之一，调用数也最低
-  - 但平均 `confirmed_hotspots`、`valid_cells` 都弱于 `cost_aware`
-- `RHO`
-  - 当前最像 freshness-first 版本
-  - 平均 `valid_cells` 最高
-  - 平均 `stale_cells` 最低
-  - 平均 `confirmed_hotspots` 也略高于 `cost_aware`
-  - `astar_blocked_calls = 0.0`
+以下结论基于当前主线代码于 `2026-04-01` 的重跑结果，不再沿用目录内历史 `comparison_summary.json` 的旧结论。
 
-这组正式数据说明：在 weighted Voronoi 新分区基线下，`RHO` 终于真正与 `cost_aware` 拉开了差异，而 `AEA` 暂时没有成为新的最优任务层。
+- `cost_aware`
+  - 平均 `coverage_ratio = 0.8613`
+  - 平均 `valid_cells = 849.7`
+  - 平均 `stale_cells = 518.7`
+  - 平均 `confirmed_hotspots = 19.3`
+- `AEA`
+  - 平均 `coverage_ratio = 0.8691`
+  - 平均 `valid_cells = 952.3`
+  - 平均 `stale_cells = 416.0`
+  - 平均 `confirmed_hotspots = 19.7`
+- `RHO`
+  - 平均 `coverage_ratio = 0.8597`
+  - 平均 `valid_cells = 897.0`
+  - 平均 `stale_cells = 471.3`
+  - 平均 `confirmed_hotspots = 26.7`
+
+这组当前结果说明：
+
+- `AEA` 现在是更均衡的方案，在 coverage、valid_cells 和 stale_cells 上都优于另外两者。
+- `RHO` 仍然最像“热点确认优先”的版本，确认热点数最高，但 blocked 与 freshness 表现不如 `AEA`。
+- `cost_aware` 不再像旧结论里那样是当前最均衡方案，而是整体落在 `AEA` 和 `RHO` 之后。
+
+## 代表性回放
+
+- 推荐查看：`representative_aea_seed_20260325.html`
+- 原因：这份回放最能代表当前主线下 `AEA` 作为“更均衡版本”的行为特征。

@@ -32,26 +32,31 @@ class PatrolSegmentAccess:
 def build_default_usv_patrol_routes(
     sea_map: SeaMap,
 ) -> dict[str, tuple[tuple[float, float], ...]]:
-    """Build the default one-nearshore/two-offshore patrol loops for preview USVs."""
+    """Build the default one-nearshore/two-offshore patrol loops for preview USVs.
+
+    The default hard escort layout keeps `USV-2` in the base/nearshore region,
+    while `USV-1` and `USV-3` stage near the upper/lower offshore corridors so
+    they can use the nearest traversable corridor out to sea.
+    """
 
     nearshore_left = sea_map.nearshore.x_start + 45.0
     nearshore_right = sea_map.nearshore.x_end - 40.0
     offshore_left = sea_map.offshore.x_start + 70.0
     offshore_right = sea_map.offshore.x_end - 80.0
     return {
-        "USV-1": build_usv_serpentine_patrol_route(
+        "USV-1": build_usv_patrol_loop(
+            min_x=offshore_left,
+            max_x=offshore_right,
+            min_y=120.0,
+            max_y=420.0,
+        ),
+        "USV-2": build_usv_serpentine_patrol_route(
             min_x=nearshore_left,
             max_x=nearshore_right,
             min_y=140.0,
             max_y=860.0,
             lane_spacing=90.0,
             sweep_axis="horizontal",
-        ),
-        "USV-2": build_usv_patrol_loop(
-            min_x=offshore_left,
-            max_x=offshore_right,
-            min_y=120.0,
-            max_y=420.0,
         ),
         "USV-3": build_usv_patrol_loop(
             min_x=offshore_left,
