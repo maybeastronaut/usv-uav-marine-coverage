@@ -1,108 +1,17 @@
-# 实验数据集目录
+# experiment_datasets
 
-本目录用于放置**可复用、可对比、能突出算法特点**的实验数据集。
+存放可复用的对比实验数据集目录。
 
-这里的“数据集”在当前项目里主要指：
+每个子目录尽量自包含：
 
-- 固定场景
-- 固定随机种子集合
-- 固定步数
-- 固定统计口径
+- 实验说明 `README.md`
+- 对比用 `.toml` 配置
+- 一份 `batch.toml`
+- 运行后生成的 `batch_results.jsonl`、`batch_summary.json`
+- 代表性 `html`、逐 seed 的 `events.jsonl / summary.json`
 
-这样后续切换不同算法时，只替换算法配置，不替换数据集定义，就能保证实验可比性。
+当前保留原则：
 
-## 当前约定
-
-- 一个数据集配置文件只表达一种实验目标
-- 文件名优先体现：
-  - 对比层级
-  - 场景名
-  - 种子规模
-- 当前阶段优先服务：
-  - 任务层算法对比
-  - 后续可扩展到 `UAV` 规划层与 `USV` 规划层对比
-
-## 当前已落地的数据集
-
-- `usv_planner_offshore_hotspot_pressure_3seed_800/`
-  - 当前正式 `USV` 规划层对比数据集目录
-  - 已包含：
-    - `batch.toml`
-    - 聚合对比结果
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
-  - 适合观察 `astar` 与 `astar + smoother` 在高远海热点压力下的效果/成本取舍
-- `usv_planner_return_to_patrol_stress_3seed_1200/`
-  - 当前正式 `USV` 回巡航接入压力对比数据集目录
-  - 已包含：
-    - `batch.toml`
-    - 聚合对比结果
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
-  - 适合观察 `astar` 与 `astar + smoother` 在任务后长距离回巡航场景下的热点完成数、blocked 行为与规划成本差异
-- `partition_policy_offshore_hotspot_pressure_3seed_1200/`
-  - 当前正式分区层对比数据集目录
-  - 已包含：
-    - `batch.toml`
-    - 聚合对比结果
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
-  - 适合观察 `baseline_fixed / soft / weighted_voronoi` 在高远海热点压力下的 freshness、热点确认与 blocked 取舍
-- `task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/`
-  - 当前正式任务层对比数据集目录
-  - 已包含：
-    - `batch.toml`
-    - 聚合对比结果
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
-  - 适合观察 `cost_aware / AEA / RHO` 在 `weighted_voronoi` 新分区基线上是否真正拉开差异
-- `task_allocator_offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_1200/`
-  - 当前正式“中心化 vs 分布式任务分配”对比数据集目录
-  - 已包含：
-    - `batch.toml`
-    - 聚合对比结果
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
-  - 适合观察 `cost_aware / RHO / distributed_CBBA(bundle=2)` 在相同分区与规划条件下的表现差异
-- `distributed_cbba_bundle_compare_distributed_overlap_pressure_3seed_1200/`
-  - 当前正式分布式 `CBBA-lite` 内部结构验证数据集目录
-  - 已包含：
-    - `batch.toml`
-    - 聚合对比结果
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
-  - 适合观察 `bundle = 1` 与 `bundle = 2` 是否会改变分布式协商行为
-- `distributed_cbba_bundle2_memory_compare_distributed_overlap_pressure_3seed_1200/`
-  - 当前正式 `distributed_CBBA(bundle=2)` 局部 winner 记忆滞后验证数据集目录
-  - 已包含：
-    - `batch.toml`
-    - 聚合对比结果
-    - 每个 seed 的 `events.jsonl`
-    - 每个 seed 的 `summary.json`
-  - 适合观察 `winner_memory_ttl = 0 / 5 / 10` 是否会改变当前分布式协商结果
-
-## 使用方式
-
-当前这类数据集目录都应至少包含一个 `batch.toml`，可直接运行：
-
-```bash
-python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_datasets/<dataset_name>/batch.toml
-```
-
-当前约定进一步收敛为：
-
-- 每个正式数据集目录都尽量做成**自包含**
-- `batch.toml` 直接引用同目录下的配置副本
-- 不再依赖根目录里一长串跨目录相对引用
-
-这样做的好处是：
-
-- 打开一个数据集目录就能看到它实际用到的所有 `.toml`
-- 数据集迁移、归档、分享时不容易漏掉配置
-- 根目录 `configs/` 不必长期堆很多只服务某一个数据集的实验配置
-
-输出结果建议统一写到：
-
-- `outputs/experiments/<layer>/<dataset_name>/`
-
-这样可以把不同算法、不同数据集的结果长期整理在稳定目录下。
+- 一个目录只回答一类明确问题
+- 除被比较维度外，其余关键模块尽量固定
+- 优先使用 3 个可复现实验 seed 做第一轮对比

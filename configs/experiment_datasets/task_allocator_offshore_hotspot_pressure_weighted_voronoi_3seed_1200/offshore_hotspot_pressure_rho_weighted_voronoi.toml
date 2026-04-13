@@ -9,6 +9,6 @@ name = "offshore_hotspot_pressure"
 [algorithms]
 task_allocator = "rho_task_allocator"
 zone_partition_policy = "weighted_voronoi_partition_policy"
-usv_path_planner = "astar_path_planner"
+usv_path_planner = "astar_smoother_path_planner"
 uav_search_planner = "uav_lawnmower_planner"
-execution_policy = "phase_one_execution"
+execution_policy = "local_mpc_execution"

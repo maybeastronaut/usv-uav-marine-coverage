@@ -35,6 +35,9 @@ LOCAL_MPC_MIN_PROGRESS_RATIO = 0.18
 LOCAL_MPC_LOW_PROGRESS_PENALTY = 40.0
 LOCAL_MPC_LATERAL_DRIFT_PENALTY = 12.0
 LOCAL_MPC_STOPPING_SPEED_MPS = 0.0
+# Keep the historic constant for compatibility with other execution modules.
+LOCAL_MPC_STOP_PROGRESS_MARGIN_M = 0.25
+LOCAL_MPC_STOP_CLEARANCE_RATIO = 0.85
 LOCAL_MPC_EDGE_CLEARANCE_M = USV_COLLISION_CLEARANCE_M * 2.0
 
 
@@ -71,6 +74,7 @@ def compute_local_mpc_decision(
     initial_distance = hypot(tracking_target.x - agent.x, tracking_target.y - agent.y)
 
     best_decision: tuple[float, ControlCommand, float, float, float] | None = None
+    best_moving_decision: tuple[float, ControlCommand, float, float, float] | None = None
     candidate_count = 0
     for command in _candidate_commands(agent, nominal_command):
         candidate_count += 1
@@ -116,6 +120,16 @@ def compute_local_mpc_decision(
                 terminal_distance,
                 lateral_drift_m,
             )
+        if command.target_speed_mps > 0.0 and (
+            best_moving_decision is None or score < best_moving_decision[0]
+        ):
+            best_moving_decision = (
+                score,
+                command,
+                min_clearance_m,
+                terminal_distance,
+                lateral_drift_m,
+            )
 
     if best_decision is None:
         fallback_command = ControlCommand(
@@ -130,6 +144,10 @@ def compute_local_mpc_decision(
             predicted_lateral_drift_m=0.0,
         )
 
+    best_decision = _prefer_progressing_command_over_stop(
+        best_decision,
+        best_moving_decision=best_moving_decision,
+    )
     _, command, min_clearance_m, terminal_distance, lateral_drift_m = best_decision
     return LocalMpcDecision(
         command=command,
@@ -137,6 +155,35 @@ def compute_local_mpc_decision(
         predicted_terminal_distance_m=terminal_distance,
         candidate_count=candidate_count,
         predicted_lateral_drift_m=lateral_drift_m,
+    )
+
+
+def _prefer_progressing_command_over_stop(
+    best_decision: tuple[float, ControlCommand, float, float, float],
+    *,
+    best_moving_decision: tuple[float, ControlCommand, float, float, float] | None,
+) -> tuple[float, ControlCommand, float, float, float]:
+    score, command, min_clearance_m, terminal_distance, lateral_drift_m = best_decision
+    if command.target_speed_mps > 0.0 or best_moving_decision is None:
+        return best_decision
+
+    (
+        moving_score,
+        moving_command,
+        moving_clearance_m,
+        moving_terminal_distance_m,
+        moving_lateral_drift_m,
+    ) = best_moving_decision
+    if moving_terminal_distance_m >= terminal_distance - LOCAL_MPC_STOP_PROGRESS_MARGIN_M:
+        return best_decision
+    if moving_clearance_m < min_clearance_m * LOCAL_MPC_STOP_CLEARANCE_RATIO:
+        return best_decision
+    return (
+        moving_score,
+        moving_command,
+        moving_clearance_m,
+        moving_terminal_distance_m,
+        moving_lateral_drift_m,
     )
 
 
@@ -267,13 +314,19 @@ def _minimum_clearance(
 ) -> float:
     best_clearance_m = float("inf")
     if grid_width is not None and grid_height is not None:
-        best_clearance_m = min(
-            best_clearance_m,
-            agent.x - LOCAL_MPC_EDGE_CLEARANCE_M,
-            grid_width - agent.x - LOCAL_MPC_EDGE_CLEARANCE_M,
-            agent.y - LOCAL_MPC_EDGE_CLEARANCE_M,
-            grid_height - agent.y - LOCAL_MPC_EDGE_CLEARANCE_M,
+        edge_clearance_m = min(
+            agent.x,
+            grid_width - agent.x,
+            agent.y,
+            grid_height - agent.y,
         )
+        if edge_clearance_m <= 0.0:
+            return 0.0
+        # Treat map edges as a soft clearance term. The activation gate already
+        # decides when edge-aware local MPC should engage; here we only need to
+        # reject trajectories that actually leave the map, not trajectories that
+        # legitimately operate near a shoreline corridor in the scaled RL world.
+        best_clearance_m = min(best_clearance_m, edge_clearance_m)
     if obstacle_layout is not None:
         for obstacle in obstacle_layout.risk_zone_obstacles:
             if _point_in_polygon(agent.x, agent.y, obstacle.points):

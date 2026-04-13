@@ -1,0 +1,20 @@
+[simulation]
+seed = 20260314
+steps = 1200
+dt_seconds = 1.0
+
+[scenario]
+name = "offshore_hotspot_pressure"
+
+[algorithms]
+task_allocator = "cost_aware_centralized_allocator"
+zone_partition_policy = "weighted_voronoi_partition_policy"
+usv_path_planner = "astar_path_planner"
+uav_search_planner = "uav_lawnmower_planner"
+execution_policy = "phase_one_execution"
+
+[[events]]
+step = 600
+type = "speed_degradation"
+agent_id = "USV-1"
+speed_multiplier = 0.5

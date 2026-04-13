@@ -26,10 +26,18 @@ def build_simulation_html(replay: SimulationReplay) -> str:
 
     sea_map = replay.sea_map
     layout = replay.obstacle_layout
-    grid_map = build_grid_map(sea_map, layout)
+    grid_map = _build_replay_grid_map(sea_map, layout)
+    page_title = "USV-UAV Simulation Replay"
+    summary_title = "Simulation Summary"
+    replay_badge = "Task Simulation"
     zone_rectangles: list[str] = []
     zone_labels: list[str] = []
     tick_marks: list[str] = []
+    y_label_values = (
+        _format_distance_label(sea_map.height),
+        _format_distance_label(sea_map.height / 2.0),
+        _format_distance_label(0.0),
+    )
 
     for zone in sea_map.zones:
         zone_left = MAP_LEFT + (zone.x_start / sea_map.width) * MAP_WIDTH
@@ -51,7 +59,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
             """
         )
 
-    for value in (0, 250, 450, 1000):
+    for value in _build_x_tick_values(sea_map):
         x = MAP_LEFT + (value / sea_map.width) * MAP_WIDTH
         tick_marks.append(
             f"""
@@ -60,7 +68,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
                     stroke="#334155" stroke-width="1.5" />
               <text x="{x}" y="{MAP_TOP + MAP_HEIGHT + 28}" text-anchor="middle"
                     font-size="13" fill="#334155">
-                {value}
+                {_format_distance_label(value)}
               </text>
             </g>
             """
@@ -69,6 +77,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
     frame_payloads = _build_frame_payloads(replay, grid_map)
     frame_summaries = _build_frame_summaries(replay)
     planned_path_payloads = _build_planned_path_payloads(replay)
+    agent_static_payloads = _build_agent_static_payloads(replay)
     max_step = replay.frames[-1].step
 
     return f"""<!DOCTYPE html>
@@ -76,7 +85,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>USV-UAV Simulation Replay</title>
+    <title>{page_title}</title>
     <style>
       body {{
         margin: 0;
@@ -234,6 +243,9 @@ def build_simulation_html(replay: SimulationReplay) -> str:
           <div class="toolbar">
             <div class="toolbar-section">
               <div class="toolbar-label">Replay Controls</div>
+              <div class="toolbar-pill" aria-label="Replay kind">
+                <button type="button" disabled>{replay_badge}</button>
+              </div>
             </div>
             <div class="toolbar-section">
               <div class="toolbar-label">Agent Labels</div>
@@ -255,7 +267,7 @@ def build_simulation_html(replay: SimulationReplay) -> str:
             <input type="range" min="0" max="{max_step}" value="0" id="timeline" oninput="setFrame(Number(this.value))" />
             <div class="step-badge" id="stepBadge">Step 0</div>
           </div>
-          <svg viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" role="img" aria-label="USV-UAV simulation replay map">
+          <svg viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" role="img" aria-label="{page_title}">
             <defs>
               <pattern id="gridPattern" width="50" height="50" patternUnits="userSpaceOnUse">
                 <path d="M50 0 L0 0 0 50" fill="none" stroke="rgba(148, 163, 184, 0.10)" stroke-width="1" />
@@ -282,15 +294,12 @@ def build_simulation_html(replay: SimulationReplay) -> str:
               <g id="coveredLayer"></g>
               <g id="baselineLayer"></g>
               <g id="hotspotLayer"></g>
-              <g id="footprintLayer" class="footprint-layer" aria-label="Replay Footprints"></g>
-              <g id="trajectoryLayer" aria-label="Planned Path Layer"></g>
-              <g id="agentLayer"></g>
+            <g id="footprintLayer" class="footprint-layer" aria-label="Replay Footprints"></g>
+            <g id="trajectoryLayer" aria-label="Planned Path Layer"></g>
+            <g id="agentLayer"></g>
             </g>
             {"".join(zone_labels)}
-            <line x1="{MAP_LEFT + (250 / sea_map.width) * MAP_WIDTH}" y1="{MAP_TOP}" x2="{MAP_LEFT + (250 / sea_map.width) * MAP_WIDTH}" y2="{MAP_TOP + MAP_HEIGHT}"
-                  stroke="rgba(148, 163, 184, 0.72)" stroke-width="1.1" stroke-dasharray="6 8" />
-            <line x1="{MAP_LEFT + (450 / sea_map.width) * MAP_WIDTH}" y1="{MAP_TOP}" x2="{MAP_LEFT + (450 / sea_map.width) * MAP_WIDTH}" y2="{MAP_TOP + MAP_HEIGHT}"
-                  stroke="rgba(148, 163, 184, 0.72)" stroke-width="1.1" stroke-dasharray="6 8" />
+            {"".join(_build_zone_boundary_lines(sea_map))}
             {"".join(tick_marks)}
             <line x1="{MAP_LEFT}" y1="{MAP_TOP}" x2="{MAP_LEFT - 8}" y2="{MAP_TOP}"
                   stroke="#64748B" stroke-width="1.2" />
@@ -298,9 +307,9 @@ def build_simulation_html(replay: SimulationReplay) -> str:
                   stroke="#64748B" stroke-width="1.2" />
             <line x1="{MAP_LEFT}" y1="{MAP_TOP + MAP_HEIGHT}" x2="{MAP_LEFT - 8}" y2="{MAP_TOP + MAP_HEIGHT}"
                   stroke="#64748B" stroke-width="1.2" />
-            <text x="{MAP_LEFT - 14}" y="{MAP_TOP + 4}" text-anchor="end" font-size="11" fill="#64748B">1000</text>
-            <text x="{MAP_LEFT - 14}" y="{MAP_TOP + MAP_HEIGHT / 2 + 4}" text-anchor="end" font-size="11" fill="#64748B">500</text>
-            <text x="{MAP_LEFT - 14}" y="{MAP_TOP + MAP_HEIGHT + 4}" text-anchor="end" font-size="11" fill="#64748B">0</text>
+            <text x="{MAP_LEFT - 14}" y="{MAP_TOP + 4}" text-anchor="end" font-size="11" fill="#64748B">{y_label_values[0]}</text>
+            <text x="{MAP_LEFT - 14}" y="{MAP_TOP + MAP_HEIGHT / 2 + 4}" text-anchor="end" font-size="11" fill="#64748B">{y_label_values[1]}</text>
+            <text x="{MAP_LEFT - 14}" y="{MAP_TOP + MAP_HEIGHT + 4}" text-anchor="end" font-size="11" fill="#64748B">{y_label_values[2]}</text>
             <text x="{MAP_LEFT + MAP_WIDTH / 2}" y="{MAP_TOP + MAP_HEIGHT + 56}" text-anchor="middle" font-size="14" fill="#334155">
               X Axis (0 m to {int(sea_map.width)} m)
             </text>
@@ -310,8 +319,10 @@ def build_simulation_html(replay: SimulationReplay) -> str:
           </svg>
         </div>
         <div class="card side-card">
-          <h2 class="side-title">Simulation Summary</h2>
+          <h2 class="side-title">{summary_title}</h2>
           <div class="stat"><span>Coverage</span><strong id="coverageRatio">0.0%</strong></div>
+          <div class="stat"><span>Covered Cells</span><strong id="coveredCells">0</strong></div>
+          <div class="stat"><span>Current Observed Cells</span><strong id="currentObservedCells">0</strong></div>
           <div class="stat"><span>Valid Cells</span><strong id="validCells">0</strong></div>
           <div class="stat"><span>Stale Cells</span><strong id="staleCells">0</strong></div>
           <div class="stat"><span>Active Hotspots</span><strong id="activeHotspots">0</strong></div>
@@ -324,9 +335,11 @@ def build_simulation_html(replay: SimulationReplay) -> str:
       </div>
     </div>
     <script>
+      const agentDisplayScale = 1.0;
       const frameRenderData = {frame_payloads};
       const frameSummaries = {frame_summaries};
       const plannedPathData = {planned_path_payloads};
+      const agentStaticData = {agent_static_payloads};
       const gridRows = {grid_map.rows};
       const gridCols = {grid_map.cols};
       const gridCellSize = {grid_map.cell_size};
@@ -392,6 +405,10 @@ def build_simulation_html(replay: SimulationReplay) -> str:
 
       function formatPoints(points) {{
         return points.map(([x, y]) => `${{x.toFixed(2)}},${{y.toFixed(2)}}`).join(" ");
+      }}
+
+      function scalePoints(points, factor) {{
+        return points.map(([x, y]) => [x * factor, y * factor]);
       }}
 
       function interpolateHeading(startDeg, endDeg, progress) {{
@@ -476,7 +493,9 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         return agents
           .map((agent) => {{
             const [svgX, svgY] = mapPointToSvg(agent.x, agent.y);
-            const radiusM = agent.kind === "USV" ? 50.0 : 100.0;
+            const radiusM =
+              agentStaticData[agent.agent_id]?.coverage_radius ??
+              (agent.kind === "USV" ? 50.0 : 100.0);
             const svgRadius = (radiusM / {replay.sea_map.width}) * {MAP_WIDTH};
             const stroke =
               agent.kind === "USV" ? "rgba(37, 99, 235, 0.72)" : "rgba(13, 148, 136, 0.72)";
@@ -494,15 +513,19 @@ def build_simulation_html(replay: SimulationReplay) -> str:
 
       function renderUSV(agent) {{
         const [centerX, centerY] = mapPointToSvg(agent.x, agent.y);
+        const scale = agentDisplayScale;
         const hull = formatPoints(
           rotatePoints(
-            [
-              [-9.0, -4.5],
-              [6.0, -4.5],
-              [10.5, 0.0],
-              [6.0, 4.5],
-              [-9.0, 4.5],
-            ],
+            scalePoints(
+              [
+                [-9.0, -4.5],
+                [6.0, -4.5],
+                [10.5, 0.0],
+                [6.0, 4.5],
+                [-9.0, 4.5],
+              ],
+              scale,
+            ),
             centerX,
             centerY,
             agent.heading_deg,
@@ -510,24 +533,27 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         );
         const wake = formatPoints(
           rotatePoints(
-            [
-              [-13.5, 0.0],
-              [-21.0, -3.8],
-              [-18.0, 0.0],
-              [-21.0, 3.8],
-            ],
+            scalePoints(
+              [
+                [-13.5, 0.0],
+                [-21.0, -3.8],
+                [-18.0, 0.0],
+                [-21.0, 3.8],
+              ],
+              scale,
+            ),
             centerX,
             centerY,
             agent.heading_deg,
           ),
         );
         const labelX = centerX;
-        const labelY = centerY - 17;
+        const labelY = centerY - 17 * scale;
         return `
           <g aria-label="${{agent.agent_id}}">
             <polygon points="${{wake}}" fill="rgba(125, 211, 252, 0.45)" />
             <polygon points="${{hull}}" fill="#0F172A" stroke="#E2E8F0" stroke-width="1.8" />
-            <circle cx="${{centerX.toFixed(2)}}" cy="${{centerY.toFixed(2)}}" r="2.2" fill="#7DD3FC" />
+            <circle cx="${{centerX.toFixed(2)}}" cy="${{centerY.toFixed(2)}}" r="${{(2.2 * scale).toFixed(2)}}" fill="#7DD3FC" />
             <g class="agent-label">
               <rect x="${{(labelX - 22).toFixed(2)}}" y="${{(labelY - 8).toFixed(2)}}" width="44" height="15" rx="7.5" ry="7.5"
                     fill="rgba(255,255,255,0.86)" stroke="rgba(15,23,42,0.10)" />
@@ -540,14 +566,18 @@ def build_simulation_html(replay: SimulationReplay) -> str:
 
       function renderUAV(agent) {{
         const [centerX, centerY] = mapPointToSvg(agent.x, agent.y);
+        const scale = agentDisplayScale;
         const frame = formatPoints(
           rotatePoints(
-            [
-              [0.0, -7.0],
-              [7.0, 0.0],
-              [0.0, 7.0],
-              [-7.0, 0.0],
-            ],
+            scalePoints(
+              [
+                [0.0, -7.0],
+                [7.0, 0.0],
+                [0.0, 7.0],
+                [-7.0, 0.0],
+              ],
+              scale,
+            ),
             centerX,
             centerY,
             agent.heading_deg,
@@ -555,23 +585,29 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         );
         const nose = formatPoints(
           rotatePoints(
-            [
-              [0.0, -9.5],
-              [3.0, -5.5],
-              [-3.0, -5.5],
-            ],
+            scalePoints(
+              [
+                [0.0, -9.5],
+                [3.0, -5.5],
+                [-3.0, -5.5],
+              ],
+              scale,
+            ),
             centerX,
             centerY,
             agent.heading_deg,
           ),
         );
         const rotorOffsets = rotatePoints(
-          [
-            [-8.0, -8.0],
-            [8.0, -8.0],
-            [8.0, 8.0],
-            [-8.0, 8.0],
-          ],
+          scalePoints(
+            [
+              [-8.0, -8.0],
+              [8.0, -8.0],
+              [8.0, 8.0],
+              [-8.0, 8.0],
+            ],
+            scale,
+          ),
           centerX,
           centerY,
           agent.heading_deg,
@@ -579,17 +615,17 @@ def build_simulation_html(replay: SimulationReplay) -> str:
         const rotorCircles = rotorOffsets
           .map(
             ([x, y]) =>
-              `<circle cx="${{x.toFixed(2)}}" cy="${{y.toFixed(2)}}" r="3.4" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" />`,
+              `<circle cx="${{x.toFixed(2)}}" cy="${{y.toFixed(2)}}" r="${{(3.4 * scale).toFixed(2)}}" fill="#ECFEFF" stroke="#0F766E" stroke-width="1.2" />`,
           )
           .join("");
         const labelX = centerX;
-        const labelY = centerY - 18;
+        const labelY = centerY - 18 * scale;
         return `
           <g aria-label="${{agent.agent_id}}">
             ${{rotorCircles}}
             <polygon points="${{frame}}" fill="#0F766E" stroke="#F0FDFA" stroke-width="1.4" />
             <polygon points="${{nose}}" fill="#99F6E4" />
-            <circle cx="${{centerX.toFixed(2)}}" cy="${{centerY.toFixed(2)}}" r="2.2" fill="#F0FDFA" />
+            <circle cx="${{centerX.toFixed(2)}}" cy="${{centerY.toFixed(2)}}" r="${{(2.2 * scale).toFixed(2)}}" fill="#F0FDFA" />
             <g class="agent-label">
               <rect x="${{(labelX - 22).toFixed(2)}}" y="${{(labelY - 8).toFixed(2)}}" width="44" height="15" rx="7.5" ry="7.5"
                     fill="rgba(255,255,255,0.88)" stroke="rgba(15,23,42,0.10)" />
@@ -635,6 +671,16 @@ def build_simulation_html(replay: SimulationReplay) -> str:
 
       function renderCoveredCells(cellIds) {{
         return `<g aria-label="Covered Cells">${{renderCellLayer(cellIds, "rgba(234, 179, 8, 0.10)")}}</g>`;
+      }}
+
+      function renderCurrentObservedCells(cellIds) {{
+        return `<g aria-label="Current Observed Cells">${{renderCellLayer(cellIds, "rgba(34, 197, 94, 0.18)", "rgba(22, 163, 74, 0.28)", 0.5)}}</g>`;
+      }}
+
+      function renderCoveredHistoryCells(cellIds, currentCellIds) {{
+        const currentSet = new Set(currentCellIds);
+        const historyCellIds = cellIds.filter((cellId) => !currentSet.has(cellId));
+        return `<g aria-label="Covered History Cells">${{renderCellLayer(historyCellIds, "rgba(59, 130, 246, 0.08)", "rgba(59, 130, 246, 0.12)", 0.4)}}</g>`;
       }}
 
       function renderBaselineTasks(cellIds) {{
@@ -720,6 +766,8 @@ def build_simulation_html(replay: SimulationReplay) -> str:
 
         const summary = frameSummaries[step];
         document.getElementById("coverageRatio").textContent = summary.coverage_ratio;
+        document.getElementById("coveredCells").textContent = String(summary.covered_cells);
+        document.getElementById("currentObservedCells").textContent = String(summary.current_observed_cells);
         document.getElementById("validCells").textContent = String(summary.valid_cells);
         document.getElementById("staleCells").textContent = String(summary.stale_cells);
         document.getElementById("activeHotspots").textContent = String(summary.active_hotspots);
@@ -787,6 +835,8 @@ def build_simulation_html(replay: SimulationReplay) -> str:
 
         const summary = frameSummaries[baseFrame];
         document.getElementById("coverageRatio").textContent = summary.coverage_ratio;
+        document.getElementById("coveredCells").textContent = String(summary.covered_cells);
+        document.getElementById("currentObservedCells").textContent = String(summary.current_observed_cells);
         document.getElementById("validCells").textContent = String(summary.valid_cells);
         document.getElementById("staleCells").textContent = String(summary.stale_cells);
         document.getElementById("activeHotspots").textContent = String(summary.active_hotspots);
@@ -828,8 +878,12 @@ def build_simulation_html(replay: SimulationReplay) -> str:
       setFrame(0);
     </script>
   </body>
-</html>
+    </html>
 """
+
+
+def _build_replay_grid_map(sea_map, layout):
+    return build_grid_map(sea_map, layout)
 
 
 def _build_frame_payloads(replay: SimulationReplay, grid_map) -> str:
@@ -840,6 +894,10 @@ def _build_frame_payloads(replay: SimulationReplay, grid_map) -> str:
                 "valid_cells": _encode_cell_indices(frame.valid_cells, cols=grid_map.cols),
                 "stale_cells": _encode_cell_indices(frame.stale_cells, cols=grid_map.cols),
                 "covered_cells": _encode_cell_indices(frame.covered_cells, cols=grid_map.cols),
+                "current_observed_cells": _encode_cell_indices(
+                    frame.current_observed_cells,
+                    cols=grid_map.cols,
+                ),
                 "baseline_cells": _encode_cell_indices(frame.baseline_cells, cols=grid_map.cols),
                 "pending_hotspot_cells": _encode_cell_indices(
                     frame.pending_hotspot_cells, cols=grid_map.cols
@@ -862,6 +920,17 @@ def _build_frame_payloads(replay: SimulationReplay, grid_map) -> str:
             }
         )
     return json.dumps(payloads, ensure_ascii=True)
+
+
+def _build_agent_static_payloads(replay: SimulationReplay) -> str:
+    payload = {
+        agent.agent_id: {
+            "coverage_radius": agent.coverage_radius,
+            "detection_radius": agent.detection_radius,
+        }
+        for agent in replay.initial_agents
+    }
+    return json.dumps(payload, ensure_ascii=True)
 
 
 def _build_planned_path_payloads(replay: SimulationReplay) -> str:
@@ -899,6 +968,8 @@ def _build_frame_summaries(replay: SimulationReplay) -> str:
             {
                 "step": frame.step,
                 "coverage_ratio": f"{frame.coverage_ratio * 100:.1f}%",
+                "covered_cells": len(frame.covered_cells),
+                "current_observed_cells": len(frame.current_observed_cells),
                 "valid_cells": len(frame.valid_cells),
                 "stale_cells": len(frame.stale_cells),
                 "active_hotspots": len(frame.pending_hotspot_cells) + len(frame.uav_checked_cells),
@@ -908,3 +979,26 @@ def _build_frame_summaries(replay: SimulationReplay) -> str:
             }
         )
     return json.dumps(summary_items, ensure_ascii=True)
+
+
+def _build_x_tick_values(sea_map) -> tuple[float, ...]:
+    values = {0.0, sea_map.width}
+    values.update(zone.x_end for zone in sea_map.zones[:-1])
+    return tuple(sorted(values))
+
+
+def _build_zone_boundary_lines(sea_map) -> tuple[str, ...]:
+    return tuple(
+        f"""
+            <line x1="{MAP_LEFT + (zone.x_end / sea_map.width) * MAP_WIDTH}" y1="{MAP_TOP}" x2="{MAP_LEFT + (zone.x_end / sea_map.width) * MAP_WIDTH}" y2="{MAP_TOP + MAP_HEIGHT}"
+                  stroke="rgba(148, 163, 184, 0.72)" stroke-width="1.1" stroke-dasharray="6 8" />
+        """
+        for zone in sea_map.zones[:-1]
+    )
+
+
+def _format_distance_label(value: float) -> str:
+    rounded = round(value)
+    if abs(value - rounded) < 1e-6:
+        return str(int(rounded))
+    return f"{value:.1f}"

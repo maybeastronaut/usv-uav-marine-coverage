@@ -18,24 +18,47 @@ module execution, and future tests.
 |-- BUGFIX.md
 |-- README.md
 |-- configs/
-|   |-- phase_one_baseline.toml
+|   |-- aoi_energy_auction_allocator.toml
+|   |-- astar_smoother_baseline.toml
 |   |-- baseline_patrol_rho_failure_hotspot_first_soft_partition.toml
 |   |-- baseline_patrol_rho_failure_hotspot_first_soft_partition_usv1_failure.toml
+|   |-- cost_aware_allocator.toml
+|   |-- cost_aware_uav_persistent_multi_region.toml
+|   |-- distributed_cbba_allocator.toml
+|   |-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi.toml
+|   |-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2.toml
 |   |-- experiment_datasets/
 |   |   |-- README.md
-|   |   |-- partition_policy_offshore_hotspot_pressure_3seed_1200/
-|   |   |   |-- README.md
-|   |   |   |-- batch.toml
-|   |   |   |-- offshore_hotspot_pressure_cost_aware.toml
-|   |   |   |-- offshore_hotspot_pressure_cost_aware_soft_partition.toml
-|   |   |   `-- offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml
-|   |   |-- distributed_cbba_bundle_compare_distributed_overlap_pressure_3seed_1200/
-|   |   |   |-- README.md
-|   |   |   |-- batch.toml
-|   |   |   |-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi.toml
-|   |   |   `-- distributed_overlap_pressure_distributed_cbba_weighted_voronoi_bundle2.toml
-|   |   |   `-- ...
-|   |   `-- ...
+|   |   `-- task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/
+|   |       |-- README.md
+|   |       |-- batch.toml
+|   |       |-- offshore_hotspot_pressure_aoi_energy_weighted_voronoi.toml
+|   |       |-- offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml
+|   |       `-- offshore_hotspot_pressure_rho_weighted_voronoi.toml
+|   |-- hybrid_astar_baseline.toml
+|   |-- local_mpc_execution.toml
+|   |-- offshore_hotspot_pressure_aoi_energy_weighted_voronoi.toml
+|   |-- offshore_hotspot_pressure_cost_aware_agent_failure.toml
+|   |-- offshore_hotspot_pressure_cost_aware_failure_event.toml
+|   |-- offshore_hotspot_pressure_cost_aware_soft_partition.toml
+|   |-- offshore_hotspot_pressure_cost_aware_speed_degradation.toml
+|   |-- offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml
+|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_range350.toml
+|   |-- offshore_hotspot_pressure_distributed_cbba_weighted_voronoi_sync5.toml
+|   |-- offshore_hotspot_pressure_rho_weighted_voronoi.toml
+|   |-- phase_one_baseline.toml
+|   |-- phase_one_batch.toml
+|   |-- qualified_agent_failure/
+|   |   |-- README.md
+|   |   |-- html/
+|   |   |   |-- baseline_patrol_rho_failure_hotspot_first_soft_partition_seed_20260314.html
+|   |   |   |-- baseline_patrol_rho_failure_hotspot_first_soft_partition_seed_20268007.html
+|   |   |   `-- baseline_patrol_rho_failure_hotspot_first_soft_partition_usv1_failure_seed_20265248.html
+|   |   `-- baseline_patrol_rho_failure_hotspot_first_soft_partition.toml
+|   |-- return_to_patrol_stress_cost_aware.toml
+|   |-- rho_astar_smoother_local_mpc_no_failure.toml
+|   |-- rho_task_allocator.toml
+|   |-- scenario_comparison_batch.toml
 |   |-- uav_multi_region_coverage.toml
 |   `-- uav_persistent_multi_region_coverage.toml
 |-- docx/
@@ -153,20 +176,20 @@ module execution, and future tests.
 - `configs/phase_one_baseline.toml`: 当前保留的基础单次运行入口配置，适合快速 smoke run。
 - `configs/baseline_patrol_rho_failure_hotspot_first_soft_partition.toml`: 普通压力 `baseline_patrol` 下的失效应急配置样例；平时仍走 `RHO` 主线，但在 `agent_failure` 后启用热点焦点簇优先的 failure-triggered soft partition，只要热点 backlog 仍在就压住 `baseline_service`，并优先让剩余 `USV` 围绕当前外海热点焦点簇协同清理。
 - `configs/baseline_patrol_rho_failure_hotspot_first_soft_partition_usv1_failure.toml`: 与上面同一主线配置的派生版本，只把 `step 600` 的失效对象改成 `USV-1`，便于直接对比失效对象差异。
-- `configs/experiment_datasets/README.md`: 实验数据集目录说明，约定如何组织“能突出算法特点”的可复用对比数据集。
-- `configs/experiment_datasets/usv_planner_offshore_hotspot_pressure_3seed_800/`: 当前 `USV` 规划层对比用的正式数据集目录，固定 `offshore_hotspot_pressure` 场景、`3` 个随机种子和 `800 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
-- `configs/experiment_datasets/usv_planner_return_to_patrol_stress_3seed_1200/`: 当前 `USV` 规划层在 `return_to_patrol_stress` 场景下的最新正式数据集目录，固定最新 `3` 个随机种子和 `1200 step`，同时包含 batch 配置、聚合结果以及每个 seed 的日志与汇总。
-- `configs/experiment_datasets/partition_policy_offshore_hotspot_pressure_3seed_1200/`: 当前正式分区层对比数据集目录，固定 `offshore_hotspot_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `baseline_fixed / soft / weighted_voronoi`。
-- `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/`: 当前正式任务层对比数据集目录，固定 `weighted_voronoi` 分区基线、`offshore_hotspot_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `cost_aware / AEA / RHO`。
-- `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_distributed_bundle2_3seed_1200/`: 当前正式“中心化 vs 分布式任务分配”对比数据集目录，固定 `weighted_voronoi` 分区基线、`offshore_hotspot_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `cost_aware / RHO / distributed_CBBA(bundle=2)`。
-- `configs/experiment_datasets/distributed_cbba_bundle_compare_distributed_overlap_pressure_3seed_1200/`: 当前正式分布式 `CBBA-lite` 内部结构对比数据集目录，固定 `distributed_overlap_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `bundle = 1 / 2`。
-- `configs/experiment_datasets/distributed_cbba_bundle2_memory_compare_distributed_overlap_pressure_3seed_1200/`: 当前正式 `distributed_CBBA(bundle=2)` 局部 winner 记忆滞后验证数据集目录，固定 `distributed_overlap_pressure` 场景、`3` 个随机种子和 `1200 step`，用于比较 `winner_memory_ttl = 0 / 5 / 10`。
-- 当前正式 `experiment_datasets/*` 目录已改成**自包含配置**：
+- `configs/rho_astar_smoother_local_mpc_no_failure.toml`: 当前手动单跑入口之一，固定使用 `rho_task_allocator + astar_smoother_path_planner + local_mpc_execution`，且不注入任何智能体失效事件，适合直接观察“无损失版本”的执行表现。
+- `configs/experiment_datasets/README.md`: 可复用对比实验目录总说明，约定每个实验目录尽量自包含配置、说明和结果。
+- `configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/`: 第一组任务分配算法对比实验目录；固定 `offshore_hotspot_pressure + weighted_voronoi + astar_smoother + local_mpc`，比较 `cost-aware / AEA / RHO` 在 `3` 个 seed、`1200 step` 下的表现。
+- `configs/qualified_agent_failure/README.md`: 智能体失效场景“合格配置”目录说明，约定只有通过当前回放校验的失效场景配置才进入该目录。
+- `configs/qualified_agent_failure/baseline_patrol_rho_failure_hotspot_first_soft_partition.toml`: 当前已验证通过的一份失效场景合格基线配置；与根目录同名原始配置并存，便于后续按“原始入口 / 合格归档”两种方式组织使用。
+- `configs/qualified_agent_failure/html/`: 失效场景合格配置对应的归档回放 HTML 目录，当前保留主基线回放、额外随机种子中综合表现最好的回放，以及一份人工确认的 `USV-1` 失效样本回放。
+- 根目录 `configs/*.toml` 中新增的一组兼容入口配置：用于恢复旧测试和快速单跑入口，覆盖 `cost-aware / AEA / RHO / distributed CBBA`、`soft_partition / weighted_voronoi`、`A* smoother / hybrid A*`、`local_mpc_execution`、`UAV multi-region / persistent multi-region`、以及若干失效事件样例；这些文件本身不引入新算法，只是把当前仍保留的规则式仿真能力重新暴露为短路径入口。
+- `configs/phase_one_batch.toml` 与 `configs/scenario_comparison_batch.toml`: 根目录兼容 batch 入口，分别用于基线多 seed 批跑和按场景切换的对比批跑。
+- 当前保留的 `experiment_datasets/*` 目录已采用**自包含配置**：
   - `batch.toml` 直接引用同目录下的 `.toml`
   - 迁移或归档单个数据集目录时，不再依赖根目录中的跨目录相对引用
-- 当前根目录 `configs/` 已收敛为：
-  - 仅保留少量手动单跑入口
-  - 主要实验配置统一下沉到各自数据集目录
+- 当前根目录 `configs/` 以两类入口为主：
+  - 少量手动单跑与回放入口
+  - 一组兼容旧测试和快速单跑的短路径 `.toml`
 - `docx/current_system_flow.md`: 基于当前已有代码整理的系统实际流程说明文档。
 - `docx/discussion_notes.md`: 讨论阶段确认的建模方案、状态标记和后续实现依据。
 - `docx/execution_regression_checklist.md`: 执行层 `1200 step` 长回放回归检查清单，固定记录关键 step、预期行为和推荐复跑方式，用于后续执行层改动后的人工回归。
@@ -411,28 +434,22 @@ If you want to run the second UAV persistent multi-region coverage configuration
 python -m usv_uav_marine_coverage --simulate --config configs/uav_persistent_multi_region_coverage.toml
 ```
 
-If you want to rerun the formal partition-policy comparison dataset:
+If you want to rerun the baseline multi-seed compatibility batch:
 
 ```bash
-python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_datasets/partition_policy_offshore_hotspot_pressure_3seed_1200/batch.toml
+python -m usv_uav_marine_coverage --simulate --batch-config configs/phase_one_batch.toml
 ```
 
-If you want to rerun the formal task-allocator comparison dataset on the weighted Voronoi partition baseline:
+If you want to rerun the currently checked-in formal task-allocator comparison dataset on the weighted Voronoi partition baseline:
 
 ```bash
 python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/batch.toml
 ```
 
-If you want to rerun the formal offshore `USV` planner comparison dataset:
+If you want to rerun the scenario-switching compatibility batch:
 
 ```bash
-python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_datasets/usv_planner_offshore_hotspot_pressure_3seed_800/batch.toml
-```
-
-If you want to rerun the formal return-to-patrol `USV` planner comparison dataset:
-
-```bash
-python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_datasets/usv_planner_return_to_patrol_stress_3seed_1200/batch.toml
+python -m usv_uav_marine_coverage --simulate --batch-config configs/scenario_comparison_batch.toml
 ```
 
 If you want a longer replay:

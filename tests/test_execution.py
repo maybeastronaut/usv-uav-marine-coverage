@@ -530,6 +530,57 @@ class ExecutionTestCase(unittest.TestCase):
         self.assertLess(advanced_agent.x, 1000.0)
         self.assertLess(advanced_agent.x, agent.x + 1.0)
 
+    def test_local_mpc_path_follower_does_not_freeze_small_world_usv_near_edge(self) -> None:
+        agent = replace(
+            next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1"),
+            x=22.376,
+            y=36.29,
+            heading_deg=8.0,
+            speed_mps=0.0,
+            max_speed_mps=1.6,
+            cruise_speed_mps=1.1,
+            max_acceleration_mps2=0.36,
+            max_deceleration_mps2=0.48,
+            arrival_tolerance_m=2.4,
+        )
+        state = AgentExecutionState(
+            agent_id=agent.agent_id,
+            stage=ExecutionStage.PATROL,
+            active_task_id=None,
+            active_plan=PathPlan(
+                plan_id="plan-mpc-small-world-edge",
+                planner_name="astar_smoother_path_planner",
+                agent_id=agent.agent_id,
+                task_id=None,
+                status=PathPlanStatus.PLANNED,
+                waypoints=(
+                    Waypoint(x=22.376, y=36.29),
+                    Waypoint(x=25.0, y=85.0),
+                    Waypoint(x=25.0, y=135.0),
+                    Waypoint(x=25.0, y=185.0),
+                ),
+                goal_x=20.0,
+                goal_y=180.0,
+                estimated_cost=149.0,
+            ),
+            current_waypoint_index=1,
+            patrol_route_id=agent.agent_id,
+            patrol_waypoint_index=0,
+        )
+
+        advanced_agent, updated_state, outcome = follow_path_step_with_local_mpc(
+            agent,
+            state,
+            dt_seconds=1.0,
+            grid_width=200.0,
+            grid_height=200.0,
+        )
+
+        self.assertEqual(outcome, ExecutionOutcome.ADVANCING)
+        self.assertGreater(advanced_agent.speed_mps, 0.0)
+        self.assertGreater(advanced_agent.y, agent.y)
+        self.assertEqual(updated_state.current_waypoint_index, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

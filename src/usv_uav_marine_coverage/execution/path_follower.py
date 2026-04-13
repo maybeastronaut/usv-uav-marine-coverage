@@ -261,16 +261,15 @@ def _should_activate_local_mpc(
     grid_height: float | None,
 ) -> bool:
     plan = execution_state.active_plan
-    if (
+    is_far_go_to_task = (
         execution_state.stage == ExecutionStage.GO_TO_TASK
         and execution_state.active_task_id is not None
         and plan is not None
         and hypot(tracking_target.x - plan.goal_x, tracking_target.y - plan.goal_y)
         > USV_GO_TO_TASK_FINAL_APPROACH_MPC_TRIGGER_M
-    ):
-        if obstacle_layout is None:
-            return False
-        return not _segment_is_clear(
+    )
+    if is_far_go_to_task:
+        if obstacle_layout is not None and not _segment_is_clear(
             agent.x,
             agent.y,
             tracking_target.x,
@@ -278,12 +277,13 @@ def _should_activate_local_mpc(
             obstacle_layout=obstacle_layout,
             clearance_m=USV_LOCAL_AVOIDANCE_CLEARANCE_M,
             wreck_zones=wreck_zones,
-        )
+        ):
+            return True
     if grid_width is not None and grid_height is not None:
         edge_clearance = min(agent.x, grid_width - agent.x, agent.y, grid_height - agent.y)
         if edge_clearance <= USV_LOCAL_MPC_EDGE_TRIGGER_M:
             return True
-    if obstacle_layout is not None and not _segment_is_clear(
+    if not is_far_go_to_task and obstacle_layout is not None and not _segment_is_clear(
         agent.x,
         agent.y,
         tracking_target.x,
@@ -293,7 +293,7 @@ def _should_activate_local_mpc(
         wreck_zones=wreck_zones,
     ):
         return True
-    if obstacle_layout is not None:
+    if not is_far_go_to_task and obstacle_layout is not None:
         for feature in obstacle_layout.offshore_features:
             if feature.feature_type != "risk_area":
                 continue

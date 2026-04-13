@@ -4134,6 +4134,54 @@ class SimulationRuntimeTestCase(unittest.TestCase):
 
         self.assertFalse(should_activate)
 
+    def test_should_activate_local_mpc_for_nearby_usv_during_far_go_to_task(self) -> None:
+        agent = replace(
+            next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-2"),
+            x=485.5,
+            y=286.919,
+            heading_deg=0.394,
+            speed_mps=5.499,
+        )
+        neighboring_agent = replace(
+            next(agent for agent in build_demo_agent_states() if agent.agent_id == "USV-1"),
+            x=489.052,
+            y=288.728,
+            heading_deg=-157.95,
+            speed_mps=0.0,
+        )
+        execution_state = AgentExecutionState(
+            agent_id="USV-2",
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id="hotspot-confirmation-5-34",
+            active_plan=PathPlan(
+                plan_id="plan-1",
+                planner_name="astar_smoother_path_planner",
+                agent_id="USV-2",
+                task_id="hotspot-confirmation-5-34",
+                status=PathPlanStatus.PLANNED,
+                waypoints=(Waypoint(x=490.0, y=287.0), Waypoint(x=889.37, y=164.37)),
+                goal_x=889.37,
+                goal_y=164.37,
+                estimated_cost=100.0,
+            ),
+            current_waypoint_index=0,
+            patrol_route_id="USV-2",
+            patrol_waypoint_index=0,
+        )
+
+        should_activate = _should_activate_local_mpc(
+            agent,
+            execution_state=execution_state,
+            tracking_target=Waypoint(x=889.37, y=164.37),
+            obstacle_layout=None,
+            neighboring_agents=(neighboring_agent,),
+            wreck_zones=(),
+            grid_width=1000.0,
+            grid_height=1000.0,
+        )
+
+        self.assertTrue(should_activate)
+
     def test_evaluate_usv_progress_triggers_recovery_for_low_progress_loop(self) -> None:
         task = TaskRecord(
             task_id="hotspot-confirmation-low-progress",

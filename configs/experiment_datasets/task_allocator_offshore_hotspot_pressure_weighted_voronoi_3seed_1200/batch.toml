@@ -1,21 +1,23 @@
 [batch]
 name = "task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200"
-base_config = "offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml"
-output_dir = "../../../outputs/experiments/task_allocator/offshore_hotspot_pressure_weighted_voronoi_3seed_1200"
-generate_html = false
+output_dir = "batch_runs"
+generate_html = true
 
 [[runs]]
 label = "cost_aware_seed_20260324"
+config = "offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml"
 seed = 20260324
 steps = 1200
 
 [[runs]]
 label = "cost_aware_seed_20260325"
+config = "offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml"
 seed = 20260325
 steps = 1200
 
 [[runs]]
 label = "cost_aware_seed_20260326"
+config = "offshore_hotspot_pressure_cost_aware_weighted_voronoi.toml"
 seed = 20260326
 steps = 1200
 

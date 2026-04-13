@@ -104,6 +104,7 @@ class SimulationFrame:
     events: tuple[str, ...]
     planned_paths: tuple[tuple[str, tuple[tuple[float, float], ...]], ...]
     trajectories: tuple[tuple[str, tuple[tuple[float, float], ...]], ...]
+    current_observed_cells: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -724,6 +725,7 @@ def _capture_frame(
         trajectories=tuple(
             (agent_id, tuple(points)) for agent_id, points in sorted(trajectories.items())
         ),
+        current_observed_cells=(),
     )
 
 
