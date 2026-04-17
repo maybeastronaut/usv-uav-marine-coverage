@@ -196,7 +196,21 @@ def sync_task_statuses(
                     )
                 )
                 continue
+            if not _assigned_agent_holds_task(
+                task,
+                execution_state=execution_state,
+                progress_state=progress_state,
+            ):
+                synced_tasks.append(_requeue_task_after_assignment_desync(task))
+                continue
             synced_tasks.append(replace(task, status=TaskStatus.ASSIGNED))
+            continue
+        if not _assigned_agent_holds_task(
+            task,
+            execution_state=execution_state,
+            progress_state=progress_state,
+        ):
+            synced_tasks.append(_requeue_task_after_assignment_desync(task))
             continue
         synced_tasks.append(replace(task, status=TaskStatus.ASSIGNED))
     return tuple(synced_tasks)
@@ -233,6 +247,22 @@ def _uav_resupply_support_is_executing(
     )
 
 
+def _assigned_agent_holds_task(
+    task: TaskRecord,
+    *,
+    execution_state: AgentExecutionState | None,
+    progress_state: AgentProgressState | None,
+) -> bool:
+    if execution_state is not None and execution_state.active_task_id == task.task_id:
+        return True
+    if progress_state is None:
+        return False
+    return (
+        progress_state.pending_assigned_task_id == task.task_id
+        or progress_state.claimed_task_id == task.task_id
+    )
+
+
 def _support_holds_uav_resupply_task(
     task: TaskRecord,
     *,
@@ -243,13 +273,25 @@ def _support_holds_uav_resupply_task(
 
     if task.task_type != TaskType.UAV_RESUPPLY:
         return False
-    if support_execution is not None and support_execution.active_task_id == task.task_id:
-        return True
-    if support_progress is None:
-        return False
-    return (
-        support_progress.pending_assigned_task_id == task.task_id
-        or support_progress.claimed_task_id == task.task_id
+    return _assigned_agent_holds_task(
+        task,
+        execution_state=support_execution,
+        progress_state=support_progress,
+    )
+
+
+def _requeue_task_after_assignment_desync(task: TaskRecord) -> TaskRecord:
+    if task.task_type == TaskType.UAV_RESUPPLY:
+        return replace(
+            task,
+            status=TaskStatus.PENDING,
+            assigned_agent_id=None,
+            support_agent_id=None,
+        )
+    return replace(
+        task,
+        status=TaskStatus.REQUEUED,
+        assigned_agent_id=None,
     )
 
 

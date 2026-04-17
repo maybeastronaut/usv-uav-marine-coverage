@@ -8,8 +8,10 @@ from math import ceil, hypot
 from usv_uav_marine_coverage.agent_model import (
     AgentState,
     can_support_uav_resupply,
+    energy_ratio,
     estimate_uav_energy_to_point,
     is_operational_agent,
+    needs_uav_resupply,
 )
 from usv_uav_marine_coverage.execution.execution_types import AgentExecutionState, ExecutionStage
 from usv_uav_marine_coverage.grid import GridMap
@@ -34,6 +36,7 @@ FAILED_NEIGHBOR_HOTSPOT_PROXIMITY_OVERRIDE_RADIUS_M = 320.0
 HOTSPOT_PROXIMITY_OVERRIDE_MIN_GRACE_STEPS = 12
 HOTSPOT_PROXIMITY_OVERRIDE_PROGRESS_FLOOR_M_PER_STEP = 4.0
 HOTSPOT_PROXIMITY_OVERRIDE_GRACE_BUFFER_STEPS = 4
+LOW_ENERGY_SUPPORT_RATIO = 0.35
 
 
 def task_sort_key(task: TaskRecord) -> tuple[int, int, int, str]:
@@ -77,6 +80,28 @@ def can_keep_existing_assignment(
     if execution_state is None:
         return False
     return execution_state.active_task_id in {None, task.task_id}
+
+
+def protected_support_usv_ids_for_low_energy_uavs(agents: tuple[AgentState, ...]) -> set[str]:
+    """Return USVs that should stay available for nearby low-energy UAV support."""
+
+    usvs = tuple(
+        agent
+        for agent in agents
+        if agent.kind == "USV" and can_support_uav_resupply(agent)
+    )
+    if not usvs:
+        return set()
+
+    protected: set[str] = set()
+    for agent in agents:
+        if agent.kind != "UAV":
+            continue
+        if not needs_uav_resupply(agent) and energy_ratio(agent) > LOW_ENERGY_SUPPORT_RATIO:
+            continue
+        nearest_usv = min(usvs, key=lambda usv: hypot(agent.x - usv.x, agent.y - usv.y))
+        protected.add(nearest_usv.agent_id)
+    return protected
 
 
 def is_reserved_for_uav_support(
@@ -249,6 +274,40 @@ def allocate_uav_resupply_task(
         return (replace(task, status=TaskStatus.PENDING, assigned_agent_id=None), None)
     task = stabilize_uav_resupply_task(task, selected_uav=selected_uav)
     anchor_x, anchor_y = uav_resupply_anchor(task, selected_uav=selected_uav)
+    sticky_support_usv = _sticky_uav_resupply_support_usv(
+        task,
+        selected_uav=selected_uav,
+        agent_by_id=agent_by_id,
+        execution_states=execution_states,
+        grid_map=grid_map,
+        task_records=task_records,
+        step=step,
+        usv_path_planner=usv_path_planner,
+    )
+    if sticky_support_usv is not None:
+        selection_score = round(
+            hypot(sticky_support_usv.x - anchor_x, sticky_support_usv.y - anchor_y),
+            3,
+        )
+        updated_task = replace(
+            task,
+            status=TaskStatus.ASSIGNED,
+            assigned_agent_id=selected_uav.agent_id,
+            support_agent_id=sticky_support_usv.agent_id,
+            target_x=anchor_x,
+            target_y=anchor_y,
+        )
+        return (
+            updated_task,
+            TaskAssignment(
+                task_id=task.task_id,
+                task_type=task.task_type,
+                agent_id=selected_uav.agent_id,
+                support_agent_id=sticky_support_usv.agent_id,
+                selection_reason="keep_existing_support_usv_for_uav_resupply",
+                selection_score=selection_score,
+            ),
+        )
 
     usv_candidates = [
         agent
@@ -278,6 +337,30 @@ def allocate_uav_resupply_task(
         if preferred_support_id is not None:
             usv_candidates = [
                 agent for agent in usv_candidates if agent.agent_id == preferred_support_id
+            ]
+    if not usv_candidates:
+        # Emergency escalation: if UAV energy is critically low, expand candidate
+        # pool to include USVs currently traveling to non-resupply tasks.
+        uav_energy_ratio = (
+            selected_uav.energy_level / max(1.0, selected_uav.energy_capacity)
+            if selected_uav.energy_capacity > 0
+            else 1.0
+        )
+        if uav_energy_ratio < 0.3 and execution_states is not None:
+            usv_candidates = [
+                agent
+                for agent in agent_by_id.values()
+                if can_support_uav_resupply(agent)
+                and not is_agent_task_in_cooldown(task, agent_id=agent.agent_id, step=step)
+                and not is_reserved_for_uav_support(
+                    agent.agent_id,
+                    task_records=task_records,
+                    exclude_task_id=task.task_id,
+                )
+                and _is_preemptible_for_emergency_resupply(
+                    execution_states.get(agent.agent_id),
+                    task_records=task_records,
+                )
             ]
     if not usv_candidates:
         return (
@@ -320,6 +403,56 @@ def allocate_uav_resupply_task(
             selection_score=selection_score,
         ),
     )
+
+
+def _sticky_uav_resupply_support_usv(
+    task: TaskRecord,
+    *,
+    selected_uav: AgentState,
+    agent_by_id: dict[str, AgentState],
+    execution_states: dict[str, AgentExecutionState] | None,
+    grid_map: GridMap | None,
+    task_records: tuple[TaskRecord, ...],
+    step: int | None,
+    usv_path_planner: str,
+) -> AgentState | None:
+    """Keep an existing support USV locked in while it remains safe and reachable."""
+
+    if task.support_agent_id is None:
+        return None
+    support_agent = agent_by_id.get(task.support_agent_id)
+    if support_agent is None or not can_support_uav_resupply(support_agent):
+        return None
+    if is_agent_task_in_cooldown(task, agent_id=support_agent.agent_id, step=step):
+        return None
+    if is_reserved_for_uav_support(
+        support_agent.agent_id,
+        task_records=task_records,
+        exclude_task_id=task.task_id,
+    ):
+        return None
+    support_execution_state = (
+        None if execution_states is None else execution_states.get(support_agent.agent_id)
+    )
+    if support_execution_state is not None and support_execution_state.active_task_id not in {
+        None,
+        task.task_id,
+    }:
+        return None
+    if grid_map is None:
+        return support_agent
+    if (
+        _select_reachable_support_usv(
+            selected_uav,
+            usv_candidates=(support_agent,),
+            grid_map=grid_map,
+            task=task,
+            usv_path_planner=usv_path_planner,
+        )
+        is None
+    ):
+        return None
+    return support_agent
 
 
 def _select_reachable_support_usv(
@@ -612,6 +745,9 @@ def _can_preempt_assigned_uav_support_safely(
         uav = agent_by_id.get(task.assigned_agent_id or "")
         if uav is None or uav.kind != "UAV":
             continue
+        ratio = uav.energy_level / max(1.0, uav.energy_capacity) if uav.energy_capacity > 0 else 1.0
+        if ratio < 0.3:
+            return False
         alternatives = tuple(
             support_agent
             for support_agent in agents
@@ -637,6 +773,29 @@ def _can_preempt_assigned_uav_support_safely(
         ):
             return False
     return True
+
+
+def _is_preemptible_for_emergency_resupply(
+    execution_state: AgentExecutionState | None,
+    *,
+    task_records: tuple[TaskRecord, ...] = (),
+) -> bool:
+    """Return whether a USV can be preempted for an emergency UAV resupply.
+
+    Only USVs that are traveling to a non-resupply task (GO_TO_TASK) or
+    returning to patrol are eligible. USVs already executing on-site work
+    (ON_TASK) or actively supporting another recharge (ON_RECHARGE) are not.
+    """
+
+    if execution_state is None:
+        return False
+    if execution_state.stage == ExecutionStage.PATROL and execution_state.active_task_id is None:
+        return True
+    if execution_state.stage == ExecutionStage.RETURN_TO_PATROL:
+        return True
+    if execution_state.stage == ExecutionStage.GO_TO_TASK:
+        return True
+    return False
 
 
 def is_agent_task_in_cooldown(task: TaskRecord, *, agent_id: str, step: int | None) -> bool:

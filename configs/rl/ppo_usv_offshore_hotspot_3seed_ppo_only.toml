@@ -1,0 +1,19 @@
+[batch]
+name = "ppo_usv_offshore_hotspot_3seed_ppo_only"
+output_dir = "../../outputs/rl/eval_runs/ppo_usv_offshore_hotspot_ppo_only"
+generate_html = false
+
+[[runs]]
+label = "ppo_seed_20260324"
+config = "ppo_usv_offshore_hotspot_eval.toml"
+seed = 20260324
+
+[[runs]]
+label = "ppo_seed_20260325"
+config = "ppo_usv_offshore_hotspot_eval.toml"
+seed = 20260325
+
+[[runs]]
+label = "ppo_seed_20260326"
+config = "ppo_usv_offshore_hotspot_eval.toml"
+seed = 20260326

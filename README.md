@@ -55,6 +55,12 @@ module execution, and future tests.
 |   |   |   |-- baseline_patrol_rho_failure_hotspot_first_soft_partition_seed_20268007.html
 |   |   |   `-- baseline_patrol_rho_failure_hotspot_first_soft_partition_usv1_failure_seed_20265248.html
 |   |   `-- baseline_patrol_rho_failure_hotspot_first_soft_partition.toml
+|   |-- rl/
+|   |   |-- README.md
+|   |   |-- ppo_usv_offshore_hotspot_3seed_compare.toml
+|   |   |-- ppo_usv_offshore_hotspot_3seed_ppo_only.toml
+|   |   |-- ppo_usv_offshore_hotspot_eval.toml
+|   |   `-- ppo_usv_offshore_hotspot_train.toml
 |   |-- return_to_patrol_stress_cost_aware.toml
 |   |-- rho_astar_smoother_local_mpc_no_failure.toml
 |   |-- rho_task_allocator.toml
@@ -65,6 +71,7 @@ module execution, and future tests.
 |   |-- current_system_flow.md
 |   |-- discussion_notes.md
 |   |-- execution_regression_checklist.md
+|   |-- midterm_checklist.md
 |   `-- generated/
 |       |-- sea_map.html
 |       |-- simulation_replay_events.jsonl
@@ -74,7 +81,8 @@ module execution, and future tests.
 |   `-- ...
 |-- pyproject.toml
 |-- scripts/
-|   `-- check_replay_logs.py
+|   |-- check_replay_logs.py
+|   `-- train_rllib_ppo_usv_allocator.py
 |-- src/
 |   `-- usv_uav_marine_coverage/
 |       |-- __init__.py
@@ -118,6 +126,10 @@ module execution, and future tests.
 |       |   |-- uav_persistent_multi_region_coverage_planner.py
 |       |   |-- usv_path_planner.py
 |       |   `-- usv_patrol_planner.py
+|       |-- rl/
+|       |   |-- __init__.py
+|       |   |-- env.py
+|       |   `-- policy_allocator.py
 |       |-- simulation/
 |       |   |-- __init__.py
 |       |   |-- scenario_catalog.py
@@ -161,6 +173,7 @@ module execution, and future tests.
     |-- test_grid.py
     |-- test_information_map.py
     |-- test_planning.py
+    |-- test_rl_allocator.py
     |-- test_simulation.py
     |-- test_simulation_runtime.py
     |-- test_smoke.py
@@ -182,6 +195,11 @@ module execution, and future tests.
 - `configs/qualified_agent_failure/README.md`: 智能体失效场景“合格配置”目录说明，约定只有通过当前回放校验的失效场景配置才进入该目录。
 - `configs/qualified_agent_failure/baseline_patrol_rho_failure_hotspot_first_soft_partition.toml`: 当前已验证通过的一份失效场景合格基线配置；与根目录同名原始配置并存，便于后续按“原始入口 / 合格归档”两种方式组织使用。
 - `configs/qualified_agent_failure/html/`: 失效场景合格配置对应的归档回放 HTML 目录，当前保留主基线回放、额外随机种子中综合表现最好的回放，以及一份人工确认的 `USV-1` 失效样本回放。
+- `configs/rl/README.md`: 集中式 `RLlib PPO` 策略层配置说明，汇总训练、单次评估、`PPO-only` 三 seed 批跑以及带规则式基线的对比入口。
+- `configs/rl/ppo_usv_offshore_hotspot_train.toml`: 第一版集中式 PPO 训练配置，固定在 `offshore_hotspot_pressure + weighted_voronoi + astar_smoother + uav_lawnmower + local_mpc` 组合上训练 `USV` 高层任务分配策略。
+- `configs/rl/ppo_usv_offshore_hotspot_eval.toml`: 训练后单次回放/评估配置，使用 `rllib_ppo_usv_allocator` 加载稳定 checkpoint 并生成标准 replay 产物。
+- `configs/rl/ppo_usv_offshore_hotspot_3seed_ppo_only.toml`: 只包含 PPO 的三 seed 批量评估入口。
+- `configs/rl/ppo_usv_offshore_hotspot_3seed_compare.toml`: `PPO vs RHO vs cost-aware` 的三 seed 批量对比入口。
 - 根目录 `configs/*.toml` 中新增的一组兼容入口配置：用于恢复旧测试和快速单跑入口，覆盖 `cost-aware / AEA / RHO / distributed CBBA`、`soft_partition / weighted_voronoi`、`A* smoother / hybrid A*`、`local_mpc_execution`、`UAV multi-region / persistent multi-region`、以及若干失效事件样例；这些文件本身不引入新算法，只是把当前仍保留的规则式仿真能力重新暴露为短路径入口。
 - `configs/phase_one_batch.toml` 与 `configs/scenario_comparison_batch.toml`: 根目录兼容 batch 入口，分别用于基线多 seed 批跑和按场景切换的对比批跑。
 - 当前保留的 `experiment_datasets/*` 目录已采用**自包含配置**：
@@ -193,6 +211,7 @@ module execution, and future tests.
 - `docx/current_system_flow.md`: 基于当前已有代码整理的系统实际流程说明文档。
 - `docx/discussion_notes.md`: 讨论阶段确认的建模方案、状态标记和后续实现依据。
 - `docx/execution_regression_checklist.md`: 执行层 `1200 step` 长回放回归检查清单，固定记录关键 step、预期行为和推荐复跑方式，用于后续执行层改动后的人工回归。
+- `docx/midterm_checklist.md`: 基于当前仓库代码、文档、实验产物和测试状态整理的项目中期检查表，用于阶段性汇报“已完成工作、原因分析与下一步计划”。
 - `docx/generated/sea_map.html`: 当前默认生成的 HTML 海图产物，可直接用于查看 `clean` 模式结果。
 - `docx/generated/simulation_replay.html`: 当前生成的 HTML 回放式仿真预览产物，可直接查看多智能体运动、信息刷新与热点状态变化。
 - `docx/generated/simulation_replay_events.jsonl`: 当前回放式仿真同步生成的逐事件日志文件，适合 AI 按时间步复盘整体行为，并分析任务指派、路径摘要、执行偏差与热点处理链。
@@ -200,6 +219,7 @@ module execution, and future tests.
 - `outputs/`: 默认输出目录。未显式指定 `--output` 时，静态海图和回放式仿真产物都会写到这里。
 - `pyproject.toml`: Python 项目配置、依赖声明、`pytest` 和 `ruff` 的工具配置入口。
 - `scripts/check_replay_logs.py`: 回放日志校验脚本，会扫描 `*_events.jsonl` 中的 step 级状态不变量和任务状态 flip-flop，并在发现异常时返回非零退出码。
+- `scripts/train_rllib_ppo_usv_allocator.py`: 第一版集中式 `RLlib PPO` 训练脚本，读取训练 TOML、构造 `Gymnasium` 环境、迭代训练并同步稳定 checkpoint 到 `outputs/rl/train_runs/.../latest_checkpoint`。
 - `src/usv_uav_marine_coverage/__init__.py`: 项目包入口与基础版本信息。
 - `src/usv_uav_marine_coverage/__main__.py`: 命令行运行入口，用于生成静态海图或回放式仿真预览 HTML，并设置页面初始显示模式。
 - `src/usv_uav_marine_coverage/agent_model.py`: `USV/UAV` 的第一阶段闭环数学模型，包含平台参数、任务到参考目标转换、轻量控制指令、受约束航向/速度更新、`UAV` 能量消耗/补能约束以及探测/覆盖半径判定，也是当前覆盖方法研究默认采用的动力学基线。
@@ -237,6 +257,9 @@ module execution, and future tests.
 - `src/usv_uav_marine_coverage/planning/uav_persistent_multi_region_coverage_planner.py`: `UAV` 第二版持续多区域覆盖规划模块，负责以固定四 AOI 为基础，按 freshness debt 做事件触发重排，并通过区域承诺、AOI 去冲突与 sweep 端点接入避免短视切换和区域内覆盖断裂。
 - `src/usv_uav_marine_coverage/planning/usv_path_planner.py`: `USV` 路径规划分发模块，负责在 `astar_path_planner`、`astar_smoother_path_planner` 与 `hybrid_astar_path_planner` 之间按实验配置统一切换，避免任务层和 runtime 各自硬编码 planner。
 - `src/usv_uav_marine_coverage/planning/usv_patrol_planner.py`: `USV` 巡航规划模块，负责生成默认的“`1` 艘近海、`2` 艘远海”分区巡航路线，并作为默认巡航层的路径算法实现；当前 `RETURN_TO_PATROL` 已从“最近接入”升级为“安全候选硬过滤 + stale/hotspot 价值排序”的回巡航接入选择，优先避开贴边和段端点坏目标。
+- `src/usv_uav_marine_coverage/rl/__init__.py`: 集中式 PPO 策略层子包入口，暴露环境注册 helper、固定槽位观测/动作接口和策略推理分配器。
+- `src/usv_uav_marine_coverage/rl/env.py`: 第一版 `Gymnasium` 训练环境，基于共享仿真 runtime 暴露单智能体、集中式、一步一 tick 的 `USV` 高层任务分配训练接口。
+- `src/usv_uav_marine_coverage/rl/policy_allocator.py`: 集中式 PPO 推理适配层，负责构造固定槽位候选、编码观测、恢复 `RLlib` checkpoint 并把策略输出转换成标准 `TaskAssignment`。
 - `src/usv_uav_marine_coverage/simulation/__init__.py`: 仿真回放子包的公开门面，保持现有对外接口稳定，并协调核心仿真、日志输出和回放页面生成。
 - `src/usv_uav_marine_coverage/simulation/experiment_config.py`: 统一实验配置层，负责 baseline 配置 dataclass、TOML 加载、CLI 覆盖与配置摘要序列化，为后续算法对比与批量实验提供统一入口。
 - `src/usv_uav_marine_coverage/simulation/experiment_batch.py`: 批量实验入口，负责加载 batch TOML、顺序运行多组配置，并输出统一的 `batch_results.jsonl` 与 `batch_summary.json`；当前每次 batch 运行都会在配置指定目录名后自动追加时间戳，写入一个全新的输出目录，避免旧结果与新结果混杂。
@@ -276,6 +299,7 @@ module execution, and future tests.
 - `tests/test_grid.py`: 验证离散栅格网络的分辨率、坐标映射、环境属性落格结果以及 `footprint` 覆盖映射逻辑。
 - `tests/test_information_map.py`: 验证信息地图的时效刷新、热点生成、`UAV` 初检、`USV` 精检与假警报流程。
 - `tests/test_planning.py`: 验证 `UAV/USV` 路径规划、巡航路径生成与规划边界。
+- `tests/test_rl_allocator.py`: 验证 PPO 配置校验、共享 runtime 抽取、集中式训练环境形状稳定性，以及 RL 推理分配器的关键接入边界。
 - `tests/test_simulation.py`: 验证回放式仿真预览的帧生成、智能体运动和 HTML 控件/图层输出。
 - `tests/test_simulation_runtime.py`: 验证回放式仿真运行时 helper 的单步推进、任务收尾与任务状态同步边界。
 - `tests/test_smoke.py`: 验证项目包是否能被基础导入。
@@ -289,6 +313,12 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
+```
+
+如果要训练或评估第一版 PPO 策略，再额外安装 RL 依赖：
+
+```bash
+pip install -e ".[dev,rl]"
 ```
 
 ## Run Sea Map
@@ -444,6 +474,24 @@ If you want to rerun the currently checked-in formal task-allocator comparison d
 
 ```bash
 python -m usv_uav_marine_coverage --simulate --batch-config configs/experiment_datasets/task_allocator_offshore_hotspot_pressure_weighted_voronoi_3seed_1200/batch.toml
+```
+
+If you want to train the first centralized PPO USV allocator:
+
+```bash
+PYTHONPATH=src python scripts/train_rllib_ppo_usv_allocator.py --config configs/rl/ppo_usv_offshore_hotspot_train.toml
+```
+
+If you want to replay one PPO checkpoint:
+
+```bash
+python -m usv_uav_marine_coverage --simulate --config configs/rl/ppo_usv_offshore_hotspot_eval.toml
+```
+
+If you only want the PPO three-seed batch:
+
+```bash
+python -m usv_uav_marine_coverage --simulate --batch-config configs/rl/ppo_usv_offshore_hotspot_3seed_ppo_only.toml
 ```
 
 If you want to rerun the scenario-switching compatibility batch:

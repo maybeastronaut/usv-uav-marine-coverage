@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from usv_uav_marine_coverage.agent_model import AgentState, is_operational_agent
+from math import hypot
+
+from usv_uav_marine_coverage.agent_model import (
+    AgentState,
+    estimate_uav_energy_to_point,
+    is_operational_agent,
+    needs_uav_resupply,
+)
 
 _DEFAULT_USV_SUPPORT_ORDER = ("USV-1", "USV-2", "USV-3")
 _PREFERRED_USV_SUPPORT_BY_UAV: dict[str, tuple[str, ...]] = {
@@ -208,6 +215,24 @@ def should_delay_uav_resupply_for_initial_escort(
 
     if not _UAV_USV_MEETING_ENABLED:
         return False
+    if needs_uav_resupply(uav):
+        return False
+    operational_usvs = tuple(
+        agent
+        for agent in usvs
+        if agent.kind == "USV" and is_operational_agent(agent)
+    )
+    if operational_usvs:
+        nearest_support_usv = min(
+            operational_usvs,
+            key=lambda agent: hypot(agent.x - uav.x, agent.y - uav.y),
+        )
+        if uav.energy_level <= estimate_uav_energy_to_point(
+            uav,
+            nearest_support_usv.x,
+            nearest_support_usv.y,
+        ):
+            return False
     agent_by_id = {uav.agent_id: uav, **{agent.agent_id: agent for agent in usvs}}
     support_usv_id = fixed_initial_escort_support_usv_id_for_uav(
         uav.agent_id,

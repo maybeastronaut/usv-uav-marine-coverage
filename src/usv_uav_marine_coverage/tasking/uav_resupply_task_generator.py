@@ -42,12 +42,15 @@ def build_uav_resupply_tasks(
             continue
         task_id = f"uav-resupply-{agent.agent_id}"
         existing = existing_by_id.get(task_id)
-        should_trigger = needs_uav_resupply(agent)
+        low_energy_triggered = needs_uav_resupply(agent)
+        should_trigger = low_energy_triggered
         support_usv = _nearest_support_usv(agent, usv_agents)
+        reachability_triggered = False
         if support_usv is not None:
-            should_trigger = should_trigger or agent.energy_level <= estimate_uav_energy_to_point(
+            reachability_triggered = agent.energy_level <= estimate_uav_energy_to_point(
                 agent, support_usv.x, support_usv.y
             )
+            should_trigger = should_trigger or reachability_triggered
         if should_trigger and should_delay_uav_resupply_for_initial_escort(
             agent,
             usvs=usv_agents,

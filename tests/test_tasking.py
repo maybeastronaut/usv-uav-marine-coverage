@@ -156,7 +156,7 @@ class TaskingTestCase(unittest.TestCase):
         self.assertEqual(tasks[0].rendezvous_anchor_x, 0.0)
         self.assertEqual(tasks[0].rendezvous_anchor_y, 0.0)
 
-    def test_build_uav_resupply_tasks_delays_fixed_escort_uav_during_initial_phase(self) -> None:
+    def test_build_uav_resupply_tasks_does_not_delay_low_energy_fixed_escort_uav(self) -> None:
         agents = tuple(
             replace(agent, energy_level=20.0) if agent.agent_id == "UAV-1" else agent
             for agent in build_demo_agent_states()
@@ -164,7 +164,8 @@ class TaskingTestCase(unittest.TestCase):
 
         tasks = build_uav_resupply_tasks(agents, step=30)
 
-        self.assertEqual(tasks, ())
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].task_id, "uav-resupply-UAV-1")
 
     def test_build_uav_resupply_tasks_resumes_after_initial_fixed_escort_phase(self) -> None:
         agents = tuple(
@@ -181,9 +182,7 @@ class TaskingTestCase(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].task_id, "uav-resupply-UAV-1")
 
-    def test_build_uav_resupply_tasks_keeps_delaying_after_180_until_escort_exits_corridor(
-        self,
-    ) -> None:
+    def test_build_uav_resupply_tasks_does_not_delay_after_180_when_uav_is_low_energy(self) -> None:
         agents = tuple(
             replace(agent, energy_level=20.0) if agent.agent_id == "UAV-1" else agent
             for agent in build_demo_agent_states()
@@ -191,7 +190,8 @@ class TaskingTestCase(unittest.TestCase):
 
         tasks = build_uav_resupply_tasks(agents, step=220)
 
-        self.assertEqual(tasks, ())
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].task_id, "uav-resupply-UAV-1")
 
     def test_build_uav_resupply_tasks_resumes_when_escort_usv_reaches_corridor_exit_band(
         self,
@@ -219,6 +219,19 @@ class TaskingTestCase(unittest.TestCase):
             else replace(agent, energy_level=20.0)
             if agent.agent_id == "UAV-1"
             else agent
+            for agent in build_demo_agent_states()
+        )
+
+        tasks = build_uav_resupply_tasks(agents, step=30)
+
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0].task_id, "uav-resupply-UAV-1")
+
+    def test_build_uav_resupply_tasks_creates_zero_energy_uav_task_during_initial_phase(
+        self,
+    ) -> None:
+        agents = tuple(
+            replace(agent, energy_level=0.0) if agent.agent_id == "UAV-1" else agent
             for agent in build_demo_agent_states()
         )
 
@@ -2332,6 +2345,55 @@ class TaskingTestCase(unittest.TestCase):
         self.assertEqual(updated_task.support_agent_id, "USV-3")
         self.assertIsNotNone(decision)
         self.assertEqual(decision.support_agent_id, "USV-3")
+
+    def test_allocator_keeps_existing_healthy_support_usv_sticky_for_resupply(self) -> None:
+        agents = tuple(
+            replace(agent, x=560.0, y=260.0)
+            if agent.agent_id == "UAV-1"
+            else replace(agent, x=480.0, y=220.0)
+            if agent.agent_id == "USV-1"
+            else replace(agent, x=552.0, y=252.0)
+            if agent.agent_id == "USV-2"
+            else agent
+            for agent in build_demo_agent_states()
+        )
+        execution_states = self._build_idle_execution_states(agents)
+        execution_states["USV-1"] = replace(
+            execution_states["USV-1"],
+            stage=ExecutionStage.RETURN_TO_PATROL,
+        )
+        task = TaskRecord(
+            task_id="uav-resupply-UAV-1",
+            task_type=TaskType.UAV_RESUPPLY,
+            source=TaskSource.SYSTEM_LOW_BATTERY,
+            status=TaskStatus.ASSIGNED,
+            priority=20,
+            target_x=560.0,
+            target_y=260.0,
+            target_row=None,
+            target_col=None,
+            created_step=77,
+            assigned_agent_id="UAV-1",
+            support_agent_id="USV-1",
+            rendezvous_anchor_x=560.0,
+            rendezvous_anchor_y=260.0,
+        )
+
+        updated_task, decision = allocate_uav_resupply_task(
+            task,
+            agent_by_id={agent.agent_id: agent for agent in agents},
+            execution_states=execution_states,
+            grid_map=self._build_runtime_grid_map(),
+            task_records=(task,),
+            step=77,
+        )
+
+        self.assertEqual(updated_task.status, TaskStatus.ASSIGNED)
+        self.assertEqual(updated_task.support_agent_id, "USV-1")
+        self.assertIsNotNone(decision)
+        assert decision is not None
+        self.assertEqual(decision.selection_reason, "keep_existing_support_usv_for_uav_resupply")
+        self.assertEqual(decision.support_agent_id, "USV-1")
 
     def test_allocator_keeps_existing_uav_resupply_anchor_target(self) -> None:
         agents = tuple(

@@ -28,7 +28,10 @@ def sync_hotspot_confirmation_tasks(
 
         if state.known_hotspot_state == HotspotKnowledgeState.UAV_CHECKED:
             active_ids.add(task_id)
-            if existing is None:
+            if existing is None or existing.status in {
+                TaskStatus.COMPLETED,
+                TaskStatus.CANCELLED,
+            }:
                 next_tasks.append(
                     TaskRecord(
                         task_id=task_id,

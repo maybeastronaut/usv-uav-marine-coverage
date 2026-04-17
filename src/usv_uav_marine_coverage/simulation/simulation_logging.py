@@ -996,18 +996,27 @@ def _infer_release_reason_from_task_transition(
         return None
     if previous_task.status not in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}:
         return None
+    if (
+        previous_task.task_type == TaskType.UAV_RESUPPLY
+        and previous_task.support_agent_id is not None
+        and task.support_agent_id is None
+        and task.assigned_agent_id == previous_task.assigned_agent_id
+    ):
+        return "uav_resupply_support_dropped"
+    if previous_task.assigned_agent_id is not None and task.assigned_agent_id is None:
+        if task.retry_after_step is None:
+            return "assignment_desynced_requeue"
+        if any(
+            agent_id == previous_task.assigned_agent_id and retry_after == task.retry_after_step
+            for agent_id, retry_after in task.agent_retry_after_steps
+        ):
+            return "policy_suppressed_requeue"
+        return "requeued_without_execution_release"
     if task.assigned_agent_id is not None:
         return None
     if previous_task.assigned_agent_id is None:
         return None
-    if task.retry_after_step is None:
-        return None
-    if any(
-        agent_id == previous_task.assigned_agent_id and retry_after == task.retry_after_step
-        for agent_id, retry_after in task.agent_retry_after_steps
-    ):
-        return "policy_suppressed_requeue"
-    return "requeued_without_execution_release"
+    return None
 
 
 def _task_hotspot_id(task: TaskRecord, *, info_map: InformationMap) -> int | None:

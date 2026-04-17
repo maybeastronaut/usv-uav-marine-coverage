@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from usv_uav_marine_coverage.events.event_types import AgentDamageEvent, EventType
@@ -52,6 +52,14 @@ class ScenarioSelection:
 
 
 @dataclass(frozen=True)
+class RLConfig:
+    """Optional RL-specific inference settings for one experiment."""
+
+    checkpoint_path: str | None = None
+    policy_id: str = "default_policy"
+
+
+@dataclass(frozen=True)
 class ExperimentConfig:
     """Top-level experiment configuration."""
 
@@ -60,6 +68,7 @@ class ExperimentConfig:
     coordination: CoordinationConfig
     algorithms: AlgorithmSelection
     information_map: InformationMapConfig
+    rl: RLConfig = field(default_factory=RLConfig)
     events: tuple[AgentDamageEvent, ...] = ()
 
 
@@ -82,6 +91,7 @@ def build_default_experiment_config(
         scenario=scenario,
         coordination=CoordinationConfig(),
         algorithms=AlgorithmSelection(),
+        rl=RLConfig(),
         information_map=preset.information_map,
         events=(),
     )
@@ -106,6 +116,7 @@ def load_experiment_config(
     preset = get_scenario_preset(scenario_name)
     algorithms_raw = _expect_table(raw, "algorithms")
     coordination_raw = _read_optional_table(raw, "coordination")
+    rl_raw = _read_optional_table(raw, "rl")
     info_map_raw = _read_optional_table(raw, "information_map")
 
     config = ExperimentConfig(
@@ -157,6 +168,19 @@ def load_experiment_config(
             uav_search_planner=_read_str(algorithms_raw, "uav_search_planner"),
             execution_policy=_read_str(algorithms_raw, "execution_policy"),
         ),
+        rl=RLConfig(
+            checkpoint_path=_read_optional_path_str(
+                rl_raw,
+                "checkpoint_path",
+                base_dir=path.parent,
+                default=RLConfig().checkpoint_path,
+            ),
+            policy_id=_read_optional_str(
+                rl_raw,
+                "policy_id",
+                default=RLConfig().policy_id,
+            ),
+        ),
         information_map=_build_information_map_config(
             info_map_raw,
             base=preset.information_map,
@@ -190,6 +214,7 @@ def apply_experiment_overrides(
         scenario=config.scenario,
         coordination=config.coordination,
         algorithms=config.algorithms,
+        rl=config.rl,
         information_map=config.information_map,
         events=config.events,
     )
@@ -202,6 +227,7 @@ def serialize_experiment_config(config: ExperimentConfig) -> dict[str, object]:
     payload["algorithms"] = dict(payload["algorithms"])
     payload["scenario"] = dict(payload["scenario"])
     payload["coordination"] = dict(payload["coordination"])
+    payload["rl"] = dict(payload["rl"])
     payload["simulation"] = dict(payload["simulation"])
     payload["information_map"] = dict(payload["information_map"])
     payload["events"] = [
@@ -226,6 +252,7 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
         "aoi_energy_auction_allocator",
         "rho_task_allocator",
         "distributed_cbba_allocator",
+        "rllib_ppo_usv_allocator",
     }
     supported_partition_policies = {
         "baseline_fixed_partition",
@@ -280,6 +307,16 @@ def validate_experiment_config(config: ExperimentConfig) -> None:
             "Unsupported execution policy "
             f"{config.algorithms.execution_policy!r}; supported: {sorted(supported_execution)}"
         )
+    if config.algorithms.task_allocator == "rllib_ppo_usv_allocator":
+        if not config.rl.checkpoint_path:
+            raise ValueError(
+                "RL task allocator requires [rl].checkpoint_path for replay and evaluation runs"
+            )
+        checkpoint_path = Path(config.rl.checkpoint_path)
+        if not checkpoint_path.exists():
+            raise ValueError(
+                f"RL checkpoint path does not exist: {config.rl.checkpoint_path!r}"
+            )
     for event in config.events:
         if event.step < 1:
             raise ValueError(f"Event step must be >= 1, got {event.step!r}")
@@ -373,6 +410,24 @@ def _read_optional_bool(raw: dict[str, object], key: str, *, default: bool) -> b
     if not isinstance(value, bool):
         raise ValueError(f"{key} must be a boolean when provided")
     return value
+
+
+def _read_optional_path_str(
+    raw: dict[str, object],
+    key: str,
+    *,
+    base_dir: Path,
+    default: str | None = None,
+) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return default
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{key} must be a non-empty string when provided")
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = (base_dir / candidate).resolve()
+    return str(candidate)
 
 
 def _read_scheduled_events(raw: object) -> tuple[AgentDamageEvent, ...]:

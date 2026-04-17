@@ -12,7 +12,7 @@ from usv_uav_marine_coverage.agent_model import (
     is_operational_agent,
 )
 from usv_uav_marine_coverage.environment import ObstacleLayout
-from usv_uav_marine_coverage.tasking.task_types import TaskRecord
+from usv_uav_marine_coverage.tasking.task_types import TaskRecord, TaskType
 
 from .basic_state_machine import transition_from_yield, transition_to_yield
 from .execution_types import AgentExecutionState, AgentProgressState, ExecutionStage
@@ -198,7 +198,7 @@ def build_corridor_directives(
     agent_by_id = {agent.agent_id: agent for agent in agents}
     directives: dict[str, CorridorDirective] = {}
     for corridor in obstacle_layout.traversable_corridors:
-        candidates: list[tuple[int, bool, float, str, float, float, int]] = []
+        candidates: list[tuple[int, int, bool, float, str, float, float, int]] = []
         for agent in agents:
             if agent.kind != "USV" or not is_operational_agent(agent):
                 continue
@@ -227,8 +227,13 @@ def build_corridor_directives(
                     None if progress_states is None else progress_states.get(agent.agent_id)
                 ),
             )
+            task_priority_rank = _traffic_task_priority_rank(
+                execution_state=execution_state,
+                active_task=None,
+            )
             candidates.append(
                 (
+                    task_priority_rank,
                     owner_penalty,
                     _point_is_inside_corridor(agent.x, agent.y, corridor),
                     hypot(agent.x - exit_x, agent.y - exit_y),
@@ -241,9 +246,9 @@ def build_corridor_directives(
 
         if len(candidates) <= 1:
             if len(candidates) == 1:
-                _, _, _, owner_agent_id, _, _, _ = sorted(
+                _, _, _, _, owner_agent_id, _, _, _ = sorted(
                     candidates,
-                    key=lambda item: (item[0], -int(item[1]), item[2], item[3]),
+                    key=lambda item: (item[0], item[1], -int(item[2]), item[3], item[4]),
                 )[0]
                 directives[owner_agent_id] = CorridorDirective(
                     corridor_name=corridor.name,
@@ -257,9 +262,9 @@ def build_corridor_directives(
 
         ordered_candidates = sorted(
             candidates,
-            key=lambda item: (item[0], -int(item[1]), item[2], item[3]),
+            key=lambda item: (item[0], item[1], -int(item[2]), item[3], item[4]),
         )
-        _, _, _, owner_agent_id, _, _, owner_direction = ordered_candidates[0]
+        _, _, _, _, owner_agent_id, _, _, owner_direction = ordered_candidates[0]
         owner_agent = agent_by_id[owner_agent_id]
         directives[owner_agent_id] = CorridorDirective(
             corridor_name=corridor.name,
@@ -269,7 +274,7 @@ def build_corridor_directives(
             hold_y=0.0,
             reason="corridor_owner",
         )
-        for _, _, _, agent_id, hold_x, hold_y, direction in ordered_candidates[1:]:
+        for _, _, _, _, agent_id, hold_x, hold_y, direction in ordered_candidates[1:]:
             follower_agent = agent_by_id[agent_id]
             follower_inside_corridor = _point_is_inside_corridor(
                 follower_agent.x,
@@ -325,6 +330,7 @@ def build_dynamic_bottleneck_directives(
             and execution_states[agent.agent_id].stage
             in {
                 ExecutionStage.GO_TO_TASK,
+                ExecutionStage.RECOVERY,
                 ExecutionStage.RETURN_TO_PATROL,
                 ExecutionStage.PATROL,
                 ExecutionStage.YIELD,
@@ -467,10 +473,11 @@ def progress_target(
     if plan is not None and execution_state.current_waypoint_index < len(plan.waypoints):
         waypoint = plan.waypoints[execution_state.current_waypoint_index]
         return (waypoint.x, waypoint.y)
-    if execution_state.stage == ExecutionStage.GO_TO_TASK and active_task is not None:
+    if execution_state.stage in {ExecutionStage.GO_TO_TASK, ExecutionStage.RECOVERY}:
         if agent.task.target_x is not None and agent.task.target_y is not None:
             return (agent.task.target_x, agent.task.target_y)
-        return (active_task.target_x, active_task.target_y)
+        if active_task is not None:
+            return (active_task.target_x, active_task.target_y)
     if execution_state.stage == ExecutionStage.RETURN_TO_PATROL:
         return (execution_state.return_target_x, execution_state.return_target_y)
     if execution_state.stage == ExecutionStage.YIELD:
@@ -641,6 +648,21 @@ def _corridor_owner_penalty(
     return 0
 
 
+def _traffic_task_priority_rank(
+    *,
+    execution_state: AgentExecutionState,
+    active_task: TaskRecord | None,
+) -> int:
+    if active_task is not None and active_task.task_type == TaskType.UAV_RESUPPLY:
+        return 0
+    active_task_id = execution_state.active_task_id
+    if active_task_id is not None and active_task_id.startswith("uav-resupply-"):
+        return 0
+    if active_task is not None or active_task_id is not None:
+        return 1
+    return 2
+
+
 def _is_low_progress_corridor_owner(
     agent: AgentState,
     *,
@@ -797,20 +819,38 @@ def _choose_dynamic_bottleneck_owner(
 
     def _priority(
         agent: AgentState,
+        execution_state: AgentExecutionState,
+        active_task: TaskRecord | None,
         target_x: float | None,
         target_y: float | None,
-    ) -> tuple[float, float, str]:
+    ) -> tuple[int, float, float, str]:
         target_distance = float("inf")
         if target_x is not None and target_y is not None:
             target_distance = hypot(agent.x - target_x, agent.y - target_y)
         return (
+            _traffic_task_priority_rank(
+                execution_state=execution_state,
+                active_task=active_task,
+            ),
             hypot(agent.x - center_x, agent.y - center_y),
             target_distance,
             agent.agent_id,
         )
 
-    first_priority = _priority(first_agent, first_target_x, first_target_y)
-    second_priority = _priority(second_agent, second_target_x, second_target_y)
+    first_priority = _priority(
+        first_agent,
+        first_state,
+        first_active_task,
+        first_target_x,
+        first_target_y,
+    )
+    second_priority = _priority(
+        second_agent,
+        second_state,
+        second_active_task,
+        second_target_x,
+        second_target_y,
+    )
     if first_priority <= second_priority:
         return (first_agent.agent_id, second_agent.agent_id)
     return (second_agent.agent_id, first_agent.agent_id)

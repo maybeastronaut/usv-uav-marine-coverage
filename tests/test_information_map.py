@@ -20,7 +20,12 @@ from usv_uav_marine_coverage.information_map import (
 from usv_uav_marine_coverage.tasking.hotspot_task_generator import (
     sync_hotspot_confirmation_tasks,
 )
-from usv_uav_marine_coverage.tasking.task_types import TaskType
+from usv_uav_marine_coverage.tasking.task_types import (
+    TaskRecord,
+    TaskSource,
+    TaskStatus as TaskRecordStatus,
+    TaskType,
+)
 
 
 class InformationMapTestCase(unittest.TestCase):
@@ -484,6 +489,49 @@ class InformationMapTestCase(unittest.TestCase):
         self.assertEqual(tasks_before_detection, ())
         self.assertEqual(len(tasks_after_detection), 1)
         self.assertEqual(tasks_after_detection[0].task_type, TaskType.HOTSPOT_CONFIRMATION)
+
+    def test_hotspot_confirmation_reopens_when_new_uav_checked_hotspot_reuses_cell(self) -> None:
+        info_map = build_information_map(self.grid_map)
+        hotspot_cell = next(
+            cell
+            for cell in self.grid_map.flat_cells
+            if cell.zone_name == "Offshore Zone"
+            and not cell.has_obstacle
+            and not cell.has_risk_area
+            and not cell.has_baseline_point
+        )
+        state = info_map.state_at(hotspot_cell.row, hotspot_cell.col)
+        state.ground_truth_hotspot = True
+        state.ground_truth_hotspot_id = 17
+        state.known_hotspot_state = HotspotKnowledgeState.UAV_CHECKED
+        state.known_hotspot_id = 17
+        state.uav_checked_by = "UAV-1"
+
+        existing_completed_task = TaskRecord(
+            task_id=f"hotspot-confirmation-{hotspot_cell.row}-{hotspot_cell.col}",
+            task_type=TaskType.HOTSPOT_CONFIRMATION,
+            source=TaskSource.UAV_INSPECTED,
+            status=TaskRecordStatus.COMPLETED,
+            priority=10,
+            target_x=hotspot_cell.center_x,
+            target_y=hotspot_cell.center_y,
+            target_row=hotspot_cell.row,
+            target_col=hotspot_cell.col,
+            created_step=12,
+            completed_step=40,
+        )
+
+        refreshed_tasks = sync_hotspot_confirmation_tasks(
+            info_map,
+            step=55,
+            existing_tasks=(existing_completed_task,),
+        )
+
+        self.assertEqual(len(refreshed_tasks), 1)
+        self.assertEqual(refreshed_tasks[0].task_id, existing_completed_task.task_id)
+        self.assertEqual(refreshed_tasks[0].status, TaskRecordStatus.PENDING)
+        self.assertEqual(refreshed_tasks[0].created_step, 55)
+        self.assertIsNone(refreshed_tasks[0].completed_step)
 
     def test_uav_does_not_mark_non_hotspot_cell_as_suspected(self) -> None:
         config = InformationMapConfig()

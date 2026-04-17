@@ -27,6 +27,7 @@ from .execution_types import (
     ExecutionStage,
     WreckZone,
 )
+from .local_mpc import LOCAL_MPC_HAZARD_CLEARANCE_M
 from .progress_feedback import record_released_task_feedback, reset_progress_state
 from .return_to_patrol_runtime import (
     RETURN_BLOCKED_GOAL_COOLDOWN_STEPS,
@@ -144,6 +145,34 @@ def blocked_task_release_retry_until_step(step: int) -> int:
     """Return the next step until which one blocked task should stay off this USV."""
 
     return step + BLOCKED_TASK_RELEASE_COOLDOWN_STEPS
+
+
+def _resume_uav_resupply_support_after_recovery(
+    agent: AgentState,
+    *,
+    execution_state: AgentExecutionState,
+    progress_state: AgentProgressState,
+    active_task: TaskRecord,
+) -> tuple[AgentState, AgentExecutionState, AgentProgressState]:
+    """Return one recovering USV to its rendezvous support task without releasing it."""
+
+    resumed_agent = assign_agent_task(
+        _stop_agent_motion(agent),
+        TaskMode.CONFIRM,
+        active_task.target_x,
+        active_task.target_y,
+    )
+    return (
+        resumed_agent,
+        replace(
+            execution_state,
+            stage=ExecutionStage.GO_TO_TASK,
+            active_task_id=active_task.task_id,
+            active_plan=None,
+            current_waypoint_index=0,
+        ),
+        reset_progress_state(progress_state),
+    )
 
 
 def _run_usv_recovery_step(
@@ -567,6 +596,13 @@ def _run_usv_recovery_step(
         progress_state.pre_recovery_stage == ExecutionStage.GO_TO_TASK
         and recovery_attempts >= USV_MAX_RECOVERY_ATTEMPTS
     ):
+        if active_task is not None and active_task.task_type == TaskType.UAV_RESUPPLY:
+            return _resume_uav_resupply_support_after_recovery(
+                recovered_agent,
+                execution_state=execution_state,
+                progress_state=replace(progress_state, recovery_attempts=recovery_attempts),
+                active_task=active_task,
+            )
         return _release_blocked_usv_task(
             _stop_agent_motion(assign_agent_task(recovered_agent, TaskMode.IDLE)),
             step=step,
@@ -581,6 +617,17 @@ def _run_usv_recovery_step(
                 0 if active_task is None else blocked_task_release_retry_until_step(step)
             ),
             release_reason="recovery_exhausted",
+        )
+    if (
+        progress_state.pre_recovery_stage == ExecutionStage.GO_TO_TASK
+        and active_task is not None
+        and active_task.task_type == TaskType.UAV_RESUPPLY
+    ):
+        return _resume_uav_resupply_support_after_recovery(
+            recovered_agent,
+            execution_state=execution_state,
+            progress_state=replace(progress_state, recovery_attempts=recovery_attempts),
+            active_task=active_task,
         )
     return (
         _stop_agent_motion(recovered_agent),
@@ -670,12 +717,13 @@ def _clearance_to_hazards(
                 _distance_to_polygon_edges(agent.x, agent.y, obstacle.points),
             )
         for feature in obstacle_layout.offshore_features:
-            if feature.feature_type != "islet":
-                continue
-            best_distance = min(
-                best_distance,
-                hypot(agent.x - feature.x, agent.y - feature.y) - feature.radius,
-            )
+            feature_clearance = hypot(agent.x - feature.x, agent.y - feature.y) - feature.radius
+            if feature.feature_type == "risk_area":
+                # Keep recovery success aligned with local MPC: escaping a hotspot
+                # approach is not enough if the USV is still inside the offshore
+                # risk-area safety buffer that will immediately stop it again.
+                feature_clearance -= LOCAL_MPC_HAZARD_CLEARANCE_M
+            best_distance = min(best_distance, feature_clearance)
     for wreck in wreck_zones:
         best_distance = min(
             best_distance,
